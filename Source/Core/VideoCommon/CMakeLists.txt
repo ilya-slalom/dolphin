@@ -152,6 +152,8 @@ add_library(videocommon
   PostProcessing/PassSizing.h
   PostProcessing/PresetArchive.cpp
   PostProcessing/PresetArchive.h
+  PostProcessing/ShaderPackDownload.cpp
+  PostProcessing/ShaderPackDownload.h
   PostProcessing/SlangPreset.cpp
   PostProcessing/SlangPreset.h
   PostProcessing/SlangSamplers.cpp

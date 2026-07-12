@@ -769,6 +769,7 @@
     <ClInclude Include="VideoCommon\PostProcessing\MipGen.h" />
     <ClInclude Include="VideoCommon\PostProcessing\PassSizing.h" />
     <ClInclude Include="VideoCommon\PostProcessing\PresetArchive.h" />
+    <ClInclude Include="VideoCommon\PostProcessing\ShaderPackDownload.h" />
     <ClInclude Include="VideoCommon\PostProcessing\SlangPreset.h" />
     <ClInclude Include="VideoCommon\PostProcessing\SlangSamplers.h" />
     <ClInclude Include="VideoCommon\PostProcessing\SlangShader.h" />
@@ -1452,6 +1453,7 @@
     <ClCompile Include="VideoCommon\PostProcessing\MipGen.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\PassSizing.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\PresetArchive.cpp" />
+    <ClCompile Include="VideoCommon\PostProcessing\ShaderPackDownload.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\SlangPreset.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\SlangSamplers.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\SlangShader.cpp" />
