@@ -416,6 +416,60 @@ std::vector<std::string> PostProcessing::GetPassiveShaderList()
   return GetShaders(PASSIVE_DIR DIR_SEP);
 }
 
+PostProcessing::ShaderValidationResult
+PostProcessing::ValidateShaderSource(const std::string& code)
+{
+  ShaderValidationResult result;
+
+  if (code.empty())
+  {
+    result.error_message = "Shader source is empty.";
+    return result;
+  }
+
+  // Parse the [configuration] block through the same code path used at load
+  // time. LoadOptions never throws; malformed option blocks simply yield no
+  // options, so a parse "failure" here is limited to structural problems we
+  // can detect. We reuse a throwaway PostProcessing instance so we can build
+  // the real shader preamble (GetHeader/GetFooter) below instead of a
+  // hand-copied mirror that could drift from the pipeline's version.
+  PostProcessing validator;
+  validator.GetConfig()->LoadOptions(code);
+
+  // Structural sanity: a usable pixel shader must define main().
+  if (code.find("void main(") == std::string::npos &&
+      code.find("void main (") == std::string::npos)
+  {
+    result.error_message = "Shader source does not define a main() entry point.";
+    return result;
+  }
+
+  // If no video backend is live (e.g. importing from the settings screen with
+  // no game running) we cannot GPU-compile. The parse/structure check is then
+  // authoritative and we report that the compile was deferred.
+  if (g_gfx == nullptr)
+  {
+    result.valid = true;
+    result.gpu_compiled = false;
+    return result;
+  }
+
+  const std::string full_source =
+      validator.GetHeader(true) + code + validator.GetFooter();
+  std::unique_ptr<AbstractShader> shader = g_gfx->CreateShaderFromSource(
+      ShaderStage::Pixel, full_source, nullptr, "Post-processing shader validation");
+
+  if (!shader)
+  {
+    result.error_message = "Shader failed to compile on the current graphics backend.";
+    return result;
+  }
+
+  result.valid = true;
+  result.gpu_compiled = true;
+  return result;
+}
+
 bool PostProcessing::Initialize(AbstractTextureFormat format)
 {
   m_framebuffer_format = format;

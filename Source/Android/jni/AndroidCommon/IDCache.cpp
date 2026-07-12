@@ -72,6 +72,9 @@ static jmethodID s_content_handler_get_display_name;
 static jmethodID s_content_handler_get_child_names;
 static jmethodID s_content_handler_do_file_search;
 
+static jclass s_pp_shader_validation_result_class;
+static jmethodID s_pp_shader_validation_result_constructor;
+
 static jclass s_network_helper_class;
 static jmethodID s_network_helper_get_network_ip_address;
 static jmethodID s_network_helper_get_network_prefix_length;
@@ -434,6 +437,16 @@ jmethodID GetContentHandlerGetChildNames()
 jmethodID GetContentHandlerDoFileSearch()
 {
   return s_content_handler_do_file_search;
+}
+
+jclass GetPostProcessingShaderValidationResultClass()
+{
+  return s_pp_shader_validation_result_class;
+}
+
+jmethodID GetPostProcessingShaderValidationResultConstructor()
+{
+  return s_pp_shader_validation_result_constructor;
 }
 
 jclass GetNetworkHelperClass()
@@ -857,6 +870,15 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
                              "(Ljava/lang/String;[Ljava/lang/String;Z)[Ljava/lang/String;");
   env->DeleteLocalRef(content_handler_class);
 
+  const jclass pp_shader_validation_result_class = env->FindClass(
+      "org/dolphinemu/dolphinemu/features/settings/model/"
+      "PostProcessing$ShaderValidationResult");
+  s_pp_shader_validation_result_class =
+      reinterpret_cast<jclass>(env->NewGlobalRef(pp_shader_validation_result_class));
+  s_pp_shader_validation_result_constructor = env->GetMethodID(
+      pp_shader_validation_result_class, "<init>", "(ZZLjava/lang/String;)V");
+  env->DeleteLocalRef(pp_shader_validation_result_class);
+
   const jclass network_helper_class =
       env->FindClass("org/dolphinemu/dolphinemu/utils/NetworkHelper");
   s_network_helper_class = reinterpret_cast<jclass>(env->NewGlobalRef(network_helper_class));
@@ -1034,6 +1056,7 @@ JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved)
   env->DeleteGlobalRef(s_hash_map_class);
   env->DeleteGlobalRef(s_compress_cb_class);
   env->DeleteGlobalRef(s_content_handler_class);
+  env->DeleteGlobalRef(s_pp_shader_validation_result_class);
   env->DeleteGlobalRef(s_network_helper_class);
   env->DeleteGlobalRef(s_boolean_supplier_class);
   env->DeleteGlobalRef(s_ar_cheat_class);

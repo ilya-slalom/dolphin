@@ -1630,6 +1630,17 @@ class SettingsFragmentPresenter(
         )
 
         sl.add(
+            FilePicker(
+                context,
+                StringSetting.GFX_ENHANCE_POST_SHADER,
+                R.string.post_processing_import_shader,
+                R.string.post_processing_import_shader_description,
+                fragmentView.activityResultLaunchers.requestShaderFile,
+                null
+            )
+        )
+
+        sl.add(
             SwitchSetting(
                 context,
                 BooleanSetting.GFX_HACK_COPY_EFB_SCALED,

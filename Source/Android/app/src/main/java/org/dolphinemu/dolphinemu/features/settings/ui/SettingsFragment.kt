@@ -161,6 +161,10 @@ class SettingsFragment : Fragment(), SettingsFragmentView {
         activityView!!.onSettingChanged()
     }
 
+    override fun reloadSettingsList() {
+        presenter.loadSettingsList()
+    }
+
     override fun onControllerSettingsChanged() {
         adapter!!.notifyAllSettingsChanged()
         presenter.updateOldControllerSettingsWarningVisibility()

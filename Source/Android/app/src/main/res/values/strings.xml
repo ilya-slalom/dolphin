@@ -225,6 +225,14 @@
     <string name="texture_filtering_description">Overrides the texture scaling filter selected by the game. Any option except \'Default\' will alter the look of the game\'s textures and might cause issues in a small number of games.</string>
     <string name="post_processing_shader">Post-Processing Effect</string>
     <string name="post_processing_shader_description">Apply a post-processing effect after finishing a frame</string>
+    <string name="post_processing_import_shader">Import Custom Shader</string>
+    <string name="post_processing_import_shader_description">Add a .glsl post-processing shader from your device</string>
+    <string name="shader_import_success">Imported shader \"%1$s\"</string>
+    <string name="shader_import_success_deferred">Imported shader \"%1$s\". It will be fully compiled the next time a game runs.</string>
+    <string name="shader_import_failed">Could not import shader: %1$s</string>
+    <string name="shader_import_read_failed">Could not read the selected file.</string>
+    <string name="shader_import_name_conflict">A shader named \"%1$s\" already exists.</string>
+    <string name="shader_import_write_failed">Could not save the shader to the Shaders folder.</string>
     <string name="postprocessing_shader">Post Processing Shader</string>
     <string name="postprocessing_shader_description">Apply a post-processing effect after finishing a frame.</string>
     <string name="scaled_efb_copy">Scaled EFB Copy</string>

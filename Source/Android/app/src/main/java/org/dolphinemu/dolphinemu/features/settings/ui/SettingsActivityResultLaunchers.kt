@@ -4,10 +4,14 @@ package org.dolphinemu.dolphinemu.features.settings.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.widget.Toast
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import org.dolphinemu.dolphinemu.R
 import org.dolphinemu.dolphinemu.utils.FileBrowserHelper
+import org.dolphinemu.dolphinemu.utils.ShaderImportHelper
 
 class SettingsActivityResultLaunchers(
     private val fragment: Fragment, private val getAdapter: () -> SettingsAdapter?
@@ -62,6 +66,42 @@ class SettingsActivityResultLaunchers(
             FileBrowserHelper.RAW_EXTENSION,
             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         )
+    }
+
+    val requestShaderFile = fragment.registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result: ActivityResult ->
+        val intent = result.data
+        val uri = intent?.data
+        val context = fragment.requireContext()
+        if (result.resultCode == Activity.RESULT_OK && uri != null) {
+            val canonicalizedUri = context.contentResolver.canonicalize(uri) ?: uri
+            FileBrowserHelper.runAfterExtensionCheck(
+                context, canonicalizedUri, FileBrowserHelper.SHADER_EXTENSION
+            ) {
+                when (val importResult = ShaderImportHelper.importShader(context, canonicalizedUri)) {
+                    is ShaderImportHelper.Result.Success -> {
+                        val msgId = if (importResult.gpuCompiled) {
+                            R.string.shader_import_success
+                        } else {
+                            R.string.shader_import_success_deferred
+                        }
+                        Toast.makeText(
+                            context,
+                            context.getString(msgId, importResult.shaderName),
+                            Toast.LENGTH_LONG
+                        ).show()
+                        getAdapter()?.onShaderImported(importResult.shaderName)
+                    }
+                    is ShaderImportHelper.Result.Failure -> {
+                        MaterialAlertDialogBuilder(context)
+                            .setMessage(importResult.message)
+                            .setPositiveButton(R.string.ok, null)
+                            .show()
+                    }
+                }
+            }
+        }
     }
 
     private fun onFileResult(result: ActivityResult, validExtensions: Set<String>, flags: Int) {

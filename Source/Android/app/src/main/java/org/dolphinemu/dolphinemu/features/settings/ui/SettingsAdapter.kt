@@ -33,6 +33,7 @@ import org.dolphinemu.dolphinemu.features.input.ui.AdvancedMappingDialog
 import org.dolphinemu.dolphinemu.features.input.ui.MotionAlertDialog
 import org.dolphinemu.dolphinemu.features.input.ui.viewholder.InputMappingControlSettingViewHolder
 import org.dolphinemu.dolphinemu.features.settings.model.Settings
+import org.dolphinemu.dolphinemu.features.settings.model.StringSetting
 import org.dolphinemu.dolphinemu.features.settings.model.view.*
 import org.dolphinemu.dolphinemu.features.settings.ui.viewholder.*
 import org.dolphinemu.dolphinemu.utils.DirectoryInitialization
@@ -454,6 +455,14 @@ class SettingsAdapter(
         filePicker.setSelectedValue(fragmentView.settings!!, selectedFile)
 
         clickedItem = null
+    }
+
+    fun onShaderImported(shaderName: String) {
+        // Persist the newly imported shader as the active selection and rebuild the
+        // settings list so the enumerated post-processing dropdown includes it.
+        StringSetting.GFX_ENHANCE_POST_SHADER.setString(fragmentView.settings!!, shaderName)
+        fragmentView.onSettingChanged()
+        fragmentView.reloadSettingsList()
     }
 
     fun onMenuTagAction(menuTag: MenuTag, value: Int) {

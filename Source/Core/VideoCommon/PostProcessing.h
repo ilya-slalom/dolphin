@@ -82,6 +82,10 @@ public:
   void SetOptioni(const std::string& option, int index, s32 value);
   void SetOptionb(const std::string& option, bool value);
 
+  // Parses the [configuration] block out of raw shader source into m_options.
+  // Public so PostProcessing::ValidateShaderSource can reuse the parse path.
+  void LoadOptions(const std::string& code);
+
 private:
   bool m_any_options_dirty = false;
   std::unique_ptr<ShaderIncluder> m_shader_includer;
@@ -89,7 +93,6 @@ private:
   std::string m_current_shader_code;
   ConfigMap m_options;
 
-  void LoadOptions(const std::string& code);
   void LoadOptionsConfiguration();
 };
 
@@ -102,6 +105,19 @@ public:
   static std::vector<std::string> GetShaderList();
   static std::vector<std::string> GetPassiveShaderList();
   static std::vector<std::string> GetAnaglyphShaderList();
+
+  struct ShaderValidationResult
+  {
+    bool valid = false;
+    bool gpu_compiled = false;
+    std::string error_message;
+  };
+
+  // Validates raw post-processing shader source without persisting anything.
+  // Always parses the [configuration] block. Performs a real GPU compile only
+  // when a video backend is live (g_gfx != nullptr); otherwise gpu_compiled is
+  // false and validity reflects the parse/structure check only.
+  static ShaderValidationResult ValidateShaderSource(const std::string& code);
 
   PostProcessingConfiguration* GetConfig() { return &m_config; }
 
