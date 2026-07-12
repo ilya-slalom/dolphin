@@ -53,6 +53,9 @@ object FileBrowserHelper {
     @JvmField
     val WAD_EXTENSION: HashSet<String> = hashSetOf("wad")
 
+    @JvmField
+    val SHADER_EXTENSION: HashSet<String> = hashSetOf("glsl")
+
     @JvmStatic
     fun createDirectoryPickerIntent(
         activity: FragmentActivity, extensions: HashSet<String>

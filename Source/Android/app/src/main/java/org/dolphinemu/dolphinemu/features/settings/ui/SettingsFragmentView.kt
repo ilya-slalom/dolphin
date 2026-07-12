@@ -70,6 +70,12 @@ interface SettingsFragmentView {
     fun onSettingChanged()
 
     /**
+     * Rebuild the list of settings shown on screen (e.g. after a newly imported
+     * shader needs to appear in an enumerated dropdown).
+     */
+    fun reloadSettingsList()
+
+    /**
      * Refetches the values of all controller settings.
      *
      * To be used when loading an input profile or performing some other action that changes all
