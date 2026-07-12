@@ -1204,8 +1204,23 @@ Slang shaders are distributed as a directory tree (preset + `.slang` sources + s
   // preserving the archive's internal directory structure. Requires exactly one .slangp entry
   // in the archive; returns its extraction-relative name in preset_name.
   PresetImportResult ImportPresetArchive(const std::string& zip_path, const std::string& dest_root);
+
+  // Shared, sanitized zip extractor used by ImportPresetArchive and by Task 13's buildbot
+  // downloader. Extracts every non-directory entry of the archive at zip_path into dest_root,
+  // preserving structure, after rejecting any absolute or "../"-containing entry (Zip-Slip).
+  // Returns the extraction-relative names of all ".slangp" entries found (empty on failure;
+  // *error set). Does NOT enforce a single-preset rule — callers decide (import wants exactly
+  // one; the buildbot pack has hundreds).
+  std::vector<std::string> ExtractSanitizedArchive(const std::string& zip_path,
+                                                   const std::string& dest_root,
+                                                   std::string* error);
   }  // namespace VideoCommon
   ```
+
+  > Implementer note: implement `ExtractSanitizedArchive` first (the per-entry sanitize-scan +
+  > extract loop described in Step 4), then make `ImportPresetArchive` a thin wrapper that calls
+  > it and applies the single-`.slangp` rule. Task 13 reuses `ExtractSanitizedArchive` verbatim,
+  > so keep it free of any single-preset assumption.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1352,10 +1367,213 @@ git commit -m "VideoCommon: add zip-based slang preset bundle import"
 
 ---
 
+## Task 13: Download the RetroArch slang shader pack from the libretro buildbot
+
+RetroArch's entire slang shader library is published as a single zip on the libretro buildbot. This task adds a cross-platform downloader that fetches that zip over HTTP and extracts it into the user Shaders dir via Task 12's `ExtractSanitizedArchive`, so every bundled preset (crt-royale and hundreds more) becomes selectable through `MultipassPostProcessing::GetPresetList()` (Task 10) without the user hunting down individual bundles. This is the network-fetch counterpart to Task 12's local-file import; both share the same sanitized extractor.
+
+> **Verified against the live buildbot (2026-07-12) and the checked-out tree:**
+> - The pack URL is **`https://buildbot.libretro.com/assets/frontend/shaders_slang.zip`** (HTTP 200, `application/zip`, ~53 MB, supports range/redirects). Sibling assets confirm the naming: `shaders_glsl.zip`, `shaders_cg.zip` live in the same `/assets/frontend/` directory. The older `/nightly/shaders/…` path returns 404 — do **not** use it.
+> - The archive is a **whole library tree**, not a single preset: top-level `crt/`, `blurs/`, `include/`, `bezel/`, `border/`, … with many `.slangp` files (e.g. `crt/crt-royale.slangp`, `border/sgb/sgb-crt-royale.slangp`). This is why the downloader must NOT go through `ImportPresetArchive`'s single-`.slangp` rule and instead uses `ExtractSanitizedArchive` (Task 12).
+> - Dolphin already bundles an HTTP client: `Common::HttpRequest` (`Common/HttpRequest.h`), with `Response Get(url, headers, AllowedReturnCodes)` returning `std::optional<std::vector<u8>>`, plus `FollowRedirects(long)` and a `ProgressCallback` ctor arg. Existing download call sites to mirror: `Core/GeckoCodeConfig.cpp:22-29` (simple Get) and `UpdaterCommon/UpdaterCommon.cpp:64,212` (progress callback + long timeout).
+
+**Files:**
+- Create: `Source/Core/VideoCommon/PostProcessing/ShaderPackDownload.h`
+- Create: `Source/Core/VideoCommon/PostProcessing/ShaderPackDownload.cpp`
+- Create: `Source/Core/VideoCommon/PostProcessing/ShaderPackDownloadTest.cpp`
+- Modify: `Source/Core/VideoCommon/CMakeLists.txt`, `Source/Core/DolphinLib.props`, `Source/UnitTests/VideoCommon/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: `ExtractSanitizedArchive` (Task 12); `Common::HttpRequest` (`Common/HttpRequest.h`); `File::GetUserPath(D_SHADERS_IDX)`, `File::CreateTempDir`, `File::IOFile`, `File::DeleteDirRecursively` (`Common/FileUtil.h`, `Common/IOFile.h`).
+- Produces:
+  ```cpp
+  namespace VideoCommon {
+  // The canonical libretro slang shader pack on the buildbot (verified 2026-07-12).
+  constexpr char SLANG_SHADER_PACK_URL[] =
+      "https://buildbot.libretro.com/assets/frontend/shaders_slang.zip";
+
+  struct ShaderPackDownloadResult {
+    bool ok = false;
+    u32 preset_count = 0;   // number of .slangp files extracted from the pack
+    std::string error;      // set when ok == false
+  };
+
+  // Progress callback: (bytes_downloaded, bytes_total). bytes_total may be 0 if the server
+  // does not report Content-Length. Return false to cancel the download. May be null.
+  using DownloadProgress = std::function<bool(s64 downloaded, s64 total)>;
+
+  // Downloads the slang shader pack from `url` and extracts it (sanitized) into `dest_root`
+  // (typically File::GetUserPath(D_SHADERS_IDX)). Blocking; run off the UI thread. The zip is
+  // written to a temp file, extracted via ExtractSanitizedArchive, then the temp file removed.
+  ShaderPackDownloadResult DownloadAndInstallShaderPack(const std::string& url,
+                                                        const std::string& dest_root,
+                                                        DownloadProgress progress = nullptr);
+  }  // namespace VideoCommon
+  ```
+
+- [ ] **Step 1: Write the failing test**
+
+The download itself needs the network, so the unit test covers the **extraction-of-a-downloaded-zip** seam without hitting the buildbot: build a small multi-preset zip on disk (reuse the `WriteZip` helper pattern from `PresetArchiveTest.cpp`), then feed it to a `file://`-style local path through a seam. To keep the test hermetic and network-free, split the network fetch from the install so the install half is directly testable:
+
+Add a second, testable entry point in the header:
+
+```cpp
+// Extracts an already-downloaded pack zip at local_zip_path into dest_root. This is the
+// network-free half of DownloadAndInstallShaderPack (which fetches then calls this). Counts
+// the .slangp files extracted.
+ShaderPackDownloadResult InstallShaderPackFromZip(const std::string& local_zip_path,
+                                                  const std::string& dest_root);
+```
+
+Create `ShaderPackDownloadTest.cpp`:
+
+```cpp
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <gtest/gtest.h>
+#include <mz.h>
+#include <mz_strm.h>
+#include <mz_zip.h>
+#include <mz_zip_rw.h>
+
+#include "Common/FileUtil.h"
+#include "VideoCommon/PostProcessing/ShaderPackDownload.h"
+
+using namespace VideoCommon;
+
+namespace
+{
+void WriteZip(const std::string& zip_path,
+              const std::vector<std::pair<std::string, std::string>>& entries)
+{
+  void* writer = mz_zip_writer_create();
+  ASSERT_EQ(mz_zip_writer_open_file(writer, zip_path.c_str(), 0, 0), MZ_OK);
+  for (const auto& [name, data] : entries)
+  {
+    mz_zip_file file_info = {};
+    file_info.filename = name.c_str();
+    file_info.flag = MZ_ZIP_FLAG_UTF8;
+    ASSERT_EQ(mz_zip_writer_add_buffer(writer, const_cast<char*>(data.data()),
+                                       static_cast<int32_t>(data.size()), &file_info),
+              MZ_OK);
+  }
+  mz_zip_writer_close(writer);
+  mz_zip_writer_delete(&writer);
+}
+}  // namespace
+
+TEST(ShaderPackDownload, InstallsAllPresetsFromPackZip)
+{
+  const std::string tmp = File::CreateTempDir();
+  ASSERT_FALSE(tmp.empty());
+  const std::string zip = tmp + "/shaders_slang.zip";
+  const std::string dest = tmp + "/Shaders";
+
+  // Mirrors the buildbot pack shape: many presets across subdirs sharing an include/ tree.
+  WriteZip(zip, {
+      {"crt/crt-royale.slangp", "shaders = \"1\"\nshader0 = \"../include/a.slang\"\n"},
+      {"crt/crt-geom.slangp", "shaders = \"1\"\nshader0 = \"../include/a.slang\"\n"},
+      {"include/a.slang",
+       "#pragma stage vertex\nvoid main(){}\n#pragma stage fragment\nvoid main(){}\n"},
+      {"README.md", "libretro slang shaders"},
+  });
+
+  const auto result = InstallShaderPackFromZip(zip, dest);
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.preset_count, 2u);
+  EXPECT_TRUE(File::Exists(dest + "/crt/crt-royale.slangp"));
+  EXPECT_TRUE(File::Exists(dest + "/crt/crt-geom.slangp"));
+  EXPECT_TRUE(File::Exists(dest + "/include/a.slang"));  // shared include preserved
+
+  File::DeleteDirRecursively(tmp);
+}
+
+TEST(ShaderPackDownload, RejectsCorruptZip)
+{
+  const std::string tmp = File::CreateTempDir();
+  ASSERT_FALSE(tmp.empty());
+  const std::string zip = tmp + "/bad.zip";
+  File::IOFile(zip, "wb").WriteBytes("not a zip", 9);
+  const auto result = InstallShaderPackFromZip(zip, tmp + "/Shaders");
+  EXPECT_FALSE(result.ok);
+  EXPECT_FALSE(result.error.empty());
+  File::DeleteDirRecursively(tmp);
+}
+```
+
+Add the module files to `Source/Core/VideoCommon/CMakeLists.txt` and register `add_dolphin_test(ShaderPackDownloadTest PostProcessing/ShaderPackDownloadTest.cpp)`. `add_dolphin_test` links `core`, which re-exports `common` PUBLIC; `Common::HttpRequest` and `MINIZIP::minizip-ng` are both on `common`, so no extra link line is needed (same transitive path Task 12 verified).
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cmake --build build --target ShaderPackDownloadTest 2>&1 | tail -20`
+Expected: FAIL — `ShaderPackDownload.h` / `InstallShaderPackFromZip` undefined.
+
+- [ ] **Step 3: Write the header**
+
+Create `ShaderPackDownload.h` with `SLANG_SHADER_PACK_URL`, `ShaderPackDownloadResult`, `DownloadProgress`, `DownloadAndInstallShaderPack`, and the testable `InstallShaderPackFromZip` from the blocks above (include `<functional>`, `<string>`, `"Common/CommonTypes.h"`).
+
+- [ ] **Step 4: Implement**
+
+Create `ShaderPackDownload.cpp`:
+- **`InstallShaderPackFromZip`** (network-free): call `ExtractSanitizedArchive(local_zip_path, dest_root, &error)` (Task 12). On empty return with a set error → `{false, 0, error}`. Otherwise `{true, static_cast<u32>(preset_names.size()), ""}`. Note the extractor already creates parent dirs and rejects Zip-Slip, so this is a thin adapter.
+- **`DownloadAndInstallShaderPack`** (network): 
+  - Construct `Common::HttpRequest http(std::chrono::seconds(60), curl_progress)`, where `curl_progress` adapts the caller's `DownloadProgress` to the `HttpRequest::ProgressCallback` signature `(s64 dltotal, s64 dlnow, s64, s64)` (return `progress ? progress(dlnow, dltotal) : true`). Call `http.FollowRedirects(10)` (the buildbot may 30x).
+  - `const auto response = http.Get(url);` If `!response` → `{false, 0, "download failed (HTTP " + std::to_string(http.GetLastResponseCode()) + ")"}`.
+  - Write the bytes to a temp file: `const std::string tmp_dir = File::CreateTempDir();` (guard empty), `const std::string zip_path = tmp_dir + DIR_SEP "shaders_slang.zip";` then `File::IOFile(zip_path, "wb").WriteBytes(response->data(), response->size())`. Use a `Common::ScopeGuard` to `File::DeleteDirRecursively(tmp_dir)` on exit so the temp zip never leaks even on early return.
+  - `return InstallShaderPackFromZip(zip_path, dest_root);`
+- Log start/finish + byte count with `INFO_LOG_FMT(VIDEO, ...)`; log failures with `ERROR_LOG_FMT`.
+
+Add includes: `"VideoCommon/PostProcessing/ShaderPackDownload.h"`, `"VideoCommon/PostProcessing/PresetArchive.h"`, `"Common/HttpRequest.h"`, `"Common/FileUtil.h"`, `"Common/IOFile.h"`, `"Common/CommonPaths.h"`, `"Common/ScopeGuard.h"`, `"Common/Logging/Log.h"`, `<chrono>`.
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `cd /Users/ilya.lissoboi/work/dolphin && cmake --build build --target ShaderPackDownloadTest 2>&1 | tail -20 && ./build/Binaries/ShaderPackDownloadTest`
+Expected: PASS — both presets extracted from the multi-preset pack, shared `include/` preserved, corrupt zip rejected.
+
+- [ ] **Step 6: Manual end-to-end (desktop, real network)**
+
+From a small harness or temporary debug menu, call
+`DownloadAndInstallShaderPack(SLANG_SHADER_PACK_URL, File::GetUserPath(D_SHADERS_IDX), progress)`.
+Expected: ~53 MB downloads, `preset_count` in the hundreds, and `crt-royale` now appears in `MultipassPostProcessing::GetPresetList()` and renders per Task 11 — no manual asset staging (Task 11 Step 1) required. Wiring a "Download shader pack…" button into Qt `EnhancementsWidget` is done in Step 7 below. Android UI wiring stays in the Android follow-on plan.
+
+- [ ] **Step 7: Wire a "Download shader pack…" button into the Qt Enhancements UI**
+
+**Files:**
+- Modify: `Source/Core/DolphinQt/Config/Graphics/EnhancementsWidget.h`
+- Modify: `Source/Core/DolphinQt/Config/Graphics/EnhancementsWidget.cpp`
+
+> **Verified against the checked-out tree:** the post-processing row already occupies `enhancements_layout` row `row` with the combo at column 1 and the "Configure" button (`m_configure_post_processing_effect`) at column 2 (`EnhancementsWidget.cpp:188-190`). **Task 10 Step 4 removes that Configure button** (the old `PostProcessingConfigWindow` wiring), freeing column 2 for the download button. The layout uses `QGridLayout` (`EnhancementsWidget.cpp:66`), buttons are `NonDefaultQPushButton` (`.cpp:26,147`), and the established button pattern — construct → `addWidget(..., row, 2)` → `connect(&QPushButton::clicked, this, &EnhancementsWidget::Handler)` — is exactly how `m_configure_color_correction` is wired (`.cpp:185,278-279`).
+
+- In `EnhancementsWidget.h`, add a member `QPushButton* m_download_shader_pack;` (next to the removed `m_configure_post_processing_effect`) and a private slot `void DownloadShaderPack();`.
+- In `EnhancementsWidget.cpp` `CreateWidgets()`: construct `m_download_shader_pack = new NonDefaultQPushButton(tr("Download…"));` and place it in the freed slot: `enhancements_layout->addWidget(m_download_shader_pack, row, 2);` (the post-processing-effect row).
+- In `ConnectWidgets()`: `connect(m_download_shader_pack, &QPushButton::clicked, this, &EnhancementsWidget::DownloadShaderPack);` (mirroring the `m_configure_color_correction` connect at `.cpp:278`).
+- Implement `DownloadShaderPack()`:
+  - `#include "VideoCommon/PostProcessing/ShaderPackDownload.h"`, plus `<QProgressDialog>`, `<QMessageBox>`, `<QtConcurrent>` (or `QThread`).
+  - The download is blocking (~53 MB), so it MUST run off the UI thread. Show a modal `QProgressDialog` (range 0–100, cancel button), run `DownloadAndInstallShaderPack(SLANG_SHADER_PACK_URL, File::GetUserPath(D_SHADERS_IDX), progress)` on a worker (`QtConcurrent::run` / `QThread`), and marshal progress back to the dialog via a queued signal. The `DownloadProgress` lambda computes a percentage from `(downloaded, total)` (guard `total == 0`) and returns `!dialog.wasCanceled()` so cancel aborts the transfer.
+  - On completion (back on the UI thread): if `result.ok`, `QMessageBox::information` reporting `result.preset_count` presets installed, then call `LoadPostProcessingShaders()` so the newly-downloaded presets populate the combo immediately; else `QMessageBox::warning` with `result.error`.
+- Add the include `"Common/FileUtil.h"` for `File::GetUserPath` if not already present.
+
+Run: `cmake --build build --target dolphin-emu-qt 2>&1 | tail -20`
+Expected: BUILD SUCCESS. Manual check: click **Download…** → progress dialog advances → on success the preset combo repopulates and `crt-royale` is selectable.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add Source/Core/VideoCommon/PostProcessing/ShaderPackDownload.h Source/Core/VideoCommon/PostProcessing/ShaderPackDownload.cpp Source/Core/VideoCommon/PostProcessing/ShaderPackDownloadTest.cpp Source/Core/VideoCommon/CMakeLists.txt Source/Core/DolphinLib.props Source/UnitTests/VideoCommon/CMakeLists.txt Source/Core/DolphinQt/Config/Graphics/EnhancementsWidget.h Source/Core/DolphinQt/Config/Graphics/EnhancementsWidget.cpp
+git commit -m "VideoCommon/Qt: download slang shader pack from libretro buildbot"
+```
+
+---
+
 ## Self-Review Notes
 
 - **Spec coverage — replacing the single-pass processor:** old dialect/classes removed (Task 10); new N-pass executor is the sole post-processor (Task 9); `Presenter` repointed (Task 10). Multi-pass `.slangp` support: parser (T1), shader/pragma parse (T2), sizing (T3), translation (T4) + Vulkan compile (T5), samplers (T6), mips (T7), LUTs (T8), executor (T9). crt-royale milestone verified (T11).
 - **Scope discipline:** cross-backend breadth, history/feedback frames, `#reference`, Android tree-import, and parameter UI are explicitly deferred to follow-on plans (Out of Scope section) so this plan yields working software (crt-royale on Vulkan) on its own. Task 12 (zip bundle import) is the platform-agnostic extraction core matching the ecosystem's directory-tree-in-a-zip distribution convention; the Android UI that calls it stays in the Android follow-on plan.
+- **Getting the shaders (Task 13):** rather than requiring users to manually stage a crt-royale tree (Task 11 Step 1), Task 13 downloads the entire libretro slang shader library from the buildbot (`https://buildbot.libretro.com/assets/frontend/shaders_slang.zip`, verified live 2026-07-12) via the already-bundled `Common::HttpRequest` and installs it through Task 12's shared `ExtractSanitizedArchive`. Because the pack is a whole-library tree with hundreds of presets, Task 12's single-`.slangp` `ImportPresetArchive` is refactored to sit on top of the reusable multi-preset extractor; Task 13 reuses that extractor directly. Network fetch and zip install are split so the install half stays unit-testable without touching the network. The Qt "Download…" button reuses the column-2 layout slot freed when Task 10 Step 4 removes the old Configure button, and runs the blocking download on a worker thread behind a cancelable progress dialog.
 - **Distribution convention:** slang shaders ship as a directory tree (preset + sources + includes + PNGs) referenced by preset-relative paths incl. `../`, commonly zipped for transport. Task 12 extracts that tree preserving structure so path/`#include` resolution (Task 1 path resolver, Task 5 includer) works unchanged; single-file `.slang` import (the earlier `.glsl` flow) is insufficient for presets.
 - **Type consistency:** `ScaleType`/`SlangWrapMode` defined in T1 and reused in T3/T6; `SlangPassConfig`/`SlangLutConfig` (T1) consumed by T4/T6/T8/T9; `SlangShaderSource` (T2) → `TranslateSlangPass` (T4) → `CompiledPassShaders`/`CompileTranslatedPass` (T5) → executor (T9); `MakeSlangSamplerState` (T6), `GenerateBoxMips`/`MipLevel` (T7), `LoadLutTexture` (T8) all consumed by T9. `MultipassPostProcessing` (T9) consumed by T10.
 - **Known implementer confirmations (flagged inline, not placeholders):** UBO std140 packing must match each shader's declared member order — MVP assumes crt-royale's set, generalize via SPIR-V reflection later (T9 Step 4); the exact set of UI referencers to repoint is grep-driven (T10 Step 1); whether the earlier import plan's `PostProcessingValidationTest` has landed affects T10 Step 5. (T12's minizip-ng APIs, `mz_zip_file` fields, `File::` helpers, and transitive link path were verified against the checked-out submodule `55db144`.)
