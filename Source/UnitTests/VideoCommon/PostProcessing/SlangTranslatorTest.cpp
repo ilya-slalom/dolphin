@@ -96,6 +96,61 @@ TEST(SlangTranslator, IgnoresSampler2DFunctionParameters)
   EXPECT_EQ(result.sampler_names[0], "Source");
 }
 
+TEST(SlangTranslator, PacksUniformsPerStd140)
+{
+  // A float followed by a vec4: std140 aligns the vec4 to 16 bytes, so the float occupies
+  // bytes [0,4) and 12 bytes of padding precede the vec4 at [16,32).
+  const std::vector<UboMember> members = {
+      {"a", UboMemberType::Float},
+      {"b", UboMemberType::Vec4},
+  };
+  const auto resolver = [](const std::string& name, float* out, int count) -> bool {
+    if (name == "a")
+    {
+      out[0] = 1.0f;
+      return true;
+    }
+    if (name == "b")
+    {
+      for (int i = 0; i < count; ++i)
+        out[i] = static_cast<float>(10 + i);
+      return true;
+    }
+    return false;
+  };
+  const std::vector<u8> data = PackSlangUniforms(members, resolver);
+  ASSERT_GE(data.size(), 32u);
+  const float* f = reinterpret_cast<const float*>(data.data());
+  EXPECT_FLOAT_EQ(f[0], 1.0f);   // a at offset 0
+  EXPECT_FLOAT_EQ(f[4], 10.0f);  // b.x at offset 16 (aligned)
+  EXPECT_FLOAT_EQ(f[5], 11.0f);
+  EXPECT_FLOAT_EQ(f[6], 12.0f);
+  EXPECT_FLOAT_EQ(f[7], 13.0f);
+}
+
+TEST(SlangTranslator, PacksMat4AtAlignedOffset)
+{
+  // mat4 aligns to 16 and occupies 64 bytes; a leading float pads to offset 16.
+  const std::vector<UboMember> members = {
+      {"FrameCount", UboMemberType::Float},
+      {"MVP", UboMemberType::Mat4},
+  };
+  const auto resolver = [](const std::string& name, float* out, int count) -> bool {
+    if (name == "MVP")
+    {
+      for (int i = 0; i < count; ++i)
+        out[i] = static_cast<float>(i);
+      return true;
+    }
+    return false;  // FrameCount zero-filled
+  };
+  const std::vector<u8> data = PackSlangUniforms(members, resolver);
+  ASSERT_GE(data.size(), 80u);  // 16 (float+pad) + 64 (mat4)
+  const float* f = reinterpret_cast<const float*>(data.data());
+  EXPECT_FLOAT_EQ(f[4], 0.0f);   // MVP[0] at offset 16
+  EXPECT_FLOAT_EQ(f[19], 15.0f);  // MVP[15]
+}
+
 TEST(SlangTranslator, RejectsTooManySamplers)
 {
   // Build a shader referencing 9 distinct samplers (Source + 8) -> over the 8 limit.

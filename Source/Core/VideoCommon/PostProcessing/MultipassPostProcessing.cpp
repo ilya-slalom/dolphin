@@ -42,31 +42,7 @@ std::string DirectoryOf(const std::string& path)
   return slash == std::string::npos ? std::string() : path.substr(0, slash);
 }
 
-// std140 UBO layout matching the semantic member set the translator preserves for the
-// crt-royale MVP: mat4 MVP; vec4 SourceSize; vec4 OriginalSize; vec4 OutputSize; uint FrameCount.
-// NOTE (per plan Task 9 Step 4): this assumes crt-royale's member order. Generalizing to any
-// preset requires SPIR-V reflection of each shader's declared UBO; kept in one struct so that
-// change is localized.
-struct SemanticUniforms
-{
-  std::array<float, 16> mvp;
-  std::array<float, 4> source_size;
-  std::array<float, 4> original_size;
-  std::array<float, 4> output_size;
-  u32 frame_count;
-  u32 pad0;
-  u32 pad1;
-  u32 pad2;
-};
-
-std::array<float, 4> SizeVec(u32 width, u32 height)
-{
-  const float w = static_cast<float>(width);
-  const float h = static_cast<float>(height);
-  return {w, h, w != 0.0f ? 1.0f / w : 0.0f, h != 0.0f ? 1.0f / h : 0.0f};
-}
-
-// Identity MVP with the same clip-space orientation the fixed post-process vertex shader uses.
+// Identity MVP: the shader multiplies it by the synthesized fullscreen-triangle Position.
 std::array<float, 16> IdentityMvp()
 {
   return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
@@ -261,6 +237,8 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
     pass.config = pass_config;
     pass.alias = pass_config.alias;
     pass.sampler_names = std::move(translated.sampler_names);
+    pass.ubo_members = std::move(translated.ubo_members);
+    pass.parameters = parsed->parameters;
     pass.input_sampler =
         MakeSlangSamplerState(pass_config.wrap_mode, pass_config.filter_linear,
                               pass_config.mipmap_input);
@@ -496,18 +474,101 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     const MathUtil::Rectangle<int> target_rect =
         is_final ? dst : pass.output_texture->GetRect();
 
-    // Fill + upload the semantic UBO.
-    SemanticUniforms uniforms = {};
-    uniforms.mvp = IdentityMvp();
-    uniforms.source_size = SizeVec(static_cast<u32>(prev_rect.GetWidth()),
-                                   static_cast<u32>(prev_rect.GetHeight()));
-    uniforms.original_size = SizeVec(static_cast<u32>(src.GetWidth()),
-                                     static_cast<u32>(src.GetHeight()));
-    uniforms.output_size =
-        SizeVec(static_cast<u32>(target_rect.GetWidth()),
-                static_cast<u32>(target_rect.GetHeight()));
-    uniforms.frame_count = m_frame_count;
-    g_vertex_manager->UploadUtilityUniforms(&uniforms, sizeof(uniforms));
+    // Fill + upload the merged PSBlock, packed to match the shader's declared std140 layout.
+    // Resolve each member by name: MVP, the *Size semantics, FrameCount, per-input <Name>Size,
+    // and #pragma parameter defaults.
+    const auto size_vec = [](u32 w, u32 h, float* out) {
+      out[0] = static_cast<float>(w);
+      out[1] = static_cast<float>(h);
+      out[2] = w != 0 ? 1.0f / w : 0.0f;
+      out[3] = h != 0 ? 1.0f / h : 0.0f;
+    };
+    // Resolve a texture size by input name (Source/Original/alias/LUT), for "<Name>Size".
+    const auto input_size = [&](const std::string& name, float* out) -> bool {
+      if (name == "Source")
+      {
+        size_vec(static_cast<u32>(prev_rect.GetWidth()), static_cast<u32>(prev_rect.GetHeight()),
+                 out);
+        return true;
+      }
+      if (name == "Original")
+      {
+        size_vec(static_cast<u32>(src.GetWidth()), static_cast<u32>(src.GetHeight()), out);
+        return true;
+      }
+      for (size_t j = 0; j < i; ++j)
+      {
+        if (m_passes[j].alias == name && m_passes[j].output_texture)
+        {
+          size_vec(m_passes[j].output_texture->GetWidth(),
+                   m_passes[j].output_texture->GetHeight(), out);
+          return true;
+        }
+      }
+      for (const Lut& lut : m_luts)
+      {
+        if (lut.name == name && lut.texture)
+        {
+          size_vec(lut.texture->GetWidth(), lut.texture->GetHeight(), out);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const auto resolver = [&](const std::string& name, float* out, int count) -> bool {
+      if (name == "MVP")
+      {
+        const std::array<float, 16> mvp = IdentityMvp();
+        std::copy(mvp.begin(), mvp.end(), out);
+        return true;
+      }
+      if (name == "SourceSize")
+      {
+        size_vec(static_cast<u32>(prev_rect.GetWidth()), static_cast<u32>(prev_rect.GetHeight()),
+                 out);
+        return true;
+      }
+      if (name == "OriginalSize")
+      {
+        size_vec(static_cast<u32>(src.GetWidth()), static_cast<u32>(src.GetHeight()), out);
+        return true;
+      }
+      if (name == "OutputSize" || name == "FinalViewportSize")
+      {
+        size_vec(static_cast<u32>(target_rect.GetWidth()),
+                 static_cast<u32>(target_rect.GetHeight()), out);
+        return true;
+      }
+      if (name == "FrameCount")
+      {
+        out[0] = static_cast<float>(m_frame_count);
+        return true;
+      }
+      // "<InputName>Size" -> that input's texture size.
+      constexpr std::string_view kSize = "Size";
+      if (name.size() > kSize.size() &&
+          name.compare(name.size() - kSize.size(), kSize.size(), kSize) == 0)
+      {
+        if (input_size(name.substr(0, name.size() - kSize.size()), out))
+          return true;
+      }
+      // #pragma parameter default.
+      for (const SlangParameter& param : pass.parameters)
+      {
+        if (param.id == name)
+        {
+          out[0] = param.default_value;
+          return true;
+        }
+      }
+      (void)count;
+      return false;  // zero-fill unknown members
+    };
+
+    const std::vector<u8> ubo_data = PackSlangUniforms(pass.ubo_members, resolver);
+    if (!ubo_data.empty())
+      g_vertex_manager->UploadUtilityUniforms(ubo_data.data(), static_cast<u32>(ubo_data.size()));
 
     g_gfx->SetFramebuffer(target);
     g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(target_rect, target));

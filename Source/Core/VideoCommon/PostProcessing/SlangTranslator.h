@@ -3,10 +3,12 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "Common/CommonTypes.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
 
 class AbstractShader;
@@ -15,11 +17,31 @@ namespace VideoCommon
 {
 // The set of texture samplers a pass reads, in binding order (index 0..N-1).
 // Includes "Source", "Original", each referenced alias, and each referenced LUT.
+// GLSL scalar/vector/matrix category of a UBO member, used for std140 packing by the executor.
+enum class UboMemberType
+{
+  Float,   // float / int / uint (4 bytes, 4-byte aligned)
+  Vec2,    // 8 bytes, 8-byte aligned
+  Vec3,    // 12 bytes, 16-byte aligned
+  Vec4,    // 16 bytes, 16-byte aligned
+  Mat4,    // 64 bytes, 16-byte aligned
+  Unknown  // unrecognized; treated as vec4 to stay conservative
+};
+
+struct UboMember
+{
+  std::string name;
+  UboMemberType type = UboMemberType::Unknown;
+};
+
 struct TranslatedPass
 {
   std::string vertex_glsl;    // ready for g_gfx->CreateShaderFromSource(Vertex, ...)
   std::string fragment_glsl;  // ready for CreateShaderFromSource(Pixel, ...)
   std::vector<std::string> sampler_names;  // binding index -> semantic/alias/LUT name
+  // The merged PSBlock members in declaration order (params block, then global block). The
+  // executor packs the uniform buffer to match this std140 layout.
+  std::vector<UboMember> ubo_members;
   bool ok = false;
   std::string error;  // set when ok == false (e.g. > 8 samplers)
 };
@@ -28,6 +50,14 @@ struct TranslatedPass
 TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
                                   const std::vector<std::string>& known_aliases,
                                   const std::vector<std::string>& lut_names);
+
+// Packs a std140 uniform buffer matching `members` (in declaration order). For each member,
+// `resolver(name, out)` fills `out` with the member's component values (1..16 floats); if it
+// returns false the member is zero-filled. Applies std140 alignment rules for the supported
+// member types (Float/Vec2/Vec3/Vec4/Mat4). Pure/testable.
+using UniformResolver = std::function<bool(const std::string& name, float* out, int count)>;
+std::vector<u8> PackSlangUniforms(const std::vector<UboMember>& members,
+                                  const UniformResolver& resolver);
 
 struct CompiledPassShaders
 {

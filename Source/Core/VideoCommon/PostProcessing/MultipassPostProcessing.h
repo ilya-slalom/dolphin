@@ -10,6 +10,8 @@
 #include "Common/CommonTypes.h"
 #include "Common/MathUtil.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
+#include "VideoCommon/PostProcessing/SlangShader.h"
+#include "VideoCommon/PostProcessing/SlangTranslator.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
 
@@ -47,6 +49,8 @@ private:
   {
     SlangPassConfig config;
     std::vector<std::string> sampler_names;  // binding index -> input name
+    std::vector<UboMember> ubo_members;      // merged PSBlock layout, in declaration order
+    std::vector<SlangParameter> parameters;  // #pragma parameter defaults for this pass
     SamplerState input_sampler;              // sampler applied to this pass's inputs
     std::unique_ptr<AbstractShader> vertex_shader;
     std::unique_ptr<AbstractShader> pixel_shader;

@@ -4,7 +4,9 @@
 #include "VideoCommon/PostProcessing/SlangTranslator.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstring>
 #include <map>
 #include <sstream>
 #include <string_view>
@@ -138,13 +140,24 @@ std::string_view StorageQualifierAfterLayout(std::string_view decl)
   return {};
 }
 
-// A RetroArch slang uniform block: `layout(...) uniform <BlockName> { members } <instance>;`.
-// Both the push_constant "Push {} params" and the "std140 UBO {} global" follow this shape.
-struct UniformBlock
+// Classifies the type keyword at the start of a member declaration for std140 packing.
+UboMemberType ClassifyMemberType(std::string_view decl)
 {
-  std::string instance;              // e.g. "params" or "global"
-  std::vector<std::string> members;  // raw member lines, e.g. "vec4 SourceSize;"
-};
+  decl = Trim(decl);
+  const auto space = decl.find_first_of(" \t");
+  const std::string_view kw = space == std::string_view::npos ? decl : decl.substr(0, space);
+  if (kw == "mat4" || kw == "float4x4")
+    return UboMemberType::Mat4;
+  if (kw == "vec4" || kw == "float4" || kw == "ivec4" || kw == "uvec4")
+    return UboMemberType::Vec4;
+  if (kw == "vec3" || kw == "float3" || kw == "ivec3" || kw == "uvec3")
+    return UboMemberType::Vec3;
+  if (kw == "vec2" || kw == "float2" || kw == "ivec2" || kw == "uvec2")
+    return UboMemberType::Vec2;
+  if (kw == "float" || kw == "int" || kw == "uint" || kw == "bool")
+    return UboMemberType::Float;
+  return UboMemberType::Unknown;
+}
 
 // Extracts every RetroArch uniform block from a stage source, appending merged member lines to
 // `out_members` (deduplicated by member name -- the two blocks never share names in practice,
@@ -152,7 +165,8 @@ struct UniformBlock
 // instance name in `out_instances`. Returns the source with those block declarations removed.
 std::string ExtractUniformBlocks(const std::string& source, std::vector<std::string>* out_members,
                                  std::vector<std::string>* out_instances,
-                                 std::vector<std::string>* out_member_names)
+                                 std::vector<std::string>* out_member_names,
+                                 std::vector<UboMember>* out_typed_members)
 {
   std::string out;
   std::istringstream in(source);
@@ -231,6 +245,7 @@ std::string ExtractUniformBlocks(const std::string& source, std::vector<std::str
         }
         out_member_names->push_back(member_name);
         out_members->emplace_back(m);
+        out_typed_members->push_back({member_name, ClassifyMemberType(decl)});
       }
     }
     // Block declaration removed from output.
@@ -310,10 +325,11 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
   std::vector<std::string> ubo_members;
   std::vector<std::string> ubo_member_names;
   std::vector<std::string> instances;
-  std::string vs_noblocks =
-      ExtractUniformBlocks(shader.vertex_source, &ubo_members, &instances, &ubo_member_names);
-  std::string fs_noblocks =
-      ExtractUniformBlocks(shader.fragment_source, &ubo_members, &instances, &ubo_member_names);
+  std::vector<UboMember> typed_members;
+  std::string vs_noblocks = ExtractUniformBlocks(shader.vertex_source, &ubo_members, &instances,
+                                                 &ubo_member_names, &typed_members);
+  std::string fs_noblocks = ExtractUniformBlocks(shader.fragment_source, &ubo_members, &instances,
+                                                 &ubo_member_names, &typed_members);
 
   // Build the merged block declaration with a single instance name "params". Any other instance
   // name (e.g. "global") is aliased to it, so params.X, global.X, and macro-expanded IN.X all
@@ -430,6 +446,7 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
   result.vertex_glsl = ubo_decl + undefs + rewrite_stage(vs_noblocks, /*is_vertex=*/true);
   result.fragment_glsl = ubo_decl + undefs + rewrite_stage(fs_noblocks, /*is_vertex=*/false);
   result.sampler_names = std::move(sampler_names);
+  result.ubo_members = std::move(typed_members);
   result.ok = true;
 
   // known_aliases / lut_names are accepted for interface completeness and future
@@ -437,6 +454,67 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
   (void)known_aliases;
   (void)lut_names;
   return result;
+}
+
+std::vector<u8> PackSlangUniforms(const std::vector<UboMember>& members,
+                                  const UniformResolver& resolver)
+{
+  // std140: {align, size} in bytes for each supported type.
+  const auto layout = [](UboMemberType t) -> std::pair<size_t, size_t> {
+    switch (t)
+    {
+    case UboMemberType::Float:
+      return {4, 4};
+    case UboMemberType::Vec2:
+      return {8, 8};
+    case UboMemberType::Vec3:
+      return {16, 12};
+    case UboMemberType::Vec4:
+      return {16, 16};
+    case UboMemberType::Mat4:
+      return {16, 64};
+    case UboMemberType::Unknown:
+    default:
+      return {16, 16};  // conservative: treat as vec4
+    }
+  };
+  const auto component_count = [](UboMemberType t) -> int {
+    switch (t)
+    {
+    case UboMemberType::Float:
+      return 1;
+    case UboMemberType::Vec2:
+      return 2;
+    case UboMemberType::Vec3:
+      return 3;
+    case UboMemberType::Mat4:
+      return 16;
+    default:
+      return 4;
+    }
+  };
+
+  std::vector<u8> buffer;
+  size_t offset = 0;
+  for (const UboMember& member : members)
+  {
+    const auto [align, size] = layout(member.type);
+    offset = (offset + align - 1) & ~(align - 1);
+    if (buffer.size() < offset + size)
+      buffer.resize(offset + size, 0);
+
+    const int count = component_count(member.type);
+    std::array<float, 16> values = {};
+    if (!resolver || !resolver(member.name, values.data(), count))
+      values.fill(0.0f);
+    std::memcpy(buffer.data() + offset, values.data(), size);
+    offset += size;
+  }
+
+  // std140 rounds the whole block up to a multiple of 16.
+  const size_t rounded = (buffer.size() + 15) & ~static_cast<size_t>(15);
+  buffer.resize(rounded, 0);
+  return buffer;
 }
 
 CompiledPassShaders CompileTranslatedPass(const TranslatedPass& pass,
