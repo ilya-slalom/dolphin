@@ -72,6 +72,9 @@ jmethodID GetContentHandlerGetDisplayName();
 jmethodID GetContentHandlerGetChildNames();
 jmethodID GetContentHandlerDoFileSearch();
 
+jclass GetPostProcessingShaderValidationResultClass();
+jmethodID GetPostProcessingShaderValidationResultConstructor();
+
 jclass GetNetworkHelperClass();
 jmethodID GetNetworkHelperGetNetworkIpAddress();
 jmethodID GetNetworkHelperGetNetworkPrefixLength();
