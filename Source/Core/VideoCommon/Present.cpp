@@ -18,7 +18,7 @@
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OnScreenUI.h"
-#include "VideoCommon/PostProcessing.h"
+#include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
@@ -120,7 +120,7 @@ bool Presenter::Initialize()
   {
     SetBackbuffer(g_gfx->GetSurfaceInfo());
 
-    m_post_processor = std::make_unique<VideoCommon::PostProcessing>();
+    m_post_processor = std::make_unique<VideoCommon::MultipassPostProcessing>();
     if (!m_post_processor->Initialize(m_backbuffer_format))
       return false;
 

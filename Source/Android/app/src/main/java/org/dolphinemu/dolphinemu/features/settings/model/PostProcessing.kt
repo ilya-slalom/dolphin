@@ -6,12 +6,4 @@ object PostProcessing {
     @JvmStatic
     val shaderList: Array<String>
         external get
-
-    @JvmStatic
-    val anaglyphShaderList: Array<String>
-        external get
-
-    @JvmStatic
-    val passiveShaderList: Array<String>
-        external get
 }

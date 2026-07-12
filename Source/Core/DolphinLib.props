@@ -764,7 +764,6 @@
     <ClInclude Include="VideoCommon\PixelEngine.h" />
     <ClInclude Include="VideoCommon\PixelShaderGen.h" />
     <ClInclude Include="VideoCommon\PixelShaderManager.h" />
-    <ClInclude Include="VideoCommon\PostProcessing.h" />
     <ClInclude Include="VideoCommon\PostProcessing\LutTexture.h" />
     <ClInclude Include="VideoCommon\PostProcessing\MipGen.h" />
     <ClInclude Include="VideoCommon\PostProcessing\MultipassPostProcessing.h" />
@@ -1449,7 +1448,6 @@
     <ClCompile Include="VideoCommon\PixelEngine.cpp" />
     <ClCompile Include="VideoCommon\PixelShaderGen.cpp" />
     <ClCompile Include="VideoCommon\PixelShaderManager.cpp" />
-    <ClCompile Include="VideoCommon\PostProcessing.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\LutTexture.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\MipGen.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\MultipassPostProcessing.cpp" />

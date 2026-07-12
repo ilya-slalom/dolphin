@@ -39,7 +39,7 @@ private:
   void ShaderChanged();
 
   void ConfigureColorCorrection();
-  void ConfigurePostProcessingShader();
+  void DownloadShaderPack();
 
   // Enhancements
   ConfigChoice* m_ir_combo;
@@ -48,7 +48,7 @@ private:
   ConfigChoice* m_output_resampling_combo;
   ConfigStringChoice* m_post_processing_effect;
   ToolTipPushButton* m_configure_color_correction;
-  QPushButton* m_configure_post_processing_effect;
+  QPushButton* m_download_shader_pack;
   ConfigBool* m_scaled_efb_copy;
   ConfigBool* m_per_pixel_lighting;
   ConfigBool* m_widescreen_hack;

@@ -1610,10 +1610,7 @@ class SettingsFragmentPresenter(
             )
         )
 
-        val stereoModeValue = IntSetting.GFX_STEREO_MODE.int
-        val anaglyphMode = 3
-        val shaderList =
-            if (stereoModeValue == anaglyphMode) PostProcessing.anaglyphShaderList else PostProcessing.shaderList
+        val shaderList = PostProcessing.shaderList
 
         val shaderListEntries = arrayOf(context.getString(R.string.off), *shaderList)
         val shaderListValues = arrayOf("", *shaderList)
