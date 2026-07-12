@@ -150,6 +150,8 @@ add_library(videocommon
   PostProcessing/SlangPreset.h
   PostProcessing/SlangShader.cpp
   PostProcessing/SlangShader.h
+  PostProcessing/SlangTranslator.cpp
+  PostProcessing/SlangTranslator.h
   Present.cpp
   Present.h
   RenderState.cpp
