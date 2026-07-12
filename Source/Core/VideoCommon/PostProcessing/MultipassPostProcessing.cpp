@@ -135,32 +135,51 @@ void MultipassPostProcessing::ClearChain()
   m_passthrough = true;
 }
 
-void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
+void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
 {
   ClearChain();
 
-  if (preset_name.empty())
+  // The config value may be a single preset name or a ';'-separated chain of presets whose pass
+  // graphs are concatenated (each preset's first pass samples the previous preset's output as
+  // "Source"). A plain name has no ';', so this is backwards compatible.
+  std::vector<std::string> names;
+  size_t start = 0;
+  while (start <= preset_spec.size())
   {
-    m_passthrough = true;
-    return;
+    const auto sep = preset_spec.find(';', start);
+    const auto end = sep == std::string::npos ? preset_spec.size() : sep;
+    std::string name = preset_spec.substr(start, end - start);
+    // Trim surrounding whitespace.
+    const auto first = name.find_first_not_of(" \t");
+    const auto last = name.find_last_not_of(" \t");
+    if (first != std::string::npos)
+      names.push_back(name.substr(first, last - first + 1));
+    if (sep == std::string::npos)
+      break;
+    start = end + 1;
   }
+
+  for (const std::string& name : names)
+    AppendPreset(name);
+
+  m_passthrough = m_passes.empty();
+}
+
+void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
+{
+  if (preset_name.empty())
+    return;
 
   // Resolve preset path: user Shaders dir first, then Sys.
   std::string path = File::GetUserPath(D_SHADERS_IDX) + preset_name + ".slangp";
   if (!File::Exists(path))
     path = File::GetSysDirectory() + SHADERS_DIR DIR_SEP + preset_name + ".slangp";
   if (!File::Exists(path))
-  {
-    m_passthrough = true;
     return;
-  }
 
   std::string text;
   if (!File::ReadFileToString(path, text))
-  {
-    m_passthrough = true;
     return;
-  }
 
   const std::string base_dir = DirectoryOf(path);
   std::string error;
@@ -168,7 +187,6 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
   if (!config)
   {
     ERROR_LOG_FMT(VIDEO, "Post-processing: failed to load preset {}: {}", preset_name, error);
-    m_passthrough = true;
     return;
   }
 
@@ -185,6 +203,15 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
     m_luts.push_back(std::move(lut));
   }
 
+  // On any failure, roll back just this preset's passes/LUTs so a bad preset later in a chain
+  // doesn't discard earlier ones that loaded fine.
+  const size_t passes_before = m_passes.size();
+  const size_t luts_before = m_luts.size() - config->luts.size();
+  const auto rollback = [&] {
+    m_passes.resize(passes_before);
+    m_luts.resize(luts_before);
+  };
+
   // Build passes, accumulating known aliases as we go.
   std::vector<std::string> known_aliases;
   for (const SlangPassConfig& pass_config : config->passes)
@@ -192,9 +219,9 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
     std::string shader_text;
     if (!File::ReadFileToString(pass_config.shader_path, shader_text))
     {
-      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to read slang shader {}; disabling preset {}",
+      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to read slang shader {}; skipping preset {}",
                     pass_config.shader_path, preset_name);
-      ClearChain();
+      rollback();
       return;
     }
 
@@ -208,18 +235,18 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
     const auto parsed = ParseSlangShader(shader_text, &error);
     if (!parsed)
     {
-      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to parse {}: {}; disabling preset {}",
+      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to parse {}: {}; skipping preset {}",
                     pass_config.shader_path, error, preset_name);
-      ClearChain();
+      rollback();
       return;
     }
 
     TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names);
     if (!translated.ok)
     {
-      ERROR_LOG_FMT(VIDEO, "Post-processing: cannot translate {}: {}; disabling preset {}",
+      ERROR_LOG_FMT(VIDEO, "Post-processing: cannot translate {}: {}; skipping preset {}",
                     pass_config.shader_path, translated.error, preset_name);
-      ClearChain();
+      rollback();
       return;
     }
 
@@ -227,9 +254,9 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
         CompileTranslatedPass(translated, DirectoryOf(pass_config.shader_path));
     if (!shaders.vertex || !shaders.pixel)
     {
-      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to compile {}; disabling preset {}",
+      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to compile {}; skipping preset {}",
                     pass_config.shader_path, preset_name);
-      ClearChain();
+      rollback();
       return;
     }
 
@@ -249,8 +276,6 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
     if (!pass_config.alias.empty())
       known_aliases.push_back(pass_config.alias);
   }
-
-  m_passthrough = m_passes.empty();
 }
 
 void MultipassPostProcessing::RecompilePipeline()

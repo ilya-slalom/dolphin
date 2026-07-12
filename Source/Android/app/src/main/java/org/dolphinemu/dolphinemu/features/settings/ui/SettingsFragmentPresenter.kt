@@ -4,6 +4,7 @@ package org.dolphinemu.dolphinemu.features.settings.ui
 
 import android.content.Context
 import android.content.DialogInterface
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -1658,11 +1659,47 @@ class SettingsFragmentPresenter(
                 context,
                 StringSetting.GFX_ENHANCE_POST_SHADER,
                 R.string.post_processing_shader,
-                0,
+                R.string.post_processing_shader_description,
                 shaderListEntries,
                 shaderListValues
             )
         )
+
+        // Multi-shader chaining: GFX_ENHANCE_POST_SHADER may hold a ';'-separated list of presets
+        // whose pass graphs run back-to-back. The dropdown above picks a single preset (replacing
+        // any chain); these actions build/clear a chain.
+        val currentChain = StringSetting.GFX_ENHANCE_POST_SHADER.string
+        if (currentChain.contains(';')) {
+            sl.add(
+                HeaderSetting(
+                    context,
+                    R.string.post_processing_chain,
+                    0
+                )
+            )
+        }
+        sl.add(
+            RunRunnable(
+                context,
+                R.string.post_processing_chain_add,
+                R.string.post_processing_chain_add_description,
+                0,
+                0,
+                false
+            ) { addToShaderChain(filtered) }
+        )
+        if (currentChain.contains(';')) {
+            sl.add(
+                RunRunnable(
+                    context,
+                    R.string.post_processing_chain_clear,
+                    0,
+                    0,
+                    R.string.post_processing_chain_cleared,
+                    false
+                ) { clearShaderChainToFirst() }
+            )
+        }
 
         sl.add(
             RunRunnable(
@@ -2910,6 +2947,37 @@ class SettingsFragmentPresenter(
                 loadSettingsList()
             }
         )
+    }
+
+    // Appends a preset (chosen from the given, category-filtered list) to the post-processing
+    // chain stored in GFX_ENHANCE_POST_SHADER as a ';'-separated list.
+    private fun addToShaderChain(presets: List<String>) {
+        val settings = this.settings ?: return
+        if (presets.isEmpty()) {
+            fragmentView.showToastMessage(context.getString(R.string.post_processing_chain_empty))
+            return
+        }
+        val entries = presets.toTypedArray()
+        MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
+            .setTitle(R.string.post_processing_chain_add)
+            .setItems(entries) { _: DialogInterface, which: Int ->
+                val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
+                val updated = if (current.isEmpty()) entries[which] else "$current;${entries[which]}"
+                StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, updated)
+                fragmentView.onSettingChanged()
+                loadSettingsList()
+            }
+            .show()
+    }
+
+    // Trims the chain back to just its first preset.
+    private fun clearShaderChainToFirst() {
+        val settings = this.settings ?: return
+        val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
+        val first = current.substringBefore(';')
+        StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, first)
+        fragmentView.onSettingChanged()
+        loadSettingsList()
     }
 
     private fun convertOnThread(f: BooleanSupplier) {

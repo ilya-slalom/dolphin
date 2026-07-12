@@ -66,9 +66,13 @@ private:
     SamplerState sampler;
   };
 
-  // Loads the named preset into the pass chain, or falls back to pass-through on any failure
-  // (a bad/unsupported preset must never block game boot). Surfaces a panic on hard errors.
-  void LoadPreset(const std::string& preset_name);
+  // Loads the preset spec (a single preset name, or a ';'-separated chain) into the pass chain,
+  // falling back to pass-through if nothing loads (a bad/unsupported preset must never block
+  // game boot).
+  void LoadPreset(const std::string& preset_spec);
+  // Appends one preset's LUTs + passes to the current chain (used by LoadPreset for each preset
+  // in a chain). Rolls back its own additions on failure, leaving earlier presets intact.
+  void AppendPreset(const std::string& preset_name);
   void ClearChain();
   // Builds the built-in pass-through pipeline (a plain copy of the input) for the current
   // framebuffer format, used when no user preset is active or a preset failed to load.

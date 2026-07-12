@@ -228,6 +228,12 @@
     <string name="post_processing_category">Shader Category</string>
     <string name="post_processing_category_description">Filter the post-processing effect list by folder (crt, bezel, border, …)</string>
     <string name="post_processing_category_all">All</string>
+    <string name="post_processing_chain">Shader Chain</string>
+    <string name="post_processing_chain_add">Add Shader to Chain</string>
+    <string name="post_processing_chain_add_description">Append another preset; chained presets run one after another</string>
+    <string name="post_processing_chain_clear">Clear Shader Chain</string>
+    <string name="post_processing_chain_cleared">Shader chain cleared.</string>
+    <string name="post_processing_chain_empty">No presets available in this category.</string>
     <string name="post_processing_download">Download Shader Pack</string>
     <string name="post_processing_download_description">Download the RetroArch slang shader pack from the libretro buildbot</string>
     <string name="post_processing_download_confirmation">This will download the RetroArch slang shader pack (~50 MB) from the libretro buildbot and install it into your Shaders folder. Continue?</string>
