@@ -148,6 +148,8 @@ add_library(videocommon
   PostProcessing/PassSizing.h
   PostProcessing/SlangPreset.cpp
   PostProcessing/SlangPreset.h
+  PostProcessing/SlangSamplers.cpp
+  PostProcessing/SlangSamplers.h
   PostProcessing/SlangShader.cpp
   PostProcessing/SlangShader.h
   PostProcessing/SlangTranslator.cpp
