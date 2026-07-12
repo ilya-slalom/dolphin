@@ -25,7 +25,7 @@
 - Cross-backend translation beyond Vulkan (D3D11/D3D12/Metal/OpenGL).
 - Runtime mipmap **generation** beyond the CPU box-filter added in Task 8 (a backend-blit mip path is future work).
 - `OriginalHistoryN` / per-pass `feedback` cross-frame textures (crt-royale needs neither).
-- Android SAF `ACTION_OPEN_DOCUMENT_TREE` directory-tree import + `ValidatePreset` JNI (separate plan, builds on `2026-07-12-android-custom-post-processing-shader-import.md`).
+- Android SAF `ACTION_OPEN_DOCUMENT_TREE` directory-tree import + `ValidatePreset` JNI (separate plan, builds on `2026-07-12-android-custom-post-processing-shader-import.md`). Note: Task 12 adds the cross-platform zip-extraction core that the Android SAF picker in that plan calls; the Android UI wiring itself remains out of scope here.
 - `#reference` nested-preset inclusion (single-file presets only for MVP).
 
 ## File Structure
@@ -37,6 +37,7 @@
 - `PassSizing.h` / `PassSizing.cpp` — compute per-pass render-target sizes from `scale_type`/`scale`.
 - `MultipassPostProcessing.h` / `MultipassPostProcessing.cpp` — the executor: owns the pass chain, LUTs, per-frame draw loop; the new replacement for `PostProcessing`.
 - `LutTexture.h` / `LutTexture.cpp` — load LUT PNGs into `AbstractTexture` with wrap/filter/mipmap.
+- `PresetArchive.h` / `PresetArchive.cpp` — extract a `.zip` shader bundle into the Shaders dir, preserving relative structure, and locate the contained `.slangp` (Task 12).
 
 **Modified files:**
 - `Source/Core/VideoCommon/Present.h` / `Present.cpp` — swap `PostProcessing` for `MultipassPostProcessing`.
@@ -1177,10 +1178,183 @@ git add -A && git commit -m "VideoCommon: fixups from crt-royale end-to-end veri
 
 ---
 
+## Task 12: Zip-based preset bundle import
+
+Slang shaders are distributed as a directory tree (preset + `.slang` sources + shared `#include` headers + texture PNGs), commonly transported as a `.zip`. This task adds a cross-platform core that extracts such a bundle into the Shaders dir **preserving relative structure** (so `../` references and `#include` chains resolve) and reports the contained `.slangp` so it can be selected. This is the platform-agnostic half of preset import; the Android SAF single-file picker that calls it lives in the Android follow-on plan (`2026-07-12-android-custom-post-processing-shader-import.md`).
+
+**Files:**
+- Create: `Source/Core/VideoCommon/PostProcessing/PresetArchive.h`
+- Create: `Source/Core/VideoCommon/PostProcessing/PresetArchive.cpp`
+- Create: `Source/Core/VideoCommon/PostProcessing/PresetArchiveTest.cpp`
+- Modify: `Source/Core/VideoCommon/CMakeLists.txt`, `Source/Core/DolphinLib.props`, `Source/UnitTests/VideoCommon/CMakeLists.txt`
+
+**Interfaces:**
+- Consumes: minizip-ng reader API (`mz_zip_reader_create`/`_open_file`/`_goto_first_entry`/`_entry_get_info`/`_goto_next_entry`/`_delete`, as used in `Source/Core/UICommon/ResourcePack/ResourcePack.cpp:33-116`); `Common::ReadFileFromZip` (`Common/MinizipUtil.h:18`); `File::CreateFullPath`/`File::WriteStringToFile`/`File::GetUserPath(D_SHADERS_IDX)` (`Common/FileUtil.h`).
+- Produces:
+  ```cpp
+  namespace VideoCommon {
+  struct PresetImportResult {
+    bool ok = false;
+    std::string preset_name;   // basename without ".slangp", ready for GFX_ENHANCE_POST_SHADER
+    std::string error;         // set when ok == false
+  };
+  // Extracts a .slangp bundle zip at zip_path into dest_root (typically the user Shaders dir),
+  // preserving the archive's internal directory structure. Requires exactly one .slangp entry
+  // in the archive; returns its extraction-relative name in preset_name.
+  PresetImportResult ImportPresetArchive(const std::string& zip_path, const std::string& dest_root);
+  }  // namespace VideoCommon
+  ```
+
+- [ ] **Step 1: Write the failing test**
+
+The test builds a small zip on disk (via the minizip **writer**, mirroring how `ResourcePack` tests would), then imports it and asserts structure is preserved. Create `PresetArchiveTest.cpp`:
+
+```cpp
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include <string>
+
+#include <gtest/gtest.h>
+#include <mz.h>
+#include <mz_strm.h>
+#include <mz_zip.h>
+#include <mz_zip_rw.h>
+
+#include "Common/FileUtil.h"
+#include "VideoCommon/PostProcessing/PresetArchive.h"
+
+using namespace VideoCommon;
+
+namespace
+{
+// Writes a zip containing the given {internal_path, contents} entries.
+void WriteZip(const std::string& zip_path,
+              const std::vector<std::pair<std::string, std::string>>& entries)
+{
+  void* writer = mz_zip_writer_create();
+  ASSERT_EQ(mz_zip_writer_open_file(writer, zip_path.c_str(), 0, 0), MZ_OK);
+  for (const auto& [name, data] : entries)
+  {
+    mz_zip_file file_info = {};
+    file_info.filename = name.c_str();
+    file_info.flag = MZ_ZIP_FLAG_UTF8;
+    ASSERT_EQ(mz_zip_writer_add_buffer(writer, const_cast<char*>(data.data()),
+                                       static_cast<int32_t>(data.size()), &file_info),
+              MZ_OK);
+  }
+  mz_zip_writer_close(writer);
+  mz_zip_writer_delete(&writer);
+}
+}  // namespace
+
+TEST(PresetArchive, ExtractsPreservingStructureAndFindsPreset)
+{
+  const std::string tmp = File::CreateTempDir();
+  ASSERT_FALSE(tmp.empty());
+  const std::string zip = tmp + "/bundle.zip";
+  const std::string dest = tmp + "/out";
+
+  WriteZip(zip, {
+      {"crt-royale.slangp", "shaders = \"1\"\nshader0 = \"src/a.slang\"\n"},
+      {"src/a.slang", "#pragma stage vertex\nvoid main(){}\n#pragma stage fragment\nvoid main(){}\n"},
+      {"src/masks/m.png", "\x89PNG\r\n"},  // content irrelevant to extraction
+  });
+
+  const auto result = ImportPresetArchive(zip, dest);
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.preset_name, "crt-royale");
+  EXPECT_TRUE(File::Exists(dest + "/crt-royale.slangp"));
+  EXPECT_TRUE(File::Exists(dest + "/src/a.slang"));
+  EXPECT_TRUE(File::Exists(dest + "/src/masks/m.png"));
+
+  File::DeleteDirRecursively(tmp);
+}
+
+TEST(PresetArchive, RejectsArchiveWithNoPreset)
+{
+  const std::string tmp = File::CreateTempDir();
+  ASSERT_FALSE(tmp.empty());
+  const std::string zip = tmp + "/bundle.zip";
+  WriteZip(zip, {{"readme.txt", "no preset here"}});
+  const auto result = ImportPresetArchive(zip, tmp + "/out");
+  EXPECT_FALSE(result.ok);
+  EXPECT_FALSE(result.error.empty());
+  File::DeleteDirRecursively(tmp);
+}
+
+TEST(PresetArchive, RejectsPathTraversalEntries)
+{
+  const std::string tmp = File::CreateTempDir();
+  ASSERT_FALSE(tmp.empty());
+  const std::string zip = tmp + "/bundle.zip";
+  // A malicious entry escaping dest_root must be rejected, not written outside.
+  WriteZip(zip, {
+      {"crt.slangp", "shaders = \"0\"\n"},
+      {"../evil.slang", "pwned"},
+  });
+  const auto result = ImportPresetArchive(zip, tmp + "/out");
+  EXPECT_FALSE(result.ok);
+  EXPECT_FALSE(File::Exists(tmp + "/evil.slang"));
+  File::DeleteDirRecursively(tmp);
+}
+```
+
+Add the module files to `Source/Core/VideoCommon/CMakeLists.txt` and register `add_dolphin_test(PresetArchiveTest PostProcessing/PresetArchiveTest.cpp)`. No extra link line is needed: `add_dolphin_test` links `core`, and `MINIZIP::minizip-ng` is PUBLIC on `common` which `core` re-exports PUBLIC (`Source/Core/Common/CMakeLists.txt:186`, `Source/Core/Core/CMakeLists.txt:672-674`), so the minizip headers/symbols are available transitively — verified against the checked-out submodule.
+
+Verified APIs (minizip-ng submodule `55db144`, headers `Externals/minizip-ng/minizip-ng/{mz.h,mz_zip.h,mz_zip_rw.h}`):
+- `File::CreateTempDir()` / `File::DeleteDirRecursively()` / `File::CreateFullPath()` / `File::Exists()` all exist (`Common/FileUtil.h:220,199,165,142`).
+- `mz_zip_writer_add_buffer(void*, void* buf, int32_t len, mz_zip_file*)` (`mz_zip_rw.h:200`), `mz_zip_writer_open_file(handle, path, int64_t disk_size, uint8_t append)` (`mz_zip_rw.h:169`).
+- `mz_zip_file` fields: `const char* filename`, `int64_t uncompressed_size`, `uint16_t flag` (`mz_zip.h:43,35,28`); constants `MZ_OK` (0), `MZ_END_OF_LIST` (-100), `MZ_ZIP_FLAG_UTF8` (1<<11) (`mz.h:21,28,85`).
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cmake --build build --target PresetArchiveTest 2>&1 | tail -20`
+Expected: FAIL — `PresetArchive.h` / `ImportPresetArchive` undefined.
+
+- [ ] **Step 3: Write the header**
+
+Create `PresetArchive.h` with the `PresetImportResult` struct and `ImportPresetArchive` declaration from the **Produces** block (include `<string>`).
+
+- [ ] **Step 4: Implement extraction**
+
+Create `PresetArchive.cpp`. Follow the `ResourcePack.cpp` reader idiom exactly:
+- `void* reader = mz_zip_reader_create();` with a `Common::ScopeGuard` calling `mz_zip_reader_delete(&reader)`.
+- `mz_zip_reader_open_file(reader, zip_path.c_str())` — on non-`MZ_OK`, return `{false, "", "could not open archive"}`.
+- Iterate entries with `mz_zip_reader_goto_first_entry` / `mz_zip_reader_goto_next_entry` until `MZ_END_OF_LIST`. For each, `mz_zip_reader_entry_get_info(reader, &info)` and take `std::string name(info->filename)`.
+- **Security — path sanitization (the reason for the traversal test):** reject the whole import if any entry name, after normalizing separators to `/`, is absolute (starts with `/`) or contains a `..` path segment. This prevents Zip-Slip writes outside `dest_root`.
+- Skip directory entries (name ends with `/`, or `info->uncompressed_size == 0` combined with a trailing slash).
+- Track `.slangp` entries: collect names ending in `.slangp`. If zero found → `{false, "", "archive contains no .slangp preset"}`. If more than one, pick the shallowest (fewest `/`); if still ambiguous, error `"archive contains multiple .slangp presets"`.
+- Extract each non-directory entry: compute `out_path = dest_root + "/" + name`, `File::CreateFullPath(out_path)` (creates parent dirs), read via `Common::ReadFileFromZip` into a `std::vector<u8>` sized to `info->uncompressed_size`, then write with `File::IOFile(out_path, "wb").WriteBytes(buffer.data(), buffer.size())` (`Common/IOFile.h:92`). On any write failure, return `{false, "", "failed to write " + name}`.
+- After extraction, derive `preset_name` from the chosen `.slangp` entry: strip any directory prefix and the `.slangp` suffix (basename without extension), matching what `MultipassPostProcessing::GetPresetList()` returns and what `GFX_ENHANCE_POST_SHADER` stores. Return `{true, preset_name, ""}`.
+
+Add includes: `<mz.h>`, `<mz_zip.h>`, `<mz_zip_rw.h>`, `"Common/MinizipUtil.h"`, `"Common/FileUtil.h"`, `"Common/IOFile.h"`, `"Common/ScopeGuard.h"`, `"Common/Logging/Log.h"`.
+
+> NOTE for implementer: minizip-ng also offers `mz_zip_reader_save_all(reader, dest_dir)` which extracts everything preserving paths in one call. It is simpler but does its own path handling — if you use it, still perform the pre-scan sanitization pass above and reject before calling `save_all`, since we must not rely on the library's traversal policy. The manual per-entry loop is preferred here because it lets us both sanitize and locate the `.slangp` in a single pass.
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `cd /Users/ilya.lissoboi/work/dolphin && cmake --build build --target PresetArchiveTest 2>&1 | tail -20 && ./build/Binaries/PresetArchiveTest`
+Expected: PASS — extraction preserves `src/masks/m.png`, missing-preset and traversal archives are rejected, nothing is written outside `dest_root`.
+
+- [ ] **Step 6: Manual end-to-end (desktop)**
+
+Zip a real crt-royale tree (`zip -r crt-royale.zip crt-royale.slangp shaders/ blurs/`), then from a small harness or a temporary debug menu call `ImportPresetArchive(zip, File::GetUserPath(D_SHADERS_IDX))` and confirm the preset appears in `MultipassPostProcessing::GetPresetList()` and renders per Task 11. (Wiring a desktop "Import preset…" button in Qt `EnhancementsWidget` is optional polish; the core is the reusable piece.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add Source/Core/VideoCommon/PostProcessing/PresetArchive.h Source/Core/VideoCommon/PostProcessing/PresetArchive.cpp Source/Core/VideoCommon/PostProcessing/PresetArchiveTest.cpp Source/Core/VideoCommon/CMakeLists.txt Source/Core/DolphinLib.props Source/UnitTests/VideoCommon/CMakeLists.txt
+git commit -m "VideoCommon: add zip-based slang preset bundle import"
+```
+
+---
+
 ## Self-Review Notes
 
 - **Spec coverage — replacing the single-pass processor:** old dialect/classes removed (Task 10); new N-pass executor is the sole post-processor (Task 9); `Presenter` repointed (Task 10). Multi-pass `.slangp` support: parser (T1), shader/pragma parse (T2), sizing (T3), translation (T4) + Vulkan compile (T5), samplers (T6), mips (T7), LUTs (T8), executor (T9). crt-royale milestone verified (T11).
-- **Scope discipline:** cross-backend breadth, history/feedback frames, `#reference`, Android tree-import, and parameter UI are explicitly deferred to follow-on plans (Out of Scope section) so this plan yields working software (crt-royale on Vulkan) on its own.
+- **Scope discipline:** cross-backend breadth, history/feedback frames, `#reference`, Android tree-import, and parameter UI are explicitly deferred to follow-on plans (Out of Scope section) so this plan yields working software (crt-royale on Vulkan) on its own. Task 12 (zip bundle import) is the platform-agnostic extraction core matching the ecosystem's directory-tree-in-a-zip distribution convention; the Android UI that calls it stays in the Android follow-on plan.
+- **Distribution convention:** slang shaders ship as a directory tree (preset + sources + includes + PNGs) referenced by preset-relative paths incl. `../`, commonly zipped for transport. Task 12 extracts that tree preserving structure so path/`#include` resolution (Task 1 path resolver, Task 5 includer) works unchanged; single-file `.slang` import (the earlier `.glsl` flow) is insufficient for presets.
 - **Type consistency:** `ScaleType`/`SlangWrapMode` defined in T1 and reused in T3/T6; `SlangPassConfig`/`SlangLutConfig` (T1) consumed by T4/T6/T8/T9; `SlangShaderSource` (T2) → `TranslateSlangPass` (T4) → `CompiledPassShaders`/`CompileTranslatedPass` (T5) → executor (T9); `MakeSlangSamplerState` (T6), `GenerateBoxMips`/`MipLevel` (T7), `LoadLutTexture` (T8) all consumed by T9. `MultipassPostProcessing` (T9) consumed by T10.
-- **Known implementer confirmations (flagged inline, not placeholders):** UBO std140 packing must match each shader's declared member order — MVP assumes crt-royale's set, generalize via SPIR-V reflection later (T9 Step 4); the exact set of UI referencers to repoint is grep-driven (T10 Step 1); whether the earlier import plan's `PostProcessingValidationTest` has landed affects T10 Step 5.
+- **Known implementer confirmations (flagged inline, not placeholders):** UBO std140 packing must match each shader's declared member order — MVP assumes crt-royale's set, generalize via SPIR-V reflection later (T9 Step 4); the exact set of UI referencers to repoint is grep-driven (T10 Step 1); whether the earlier import plan's `PostProcessingValidationTest` has landed affects T10 Step 5. (T12's minizip-ng APIs, `mz_zip_file` fields, `File::` helpers, and transitive link path were verified against the checked-out submodule `55db144`.)
 - **Risk callouts:** the two hardest pieces are T4 (slang→Dolphin binding/semantic rewrite compiling identically) and T9 Step 4 (UBO packing + Vulkan `FinishedRendering()` layout transitions between passes). Both are isolated behind unit tests (T4) or a single helper (T9) to contain iteration.
