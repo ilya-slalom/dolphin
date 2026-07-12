@@ -8,6 +8,12 @@
 #include <sstream>
 #include <string_view>
 
+#include "Common/CommonPaths.h"
+#include "Common/FileUtil.h"
+#include "VideoCommon/AbstractGfx.h"
+#include "VideoCommon/AbstractShader.h"
+#include "VideoCommon/ShaderCompileUtils.h"
+
 namespace VideoCommon
 {
 namespace
@@ -192,5 +198,29 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
   (void)known_aliases;
   (void)lut_names;
   return result;
+}
+
+CompiledPassShaders CompileTranslatedPass(const TranslatedPass& pass,
+                                          const std::string& include_dir)
+{
+  CompiledPassShaders out;
+  if (!pass.ok)
+    return out;
+
+  // #include resolver rooted at the shader's own directory and the Sys shaders dir.
+  ShaderIncluder includer(include_dir + DIR_SEP,
+                          File::GetSysDirectory() + SHADERS_DIR DIR_SEP);
+
+  out.vertex = g_gfx->CreateShaderFromSource(ShaderStage::Vertex, pass.vertex_glsl, &includer,
+                                             "slang post-process vertex");
+  if (!out.vertex)
+    return {};
+
+  out.pixel = g_gfx->CreateShaderFromSource(ShaderStage::Pixel, pass.fragment_glsl, &includer,
+                                            "slang post-process fragment");
+  if (!out.pixel)
+    return {};
+
+  return out;
 }
 }  // namespace VideoCommon
