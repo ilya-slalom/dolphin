@@ -53,6 +53,9 @@ class SettingsFragmentPresenter(
     private var controllerNumber = 0
     private var controllerType = 0
 
+    // In-memory selected post-processing shader category (top-level folder), or "All".
+    private var postShaderCategory = ""
+
     var gpuDriver: GpuDriverMetadata? = null
     private val libNameSetting: StringSetting = StringSetting.GFX_DRIVER_LIB_NAME
 
@@ -1613,8 +1616,42 @@ class SettingsFragmentPresenter(
 
         val shaderList = PostProcessing.shaderList
 
-        val shaderListEntries = arrayOf(context.getString(R.string.off), *shaderList)
-        val shaderListValues = arrayOf("", *shaderList)
+        // Presets are stored as "<category>/<name>" (top-level folder of the buildbot pack).
+        // Offer a category dropdown so the (potentially thousands of) presets are navigable.
+        val allCategory = context.getString(R.string.post_processing_category_all)
+        val categories = shaderList
+            .mapNotNull { it.substringBefore('/', "").ifEmpty { null } }
+            .distinct()
+            .sorted()
+        if (categories.isNotEmpty()) {
+            val categoryEntries = arrayOf(allCategory, *categories.toTypedArray())
+            // Default to "All" unless a previously chosen category is still valid.
+            if (postShaderCategory != allCategory && !categories.contains(postShaderCategory)) {
+                postShaderCategory = allCategory
+            }
+            sl.add(
+                PostProcessingCategorySetting(
+                    context,
+                    R.string.post_processing_category,
+                    R.string.post_processing_category_description,
+                    categoryEntries,
+                    postShaderCategory
+                ) { selected ->
+                    postShaderCategory = selected
+                    loadSettingsList()
+                }
+            )
+        }
+
+        // Filter the preset list to the selected category (top-level = "All" shows everything).
+        val filtered = if (postShaderCategory == allCategory || categories.isEmpty()) {
+            shaderList.toList()
+        } else {
+            shaderList.filter { it.substringBefore('/', "") == postShaderCategory }
+        }
+
+        val shaderListEntries = arrayOf(context.getString(R.string.off), *filtered.toTypedArray())
+        val shaderListValues = arrayOf("", *filtered.toTypedArray())
 
         sl.add(
             StringSingleChoiceSetting(
