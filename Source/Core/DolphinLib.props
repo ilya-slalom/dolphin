@@ -767,6 +767,7 @@
     <ClInclude Include="VideoCommon\PostProcessing.h" />
     <ClInclude Include="VideoCommon\PostProcessing\LutTexture.h" />
     <ClInclude Include="VideoCommon\PostProcessing\MipGen.h" />
+    <ClInclude Include="VideoCommon\PostProcessing\MultipassPostProcessing.h" />
     <ClInclude Include="VideoCommon\PostProcessing\PassSizing.h" />
     <ClInclude Include="VideoCommon\PostProcessing\PresetArchive.h" />
     <ClInclude Include="VideoCommon\PostProcessing\ShaderPackDownload.h" />
@@ -1451,6 +1452,7 @@
     <ClCompile Include="VideoCommon\PostProcessing.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\LutTexture.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\MipGen.cpp" />
+    <ClCompile Include="VideoCommon\PostProcessing\MultipassPostProcessing.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\PassSizing.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\PresetArchive.cpp" />
     <ClCompile Include="VideoCommon\PostProcessing\ShaderPackDownload.cpp" />

@@ -146,6 +146,8 @@ add_library(videocommon
   PostProcessing.h
   PostProcessing/LutTexture.cpp
   PostProcessing/LutTexture.h
+  PostProcessing/MultipassPostProcessing.cpp
+  PostProcessing/MultipassPostProcessing.h
   PostProcessing/MipGen.cpp
   PostProcessing/MipGen.h
   PostProcessing/PassSizing.cpp
