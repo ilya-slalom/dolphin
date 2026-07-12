@@ -144,6 +144,8 @@ add_library(videocommon
   PixelShaderManager.h
   PostProcessing.cpp
   PostProcessing.h
+  PostProcessing/MipGen.cpp
+  PostProcessing/MipGen.h
   PostProcessing/PassSizing.cpp
   PostProcessing/PassSizing.h
   PostProcessing/SlangPreset.cpp
