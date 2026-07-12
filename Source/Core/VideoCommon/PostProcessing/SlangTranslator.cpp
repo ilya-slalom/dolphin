@@ -109,6 +109,134 @@ std::string ReplaceWord(const std::string& text, const std::string& from, const 
   }
   return out;
 }
+
+bool StartsWith(std::string_view s, std::string_view prefix)
+{
+  return s.substr(0, prefix.size()) == prefix;
+}
+
+// Strips a trailing `// ...` line comment (RetroArch shaders annotate varyings with comments
+// that can contain the words "in"/"out", which must not be mistaken for storage qualifiers).
+std::string_view StripLineComment(std::string_view s)
+{
+  const auto pos = s.find("//");
+  return pos == std::string_view::npos ? s : Trim(s.substr(0, pos));
+}
+
+// For a `layout(...) <qualifier> <type> <name>;` declaration, returns the storage qualifier
+// token immediately after the closing ')': "in", "out", or "" if none.
+std::string_view StorageQualifierAfterLayout(std::string_view decl)
+{
+  const auto close = decl.find(')');
+  if (close == std::string_view::npos)
+    return {};
+  std::string_view rest = Trim(decl.substr(close + 1));
+  const auto space = rest.find_first_of(" \t");
+  const std::string_view token = space == std::string_view::npos ? rest : rest.substr(0, space);
+  if (token == "in" || token == "out")
+    return token;
+  return {};
+}
+
+// A RetroArch slang uniform block: `layout(...) uniform <BlockName> { members } <instance>;`.
+// Both the push_constant "Push {} params" and the "std140 UBO {} global" follow this shape.
+struct UniformBlock
+{
+  std::string instance;              // e.g. "params" or "global"
+  std::vector<std::string> members;  // raw member lines, e.g. "vec4 SourceSize;"
+};
+
+// Extracts every RetroArch uniform block from a stage source, appending merged member lines to
+// `out_members` (deduplicated by member name -- the two blocks never share names in practice,
+// but a member repeated across stages must not be emitted twice) and recording each block's
+// instance name in `out_instances`. Returns the source with those block declarations removed.
+std::string ExtractUniformBlocks(const std::string& source, std::vector<std::string>* out_members,
+                                 std::vector<std::string>* out_instances,
+                                 std::vector<std::string>* out_member_names)
+{
+  std::string out;
+  std::istringstream in(source);
+  std::string line;
+  while (std::getline(in, line))
+  {
+    std::string_view view = line;
+    if (!view.empty() && view.back() == '\r')
+      view.remove_suffix(1);
+    const std::string_view trimmed = Trim(view);
+
+    // A block opener declares `uniform <Name>` and is a layout(push_constant|std140) line.
+    const bool is_block_opener =
+        trimmed.find("uniform ") != std::string_view::npos &&
+        (trimmed.find("push_constant") != std::string_view::npos ||
+         trimmed.find("std140") != std::string_view::npos) &&
+        trimmed.find("sampler") == std::string_view::npos;
+
+    if (!is_block_opener)
+    {
+      out += std::string(view);
+      out += '\n';
+      continue;
+    }
+
+    // Consume until the closing `} instance;`. The opener may or may not include the '{'.
+    std::string block(trimmed);
+    while (block.find('}') == std::string::npos && std::getline(in, line))
+    {
+      std::string_view v = line;
+      if (!v.empty() && v.back() == '\r')
+        v.remove_suffix(1);
+      block += '\n';
+      block += std::string(v);
+    }
+
+    // Instance name: text between '}' and ';'.
+    const auto brace_close = block.find('}');
+    const auto semi = block.find(';', brace_close);
+    if (brace_close != std::string::npos && semi != std::string::npos)
+    {
+      const std::string instance = std::string(Trim(
+          std::string_view(block).substr(brace_close + 1, semi - brace_close - 1)));
+      if (!instance.empty())
+        out_instances->push_back(instance);
+    }
+
+    // Members: everything between '{' and '}'.
+    const auto brace_open = block.find('{');
+    if (brace_open != std::string::npos && brace_close != std::string::npos &&
+        brace_close > brace_open)
+    {
+      const std::string body = block.substr(brace_open + 1, brace_close - brace_open - 1);
+      std::istringstream member_in(body);
+      std::string member_line;
+      while (std::getline(member_in, member_line))
+      {
+        const std::string_view m = Trim(member_line);
+        if (m.empty())
+          continue;
+        // Derive the member name (last identifier before the ';').
+        const auto sc = m.find(';');
+        std::string_view decl = sc == std::string_view::npos ? m : m.substr(0, sc);
+        decl = Trim(decl);
+        size_t name_start = decl.size();
+        while (name_start > 0 && (std::isalnum(static_cast<unsigned char>(decl[name_start - 1])) ||
+                                  decl[name_start - 1] == '_'))
+        {
+          --name_start;
+        }
+        const std::string member_name(decl.substr(name_start));
+        if (std::find(out_member_names->begin(), out_member_names->end(), member_name) !=
+            out_member_names->end())
+        {
+          continue;  // already emitted (e.g. block appears in both stages)
+        }
+        out_member_names->push_back(member_name);
+        out_members->emplace_back(m);
+      }
+    }
+    // Block declaration removed from output.
+  }
+  return out;
+}
 }  // namespace
 
 TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
@@ -176,8 +304,48 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
     return it == name_to_slot.end() ? 0 : static_cast<int>(it->second);
   };
 
-  // 2. Line-level rewrite of a stage.
-  const auto rewrite_stage = [&](const std::string& source) {
+  // 2. Extract the RetroArch uniform blocks (push_constant "Push {} params" + "std140 UBO {}
+  //    global") from both stages, merging their members into one Dolphin PSBlock. Each stage's
+  //    source has the block declarations removed.
+  std::vector<std::string> ubo_members;
+  std::vector<std::string> ubo_member_names;
+  std::vector<std::string> instances;
+  std::string vs_noblocks =
+      ExtractUniformBlocks(shader.vertex_source, &ubo_members, &instances, &ubo_member_names);
+  std::string fs_noblocks =
+      ExtractUniformBlocks(shader.fragment_source, &ubo_members, &instances, &ubo_member_names);
+
+  // Build the merged block declaration with a single instance name "params". Any other instance
+  // name (e.g. "global") is aliased to it, so params.X, global.X, and macro-expanded IN.X all
+  // resolve to the same block.
+  std::string ubo_decl = "UBO_BINDING(std140, 1) uniform PSBlock {\n";
+  for (const std::string& member : ubo_members)
+  {
+    ubo_decl += "  ";
+    ubo_decl += member;
+    ubo_decl += '\n';
+  }
+  ubo_decl += "} params;\n";
+  for (const std::string& instance : instances)
+  {
+    if (instance != "params")
+      ubo_decl += "#define " + instance + " params\n";
+  }
+
+  // Neutralize the HLSL-compat macros the shader redefines. Dolphin's backend header defines
+  // `frac`/`lerp` as OBJECT-like (`#define lerp mix`) while RetroArch's compat_macros.inc
+  // defines them FUNCTION-like (`#define lerp(a,b,c) mix(a,b,c)`); glslang errors on that
+  // mismatch. #undef-ing them before the shader's own #define makes the redefinition harmless.
+  // We only undef the names Dolphin's header actually defines AND that collide in kind -- the
+  // type aliases (float2/3/4, uint2..) are object-like in both, so identical redefinition is
+  // allowed and they must stay defined (our own emitted `out float4 ocol0` depends on them).
+  static const char* const kCompatMacros[] = {"frac", "lerp"};
+  std::string undefs;
+  for (const char* macro : kCompatMacros)
+    undefs += std::string("#undef ") + macro + "\n";
+
+  // 3. Line-level rewrite of a stage. is_vertex controls attribute/varying handling.
+  const auto rewrite_stage = [&](const std::string& source, bool is_vertex) {
     std::string out;
     std::istringstream in(source);
     std::string line;
@@ -198,18 +366,6 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
         continue;
       }
 
-      // UBO opener -> UBO_BINDING(std140, 1) uniform PSBlock {
-      if (trimmed.find("uniform UBO") != std::string_view::npos &&
-          trimmed.find('{') != std::string_view::npos)
-      {
-        // Preserve everything from '{' onward (the member list may start on this line).
-        const auto brace = std::string(trimmed).find('{');
-        out += "UBO_BINDING(std140, 1) uniform PSBlock ";
-        out += std::string(trimmed).substr(brace);
-        out += "\n";
-        continue;
-      }
-
       // Fragment output -> FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;
       if (trimmed.find("out vec4 FragColor") != std::string_view::npos &&
           trimmed.find("layout(location") != std::string_view::npos)
@@ -218,18 +374,27 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
         continue;
       }
 
-      // Varyings: layout(location = N) out/in ...  -> VARYING_LOCATION(N) out/in ...
-      if (trimmed.find("layout(location") != std::string_view::npos &&
-          (trimmed.find(" out ") != std::string_view::npos ||
-           trimmed.find(" in ") != std::string_view::npos))
+      const std::string_view decl = StripLineComment(trimmed);
+      const bool has_location = StartsWith(decl, "layout(location");
+      const std::string_view qualifier = has_location ? StorageQualifierAfterLayout(decl)
+                                                       : std::string_view{};
+
+      // Vertex attribute inputs (`layout(location=N) in ...`) are dropped: Dolphin utility draws
+      // are attribute-less; the values the shader reads (Position/TexCoord) are synthesized
+      // inside main() below.
+      if (is_vertex && qualifier == "in")
+        continue;
+
+      // Varyings: layout(location = N) in/out ... -> VARYING_LOCATION(N) in/out ...
+      if (has_location && !qualifier.empty())
       {
-        // Extract N.
-        const std::string t(trimmed);
+        const std::string t(decl);
         const auto eq = t.find('=');
         const auto close = t.find(')');
         if (eq != std::string::npos && close != std::string::npos && close > eq)
         {
-          const std::string n = std::string(Trim(std::string_view(t).substr(eq + 1, close - eq - 1)));
+          const std::string n =
+              std::string(Trim(std::string_view(t).substr(eq + 1, close - eq - 1)));
           out += "VARYING_LOCATION(" + n + ")" + t.substr(close + 1) + "\n";
           continue;
         }
@@ -238,12 +403,32 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       out += std::string(view);
       out += '\n';
     }
+
+    if (is_vertex)
+    {
+      // Synthesize the vertex attributes the shader expects from the fullscreen-triangle
+      // vertex id, so `MVP * Position` (MVP is identity) yields fullscreen clip coords and
+      // TexCoord spans [0,1].
+      const std::string inject =
+          "  vec2 dolphin_fsq = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+          "  vec4 Position = vec4(dolphin_fsq * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);\n"
+          "  vec2 TexCoord = dolphin_fsq;\n";
+      const auto main_pos = out.find("void main");
+      if (main_pos != std::string::npos)
+      {
+        const auto brace = out.find('{', main_pos);
+        if (brace != std::string::npos)
+          out.insert(brace + 1, "\n" + inject);
+      }
+    }
+
     // Replace FragColor references with ocol0 in the body.
     return ReplaceWord(out, "FragColor", "ocol0");
   };
 
-  result.vertex_glsl = rewrite_stage(shader.vertex_source);
-  result.fragment_glsl = rewrite_stage(shader.fragment_source);
+  // Assemble: merged UBO block + #undef of compat macros, then the stage body.
+  result.vertex_glsl = ubo_decl + undefs + rewrite_stage(vs_noblocks, /*is_vertex=*/true);
+  result.fragment_glsl = ubo_decl + undefs + rewrite_stage(fs_noblocks, /*is_vertex=*/false);
   result.sampler_names = std::move(sampler_names);
   result.ok = true;
 
