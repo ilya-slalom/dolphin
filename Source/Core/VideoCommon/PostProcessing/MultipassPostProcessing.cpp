@@ -260,9 +260,18 @@ void MultipassPostProcessing::RecompilePipeline()
 
   const u32 viewport_width = std::max<u32>(1, m_target_width);
   const u32 viewport_height = std::max<u32>(1, m_target_height);
+  const u32 source_width = std::max<u32>(1, m_source_width);
+  const u32 source_height = std::max<u32>(1, m_source_height);
 
-  u32 source_width = viewport_width;
-  u32 source_height = viewport_height;
+  // Size every pass's RT from the game's real source resolution (seed) chained through the
+  // preset's scale rules. Seeding from the source -- not the viewport -- is what makes
+  // SourceSize/scanline geometry correct.
+  std::vector<SlangPassConfig> configs;
+  configs.reserve(m_passes.size());
+  for (const Pass& pass : m_passes)
+    configs.push_back(pass.config);
+  const std::vector<PassSize> sizes =
+      ComputePassChainSizes(configs, source_width, source_height, viewport_width, viewport_height);
 
   const size_t pass_count = m_passes.size();
   for (size_t i = 0; i < pass_count; ++i)
@@ -274,10 +283,8 @@ void MultipassPostProcessing::RecompilePipeline()
 
     if (!is_final)
     {
-      const u32 out_w = ComputePassAxisSize(pass.config.scale_type_x, pass.config.scale_x,
-                                            source_width, viewport_width);
-      const u32 out_h = ComputePassAxisSize(pass.config.scale_type_y, pass.config.scale_y,
-                                            source_height, viewport_height);
+      const u32 out_w = sizes[i].width;
+      const u32 out_h = sizes[i].height;
 
       const TextureConfig texture_config(out_w, out_h, 1, 1, 1, INTERMEDIATE_FORMAT,
                                          AbstractTextureFlag_RenderTarget,
@@ -287,9 +294,6 @@ void MultipassPostProcessing::RecompilePipeline()
       pass.output_framebuffer =
           pass.output_texture ? g_gfx->CreateFramebuffer(pass.output_texture.get(), nullptr)
                               : nullptr;
-
-      source_width = out_w;
-      source_height = out_h;
     }
     else
     {
@@ -380,17 +384,24 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     return;
   }
 
-  // Track target size; reallocate render targets if the on-screen size changed.
+  // Reallocate the pass chain when the framebuffer format, on-screen target size, OR the game's
+  // source resolution changes -- the source size feeds every pass's SourceSize (scanline/mask
+  // geometry), so an internal-resolution change must resize the chain.
   const u32 target_width = static_cast<u32>(dst.GetWidth());
   const u32 target_height = static_cast<u32>(dst.GetHeight());
+  const u32 source_width = static_cast<u32>(src.GetWidth());
+  const u32 source_height = static_cast<u32>(src.GetHeight());
   const AbstractTextureFormat current_format =
       g_gfx->GetCurrentFramebuffer()->GetColorFormat();
   if (current_format != m_framebuffer_format || target_width != m_target_width ||
-      target_height != m_target_height)
+      target_height != m_target_height || source_width != m_source_width ||
+      source_height != m_source_height)
   {
     m_framebuffer_format = current_format;
     m_target_width = target_width;
     m_target_height = target_height;
+    m_source_width = source_width;
+    m_source_height = source_height;
     RecompilePipeline();
   }
 

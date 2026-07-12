@@ -81,6 +81,8 @@ private:
   u32 m_frame_count = 0;
   u32 m_target_width = 0;
   u32 m_target_height = 0;
+  u32 m_source_width = 0;   // game/input resolution the pass chain was sized against
+  u32 m_source_height = 0;
 
   std::unique_ptr<AbstractShader> m_passthrough_vertex;
   std::unique_ptr<AbstractShader> m_passthrough_pixel;
