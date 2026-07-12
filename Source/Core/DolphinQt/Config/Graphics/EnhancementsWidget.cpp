@@ -6,6 +6,7 @@
 #include <utility>
 
 #include <QApplication>
+#include <QEventLoop>
 #include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
