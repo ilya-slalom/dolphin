@@ -198,6 +198,12 @@ std::optional<SlangShaderSource> ParseSlangShader(const std::string& text, std::
       // Unknown pragma: keep it in the active buffer so glslang can see it.
     }
 
+    // Drop the shader's own #version: Dolphin's backend prepends its own #version header, and
+    // GLSL requires #version to be the first token. A stray #version mid-source (common in
+    // slang shaders, e.g. crt-royale) is a compile error.
+    if (StartsWith(trimmed, "#version"))
+      continue;
+
     // Re-append the original line (with its own trailing newline) to the active buffer.
     std::string emitted(view);
     emitted += '\n';

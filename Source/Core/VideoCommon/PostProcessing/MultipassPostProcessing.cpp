@@ -11,7 +11,6 @@
 #include "Common/FileSearch.h"
 #include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
-#include "Common/MsgHandler.h"
 
 #include "Core/Config/GraphicsSettings.h"
 
@@ -29,6 +28,7 @@
 #include "VideoCommon/Present.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/VertexManagerBase.h"
+#include "VideoCommon/VideoConfig.h"
 
 namespace VideoCommon
 {
@@ -135,10 +135,13 @@ std::vector<std::string> MultipassPostProcessing::GetPresetList()
 bool MultipassPostProcessing::Initialize(AbstractTextureFormat format)
 {
   m_framebuffer_format = format;
-  const bool ok = LoadPreset(Config::Get(Config::GFX_ENHANCE_POST_SHADER));
+  LoadPreset(Config::Get(Config::GFX_ENHANCE_POST_SHADER));
   if (!m_passthrough)
     RecompilePipeline();
-  return ok;
+  // A post-processing preset failing to load must never block game boot: on any failure
+  // LoadPreset falls back to pass-through (and has already surfaced a panic). Always report
+  // success so Presenter::Initialize continues.
+  return true;
 }
 
 void MultipassPostProcessing::RecompileShader()
@@ -156,14 +159,14 @@ void MultipassPostProcessing::ClearChain()
   m_passthrough = true;
 }
 
-bool MultipassPostProcessing::LoadPreset(const std::string& preset_name)
+void MultipassPostProcessing::LoadPreset(const std::string& preset_name)
 {
   ClearChain();
 
   if (preset_name.empty())
   {
     m_passthrough = true;
-    return true;
+    return;
   }
 
   // Resolve preset path: user Shaders dir first, then Sys.
@@ -173,14 +176,14 @@ bool MultipassPostProcessing::LoadPreset(const std::string& preset_name)
   if (!File::Exists(path))
   {
     m_passthrough = true;
-    return true;
+    return;
   }
 
   std::string text;
   if (!File::ReadFileToString(path, text))
   {
     m_passthrough = true;
-    return true;
+    return;
   }
 
   const std::string base_dir = DirectoryOf(path);
@@ -188,9 +191,9 @@ bool MultipassPostProcessing::LoadPreset(const std::string& preset_name)
   const auto config = ParseSlangPreset(text, base_dir, &error);
   if (!config)
   {
-    PanicAlertFmt("Failed to load shader preset {}: {}", preset_name, error);
+    ERROR_LOG_FMT(VIDEO, "Post-processing: failed to load preset {}: {}", preset_name, error);
     m_passthrough = true;
-    return false;
+    return;
   }
 
   // Load LUTs.
@@ -213,9 +216,10 @@ bool MultipassPostProcessing::LoadPreset(const std::string& preset_name)
     std::string shader_text;
     if (!File::ReadFileToString(pass_config.shader_path, shader_text))
     {
-      PanicAlertFmt("Failed to read slang shader {}", pass_config.shader_path);
+      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to read slang shader {}; disabling preset {}",
+                    pass_config.shader_path, preset_name);
       ClearChain();
-      return false;
+      return;
     }
 
     // Expand #includes before stage-splitting: some crt-royale passes keep their
@@ -228,27 +232,29 @@ bool MultipassPostProcessing::LoadPreset(const std::string& preset_name)
     const auto parsed = ParseSlangShader(shader_text, &error);
     if (!parsed)
     {
-      PanicAlertFmt("Failed to parse slang shader {}: {}", pass_config.shader_path, error);
+      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to parse {}: {}; disabling preset {}",
+                    pass_config.shader_path, error, preset_name);
       ClearChain();
-      return false;
+      return;
     }
 
     TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names);
     if (!translated.ok)
     {
-      PanicAlertFmt("Failed to translate slang shader {}: {}", pass_config.shader_path,
-                    translated.error);
+      ERROR_LOG_FMT(VIDEO, "Post-processing: cannot translate {}: {}; disabling preset {}",
+                    pass_config.shader_path, translated.error, preset_name);
       ClearChain();
-      return false;
+      return;
     }
 
     CompiledPassShaders shaders =
         CompileTranslatedPass(translated, DirectoryOf(pass_config.shader_path));
     if (!shaders.vertex || !shaders.pixel)
     {
-      PanicAlertFmt("Failed to compile slang shader {}", pass_config.shader_path);
+      ERROR_LOG_FMT(VIDEO, "Post-processing: failed to compile {}; disabling preset {}",
+                    pass_config.shader_path, preset_name);
       ClearChain();
-      return false;
+      return;
     }
 
     Pass pass;
@@ -267,7 +273,6 @@ bool MultipassPostProcessing::LoadPreset(const std::string& preset_name)
   }
 
   m_passthrough = m_passes.empty();
-  return true;
 }
 
 void MultipassPostProcessing::RecompilePipeline()
@@ -327,13 +332,73 @@ void MultipassPostProcessing::RecompilePipeline()
   }
 }
 
+void MultipassPostProcessing::BuildPassthroughPipeline()
+{
+  AbstractFramebuffer* const framebuffer = g_gfx->GetCurrentFramebuffer();
+  if (framebuffer == nullptr)
+    return;
+  const AbstractTextureFormat format = framebuffer->GetColorFormat();
+  if (m_passthrough_pipeline && m_passthrough_format == format)
+    return;
+
+  // Fullscreen-triangle vertex shader + a plain textured copy. Uses Dolphin's per-backend
+  // shader macros (defined by the backend header CreateShaderFromSource prepends), so it works
+  // for any backbuffer format -- unlike ScaleTexture, which only supports RGBA8 targets.
+  // Vulkan needs Y inverted (matching the old post-processor's vertex shader).
+  const std::string flip_y = g_backend_info.api_type == APIType::Vulkan ?
+                                 "  gl_Position.y = -gl_Position.y;\n" :
+                                 "";
+  const std::string vertex_source =
+      "VARYING_LOCATION(0) out float2 v_tex0;\n"
+      "void main() {\n"
+      "  v_tex0 = float2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n" +
+      flip_y +
+      "}\n";
+  const char* const pixel_source =
+      "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
+      "VARYING_LOCATION(0) in float2 v_tex0;\n"
+      "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
+      "void main() {\n"
+      "  ocol0 = texture(samp0, float3(v_tex0, 0.0));\n"
+      "}\n";
+
+  m_passthrough_vertex = g_gfx->CreateShaderFromSource(ShaderStage::Vertex, vertex_source, nullptr,
+                                                       "slang passthrough vertex");
+  m_passthrough_pixel = g_gfx->CreateShaderFromSource(ShaderStage::Pixel, pixel_source, nullptr,
+                                                      "slang passthrough pixel");
+  m_passthrough_pipeline.reset();
+  if (!m_passthrough_vertex || !m_passthrough_pixel)
+    return;
+
+  AbstractPipelineConfig config = {};
+  config.vertex_shader = m_passthrough_vertex.get();
+  config.pixel_shader = m_passthrough_pixel.get();
+  config.rasterization_state = RenderState::GetNoCullRasterizationState(PrimitiveType::Triangles);
+  config.depth_state = RenderState::GetNoDepthTestingDepthState();
+  config.blending_state = RenderState::GetNoBlendingBlendState();
+  config.framebuffer_state = RenderState::GetColorFramebufferState(format);
+  config.usage = AbstractPipelineUsage::Utility;
+  m_passthrough_pipeline = g_gfx->CreatePipeline(config);
+  m_passthrough_format = format;
+}
+
 void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& dst,
                                               const MathUtil::Rectangle<int>& src,
                                               const AbstractTexture* src_tex, int src_layer)
 {
   if (m_passthrough || m_passes.empty())
   {
-    g_gfx->ScaleTexture(g_gfx->GetCurrentFramebuffer(), dst, src_tex, src);
+    AbstractFramebuffer* const framebuffer = g_gfx->GetCurrentFramebuffer();
+    BuildPassthroughPipeline();
+    if (!m_passthrough_pipeline)
+      return;
+
+    g_gfx->SetTexture(0, src_tex);
+    g_gfx->SetSamplerState(0, RenderState::GetLinearSamplerState());
+    g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));
+    g_gfx->SetPipeline(m_passthrough_pipeline.get());
+    g_gfx->Draw(0, 3);
     return;
   }
 

@@ -89,6 +89,26 @@ TEST(SlangShader, ExpandsLocalIncludes)
   EXPECT_NE(shader->fragment_source.find("FragColor"), std::string::npos);
 }
 
+TEST(SlangShader, StripsVersionDirectiveFromStages)
+{
+  // crt-royale .slang files begin with "#version 450"; Dolphin's backend prepends its own
+  // #version header, and GLSL requires #version to be the first token, so the shader's own
+  // #version must not survive into the stage sources.
+  const std::string text =
+      "#version 450\n"
+      "layout(std140) uniform UBO { vec4 SourceSize; };\n"
+      "#pragma stage vertex\n"
+      "void main() { gl_Position = vec4(0); }\n"
+      "#pragma stage fragment\n"
+      "layout(location = 0) out vec4 FragColor;\n"
+      "void main() { FragColor = vec4(1); }\n";
+  std::string error;
+  const auto shader = ParseSlangShader(text, &error);
+  ASSERT_TRUE(shader.has_value()) << error;
+  EXPECT_EQ(shader->vertex_source.find("#version"), std::string::npos);
+  EXPECT_EQ(shader->fragment_source.find("#version"), std::string::npos);
+}
+
 TEST(SlangShader, ExpandsNestedIncludesRelativeToIncluder)
 {
   const std::string root = "#include \"a/one.h\"\n";

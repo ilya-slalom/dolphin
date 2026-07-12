@@ -62,8 +62,13 @@ private:
     SamplerState sampler;
   };
 
-  bool LoadPreset(const std::string& preset_name);
+  // Loads the named preset into the pass chain, or falls back to pass-through on any failure
+  // (a bad/unsupported preset must never block game boot). Surfaces a panic on hard errors.
+  void LoadPreset(const std::string& preset_name);
   void ClearChain();
+  // Builds the built-in pass-through pipeline (a plain copy of the input) for the current
+  // framebuffer format, used when no user preset is active or a preset failed to load.
+  void BuildPassthroughPipeline();
 
   std::vector<Pass> m_passes;
   std::vector<Lut> m_luts;
@@ -72,6 +77,11 @@ private:
   u32 m_frame_count = 0;
   u32 m_target_width = 0;
   u32 m_target_height = 0;
+
+  std::unique_ptr<AbstractShader> m_passthrough_vertex;
+  std::unique_ptr<AbstractShader> m_passthrough_pixel;
+  std::unique_ptr<AbstractPipeline> m_passthrough_pipeline;
+  AbstractTextureFormat m_passthrough_format = AbstractTextureFormat::Undefined;
 };
 
 // Computes the preset identifier for a discovered .slangp path: the path relative to whichever
