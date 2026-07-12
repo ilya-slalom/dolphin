@@ -602,6 +602,8 @@ git commit -m "VideoCommon: add slang->Dolphin GLSL translation"
 
 This task adds the thin bridge from translated GLSL to backend shader objects. It has no GPU-free unit test (needs `g_gfx`), so it is verified by compiling the app and by the executor's runtime path in Task 9. Keep the function small and side-effect-free so Task 9's manual verification exercises it.
 
+> **Verified against checked-out submodules** (glslang `a57276bf`, SPIRV-Cross `ebe2aa0c`): the `ShaderIncluder` this task constructs derives from `glslang::TShader::Includer` (`glslang/Public/ShaderLang.h:599`), and `SPIRV::Compile{Vertex,Fragment}Shader` (the path `CreateShaderFromSource` uses on Vulkan) is referenced today in `VideoBackends/{Vulkan,D3DCommon,Metal}` but **not** OpenGL — matching this plan's Vulkan-only scope. See analysis §2.2 for the full verification stamp.
+
 **Files:**
 - Modify: `Source/Core/VideoCommon/PostProcessing/SlangTranslator.h`
 - Modify: `Source/Core/VideoCommon/PostProcessing/SlangTranslator.cpp`

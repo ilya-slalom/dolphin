@@ -46,6 +46,8 @@ The low-level abstraction is fully capable of an N-pass render-to-texture chain:
 
 ### 2.2 Cross-backend shader compilation — ✅ mostly present, ⚠️ OpenGL gap
 
+> **Verified against checked-out submodules** (glslang `a57276bf` = 11.1.0-1304, SPIRV-Cross `ebe2aa0c`): `glslang::TShader::Includer` base with `includeSystem`/`includeLocal`/`releaseInclude` virtuals + `IncludeResult` (`glslang/Public/ShaderLang.h:599-657`); `EShTargetLanguageVersion` enum incl. `EShTargetSpv_1_0..1_6` (`ShaderLang.h:166-173`); `GlslangToSpv` (`SPIRV/GlslangToSpv.h:62`); `CompilerGLSL`, `CompilerHLSL : CompilerGLSL`, `CompilerMSL : CompilerGLSL` with `compile()` (`spirv_{glsl,hlsl,msl}.hpp`). `spirv_glsl.cpp` **is compiled** into Dolphin's bundle (`Externals/spirv_cross/CMakeLists.txt:20`) yet `CompilerGLSL` has **zero references in `Source/`** — confirming the OpenGL SPIR-V→GLSL path is present-but-unused, while `CompilerHLSL` (D3DCommon) and `CompilerMSL` (Metal) are each referenced exactly once.
+
 Dolphin already bundles **both** halves of the slang toolchain and runs single-source Vulkan-GLSL through them on 4 of 5 backends:
 
 - glslang (`Externals/glslang/`) and SPIRV-Cross (`Externals/spirv_cross/`, including `spirv_glsl/hlsl/msl.cpp`) are submodules, compiled and linked.
