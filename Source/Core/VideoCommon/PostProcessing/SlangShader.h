@@ -3,12 +3,23 @@
 
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace VideoCommon
 {
+// Reads the file at `path` into `*out`; returns false if it cannot be read.
+using SlangFileReader = std::function<bool(const std::string& path, std::string* out)>;
+
+// Recursively expands `#include "..."` directives in slang source text. base_dir roots the
+// first level; nested includes resolve relative to their includer's directory (matching
+// glslang's ShaderIncluder). Unreadable includes are left as-is. This must run BEFORE
+// ParseSlangShader, because crt-royale ships passes whose #pragma stage bodies live in an
+// included header.
+std::string ExpandSlangIncludes(const std::string& text, const std::string& base_dir,
+                                const SlangFileReader& reader);
 struct SlangParameter
 {
   std::string id;

@@ -57,3 +57,54 @@ TEST(SlangShader, RejectsMissingStages)
   EXPECT_FALSE(shader.has_value());
   EXPECT_FALSE(error.empty());
 }
+
+TEST(SlangShader, ExpandsLocalIncludes)
+{
+  // crt-royale ships passes whose #pragma stage bodies live in an #include'd header.
+  const std::string root =
+      "#version 450\n"
+      "#include \"body.h\"\n";
+  const auto reader = [](const std::string& path, std::string* out) -> bool {
+    if (path == "/shaders/body.h")
+    {
+      *out =
+          "#pragma stage vertex\n"
+          "void main() { gl_Position = vec4(0); }\n"
+          "#pragma stage fragment\n"
+          "layout(location = 0) out vec4 FragColor;\n"
+          "void main() { FragColor = vec4(1); }\n";
+      return true;
+    }
+    return false;
+  };
+
+  const std::string expanded = ExpandSlangIncludes(root, "/shaders", reader);
+  EXPECT_NE(expanded.find("#pragma stage vertex"), std::string::npos);
+  EXPECT_EQ(expanded.find("#include"), std::string::npos);  // include consumed
+
+  std::string error;
+  const auto shader = ParseSlangShader(expanded, &error);
+  ASSERT_TRUE(shader.has_value()) << error;
+  EXPECT_NE(shader->vertex_source.find("gl_Position"), std::string::npos);
+  EXPECT_NE(shader->fragment_source.find("FragColor"), std::string::npos);
+}
+
+TEST(SlangShader, ExpandsNestedIncludesRelativeToIncluder)
+{
+  const std::string root = "#include \"a/one.h\"\n";
+  const auto reader = [](const std::string& path, std::string* out) -> bool {
+    if (path == "/root/a/one.h")
+    {
+      *out = "#include \"two.h\"\n";  // relative to one.h's own dir
+      return true;
+    }
+    if (path == "/root/a/two.h")
+    {
+      *out = "RESOLVED_NESTED\n";
+      return true;
+    }
+    return false;
+  };
+  const std::string expanded = ExpandSlangIncludes(root, "/root", reader);
+  EXPECT_NE(expanded.find("RESOLVED_NESTED"), std::string::npos);
+}

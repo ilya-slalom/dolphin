@@ -52,6 +52,50 @@ TEST(SlangTranslator, AssignsBindingsToAliasesAndLuts)
   EXPECT_NE(std::find(names.begin(), names.end(), "MASK"), names.end());
 }
 
+TEST(SlangTranslator, DeduplicatesSamplersReusingBindingInBranches)
+{
+  // crt-royale declares the same layout(binding = N) in mutually-exclusive #ifdef/#else
+  // branches. Counting textual sampler2D names over-counts; counting distinct binding
+  // numbers gives the true count. Only one branch's names are live per compile, but the
+  // translator (no preprocessor) sees both -- it must not treat them as extra samplers.
+  SlangShaderSource shader;
+  shader.vertex_source = "void main() {}\n";
+  shader.fragment_source =
+      "layout(binding = 2) uniform sampler2D Source;\n"
+      "#ifdef USE_LARGE\n"
+      "layout(binding = 3) uniform sampler2D mask_grille_large;\n"
+      "layout(binding = 4) uniform sampler2D mask_slot_large;\n"
+      "layout(binding = 5) uniform sampler2D mask_shadow_large;\n"
+      "#else\n"
+      "layout(binding = 3) uniform sampler2D mask_grille_small;\n"
+      "layout(binding = 4) uniform sampler2D mask_slot_small;\n"
+      "layout(binding = 5) uniform sampler2D mask_shadow_small;\n"
+      "#endif\n"
+      "layout(location = 0) out vec4 FragColor;\n"
+      "void main() { FragColor = vec4(1); }\n";
+  const auto result = TranslateSlangPass(shader, {}, {});
+  // 4 distinct bindings (2,3,4,5) -> under the 8 limit despite 7 textual declarations.
+  EXPECT_TRUE(result.ok) << result.error;
+}
+
+TEST(SlangTranslator, IgnoresSampler2DFunctionParameters)
+{
+  // crt-royale helpers take `const sampler2D tex` parameters; these are not uniform
+  // declarations and must not be counted as bindable samplers.
+  SlangShaderSource shader;
+  shader.vertex_source = "void main() {}\n";
+  shader.fragment_source =
+      "float4 helper(const sampler2D tex, vec2 uv) { return texture(tex, uv); }\n"
+      "layout(binding = 2) uniform sampler2D Source;\n"
+      "layout(location = 0) out vec4 FragColor;\n"
+      "void main() { FragColor = helper(Source, vec2(0.5)); }\n";
+  const auto result = TranslateSlangPass(shader, {}, {});
+  ASSERT_TRUE(result.ok) << result.error;
+  // Only "Source" -- the "tex" parameter is not a sampler binding.
+  EXPECT_EQ(result.sampler_names.size(), 1u);
+  EXPECT_EQ(result.sampler_names[0], "Source");
+}
+
 TEST(SlangTranslator, RejectsTooManySamplers)
 {
   // Build a shader referencing 9 distinct samplers (Source + 8) -> over the 8 limit.

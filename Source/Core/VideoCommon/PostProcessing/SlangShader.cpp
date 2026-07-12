@@ -69,6 +69,79 @@ SlangParameter ParseParameter(std::string_view rest)
 }
 }  // namespace
 
+namespace
+{
+std::string JoinPath(const std::string& dir, const std::string& name)
+{
+  if (dir.empty())
+    return name;
+  return dir + "/" + name;
+}
+
+std::string DirectoryOf(const std::string& path)
+{
+  const auto slash = path.find_last_of('/');
+  return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
+// Returns the quoted target of a `#include "..."` line, or empty if this is not a local include.
+std::string LocalIncludeTarget(std::string_view trimmed)
+{
+  if (!StartsWith(trimmed, "#include"))
+    return {};
+  const auto first = trimmed.find('"');
+  if (first == std::string_view::npos)
+    return {};
+  const auto second = trimmed.find('"', first + 1);
+  if (second == std::string_view::npos)
+    return {};
+  return std::string(trimmed.substr(first + 1, second - first - 1));
+}
+
+void ExpandInto(std::string* out, const std::string& text, const std::string& current_dir,
+                const SlangFileReader& reader, int depth)
+{
+  if (depth > 32)  // guard against include cycles
+  {
+    *out += text;
+    return;
+  }
+
+  std::istringstream in(text);
+  std::string line;
+  while (std::getline(in, line))
+  {
+    std::string_view view = line;
+    if (!view.empty() && view.back() == '\r')
+      view.remove_suffix(1);
+
+    const std::string target = LocalIncludeTarget(Trim(view));
+    if (!target.empty())
+    {
+      const std::string include_path = JoinPath(current_dir, target);
+      std::string included;
+      if (reader(include_path, &included))
+      {
+        ExpandInto(out, included, DirectoryOf(include_path), reader, depth + 1);
+        continue;
+      }
+      // Unreadable include: leave the original line so glslang can try (or error clearly).
+    }
+
+    out->append(view);
+    out->push_back('\n');
+  }
+}
+}  // namespace
+
+std::string ExpandSlangIncludes(const std::string& text, const std::string& base_dir,
+                                const SlangFileReader& reader)
+{
+  std::string out;
+  ExpandInto(&out, text, base_dir, reader, 0);
+  return out;
+}
+
 std::optional<SlangShaderSource> ParseSlangShader(const std::string& text, std::string* error)
 {
   SlangShaderSource shader;

@@ -181,6 +181,13 @@ bool MultipassPostProcessing::LoadPreset(const std::string& preset_name)
       return false;
     }
 
+    // Expand #includes before stage-splitting: some crt-royale passes keep their
+    // #pragma stage bodies in an included header.
+    const SlangFileReader reader = [](const std::string& p, std::string* out) {
+      return File::ReadFileToString(p, *out);
+    };
+    shader_text = ExpandSlangIncludes(shader_text, DirectoryOf(pass_config.shader_path), reader);
+
     const auto parsed = ParseSlangShader(shader_text, &error);
     if (!parsed)
     {

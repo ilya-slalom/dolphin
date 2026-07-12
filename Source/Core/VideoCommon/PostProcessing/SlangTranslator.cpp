@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
 #include <sstream>
 #include <string_view>
 
@@ -30,9 +31,12 @@ std::string_view Trim(std::string_view s)
 }
 
 // Extracts the sampler name from a line declaring `... uniform sampler2D <Name>;`.
-// Returns empty if the line does not declare a sampler2D.
+// Returns empty if the line does not declare a uniform sampler2D (e.g. a `sampler2D` function
+// parameter or a helper typedef is ignored -- only uniform declarations count).
 std::string ExtractSamplerName(std::string_view line)
 {
+  if (line.find("uniform") == std::string_view::npos)
+    return {};
   const auto kw = line.find("sampler2D");
   if (kw == std::string_view::npos)
     return {};
@@ -45,6 +49,31 @@ std::string ExtractSamplerName(std::string_view line)
     ++end;
   }
   return std::string(rest.substr(0, end));
+}
+
+// If the line declares its sampler with an explicit `layout(binding = N)`, returns N.
+// Returns -1 when no explicit binding is present. crt-royale reuses the same binding number
+// in mutually-exclusive #ifdef/#else branches, so distinct binding numbers -- not distinct
+// names -- give the true sampler count (the translator has no preprocessor).
+int ExtractSamplerBinding(std::string_view line)
+{
+  const auto pos = line.find("binding");
+  if (pos == std::string_view::npos)
+    return -1;
+  const auto eq = line.find('=', pos);
+  if (eq == std::string_view::npos)
+    return -1;
+  std::string_view rest = Trim(line.substr(eq + 1));
+  int value = 0;
+  bool any = false;
+  for (const char c : rest)
+  {
+    if (c < '0' || c > '9')
+      break;
+    value = value * 10 + (c - '0');
+    any = true;
+  }
+  return any ? value : -1;
 }
 
 // Replaces every whole-word occurrence of `from` with `to` in `text`.
@@ -88,12 +117,16 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
 {
   TranslatedPass result;
 
-  // 1. Discover sampler declarations across both stages, in first-seen order.
-  //    "Source" is always binding 0, even if the shader also declares it explicitly.
+  // 1. Discover sampler declarations across both stages and assign each a Dolphin binding
+  //    "slot". "Source" is always slot 0. Samplers declared with an explicit slang
+  //    layout(binding = N) are deduplicated by N: crt-royale reuses the same N across
+  //    mutually-exclusive #ifdef/#else branches, so distinct binding numbers -- not distinct
+  //    textual names -- give the true sampler count. Samplers with no explicit binding are
+  //    keyed by name.
   std::vector<std::string> sampler_names = {"Source"};
-  const auto already_seen = [&sampler_names](const std::string& name) {
-    return std::find(sampler_names.begin(), sampler_names.end(), name) != sampler_names.end();
-  };
+  std::map<int, size_t> slang_binding_to_slot;  // explicit slang binding -> slot index
+  std::map<std::string, size_t> name_to_slot;   // sampler name -> slot index
+  name_to_slot["Source"] = 0;
 
   const auto scan_stage = [&](const std::string& source) {
     std::istringstream in(source);
@@ -101,8 +134,29 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
     while (std::getline(in, line))
     {
       const std::string name = ExtractSamplerName(line);
-      if (!name.empty() && !already_seen(name))
-        sampler_names.push_back(name);
+      if (name.empty())
+        continue;
+      if (name_to_slot.count(name) != 0)
+        continue;
+
+      const int binding = ExtractSamplerBinding(line);
+      if (binding >= 0)
+      {
+        const auto existing = slang_binding_to_slot.find(binding);
+        if (existing != slang_binding_to_slot.end())
+        {
+          // A different name reusing an already-seen slang binding (dead #ifdef branch):
+          // map this name onto the same slot; do not allocate a new one.
+          name_to_slot[name] = existing->second;
+          continue;
+        }
+      }
+
+      const size_t slot = sampler_names.size();
+      sampler_names.push_back(name);
+      name_to_slot[name] = slot;
+      if (binding >= 0)
+        slang_binding_to_slot[binding] = slot;
     }
   };
   scan_stage(shader.vertex_source);
@@ -117,9 +171,9 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
   }
 
   // Assign binding indices.
-  const auto binding_of = [&sampler_names](const std::string& name) -> int {
-    const auto it = std::find(sampler_names.begin(), sampler_names.end(), name);
-    return static_cast<int>(std::distance(sampler_names.begin(), it));
+  const auto binding_of = [&name_to_slot](const std::string& name) -> int {
+    const auto it = name_to_slot.find(name);
+    return it == name_to_slot.end() ? 0 : static_cast<int>(it->second);
   };
 
   // 2. Line-level rewrite of a stage.
