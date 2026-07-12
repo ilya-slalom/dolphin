@@ -76,6 +76,46 @@ std::array<float, 16> IdentityMvp()
 MultipassPostProcessing::MultipassPostProcessing() = default;
 MultipassPostProcessing::~MultipassPostProcessing() = default;
 
+std::string PresetNameFromPath(const std::string& full_path,
+                               const std::vector<std::string>& roots)
+{
+  std::string path = full_path;
+  std::replace(path.begin(), path.end(), '\\', '/');
+
+  std::string best;  // longest matching root's relative remainder
+  for (const std::string& raw_root : roots)
+  {
+    std::string root = raw_root;
+    std::replace(root.begin(), root.end(), '\\', '/');
+    if (!root.empty() && root.back() != '/')
+      root += '/';
+    if (path.size() > root.size() && path.compare(0, root.size(), root) == 0)
+    {
+      const std::string remainder = path.substr(root.size());
+      if (best.empty() || remainder.size() < best.size())
+        best = remainder;
+    }
+  }
+
+  std::string relative = best.empty() ? path : best;
+
+  // Strip a leading slash and the ".slangp" extension.
+  if (best.empty())
+  {
+    // No root matched: fall back to the bare filename.
+    const auto slash = relative.find_last_of('/');
+    if (slash != std::string::npos)
+      relative = relative.substr(slash + 1);
+  }
+  constexpr std::string_view kExt = ".slangp";
+  if (relative.size() >= kExt.size() &&
+      relative.compare(relative.size() - kExt.size(), kExt.size(), kExt) == 0)
+  {
+    relative = relative.substr(0, relative.size() - kExt.size());
+  }
+  return relative;
+}
+
 std::vector<std::string> MultipassPostProcessing::GetPresetList()
 {
   const std::string user_dir = File::GetUserPath(D_SHADERS_IDX);
@@ -84,14 +124,11 @@ std::vector<std::string> MultipassPostProcessing::GetPresetList()
   const std::array<std::string_view, 1> exts = {".slangp"};
   const std::vector<std::string> paths = Common::DoFileSearch(dirs, exts, /*recursive=*/true);
 
+  const std::vector<std::string> roots = {user_dir, sys_dir};
   std::vector<std::string> result;
   result.reserve(paths.size());
   for (const std::string& path : paths)
-  {
-    std::string name;
-    SplitPath(path, nullptr, &name, nullptr);
-    result.push_back(name);
-  }
+    result.push_back(PresetNameFromPath(path, roots));
   return result;
 }
 

@@ -27,7 +27,9 @@ public:
   MultipassPostProcessing();
   ~MultipassPostProcessing();
 
-  // *.slangp presets discovered under the user + sys Shaders dirs (basename, no extension).
+  // *.slangp presets discovered under the user + sys Shaders dirs, as identifiers relative to
+  // the containing Shaders dir with the extension stripped (e.g. "crt/crt-royale"). This is the
+  // value stored in GFX_ENHANCE_POST_SHADER and resolved back by LoadPreset.
   static std::vector<std::string> GetPresetList();
 
   // Loads the preset named by GFX_ENHANCE_POST_SHADER (a .slangp under the Shaders dir).
@@ -71,4 +73,11 @@ private:
   u32 m_target_width = 0;
   u32 m_target_height = 0;
 };
+
+// Computes the preset identifier for a discovered .slangp path: the path relative to whichever
+// root in `roots` contains it, with separators normalized to '/' and the ".slangp" extension
+// stripped (e.g. "/sys/Shaders/crt/crt-royale.slangp" -> "crt/crt-royale"). If no root matches,
+// falls back to the bare filename without extension. Pure/testable.
+std::string PresetNameFromPath(const std::string& full_path,
+                               const std::vector<std::string>& roots);
 }  // namespace VideoCommon
