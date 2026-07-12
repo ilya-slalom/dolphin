@@ -150,6 +150,8 @@ add_library(videocommon
   PostProcessing/MipGen.h
   PostProcessing/PassSizing.cpp
   PostProcessing/PassSizing.h
+  PostProcessing/PresetArchive.cpp
+  PostProcessing/PresetArchive.h
   PostProcessing/SlangPreset.cpp
   PostProcessing/SlangPreset.h
   PostProcessing/SlangSamplers.cpp
