@@ -21,7 +21,9 @@ namespace VideoCommon
 {
 namespace
 {
-constexpr size_t MAX_SAMPLERS = 8;
+// Matches the Vulkan utility descriptor set's combined-image-sampler count
+// (NUM_UTILITY_PIXEL_SAMPLERS). crt-royale's mask-apply pass needs 9.
+constexpr size_t MAX_SAMPLERS = 16;
 
 std::string_view Trim(std::string_view s)
 {

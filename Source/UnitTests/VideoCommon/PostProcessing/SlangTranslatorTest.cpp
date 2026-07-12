@@ -151,19 +151,32 @@ TEST(SlangTranslator, PacksMat4AtAlignedOffset)
   EXPECT_FLOAT_EQ(f[19], 15.0f);  // MVP[15]
 }
 
-TEST(SlangTranslator, RejectsTooManySamplers)
+// Helper: a shader referencing Source plus `extra` additional distinct samplers.
+static SlangShaderSource MakeShaderWithSamplers(int extra)
 {
-  // Build a shader referencing 9 distinct samplers (Source + 8) -> over the 8 limit.
   SlangShaderSource shader = MakeShader("");
-  std::vector<std::string> luts;
-  for (int i = 0; i < 8; ++i)
+  for (int i = 0; i < extra; ++i)
   {
     const std::string name = "LUT" + std::to_string(i);
     shader.fragment_source +=
         "layout(binding = " + std::to_string(i + 2) + ") uniform sampler2D " + name + ";\n";
-    luts.push_back(name);
   }
-  const auto result = TranslateSlangPass(shader, {}, luts);
+  return shader;
+}
+
+TEST(SlangTranslator, AcceptsNineSamplers)
+{
+  // Full crt-royale's mask-apply pass needs 9 samplers (Source + 8). This is within the raised
+  // 16-sampler ceiling (Dolphin utility descriptor set), so it must translate successfully.
+  const auto result = TranslateSlangPass(MakeShaderWithSamplers(8), {}, {});
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.sampler_names.size(), 9u);
+}
+
+TEST(SlangTranslator, RejectsMoreThanSixteenSamplers)
+{
+  // Source + 16 = 17 distinct samplers -> over the 16 limit.
+  const auto result = TranslateSlangPass(MakeShaderWithSamplers(16), {}, {});
   EXPECT_FALSE(result.ok);
   EXPECT_FALSE(result.error.empty());
 }

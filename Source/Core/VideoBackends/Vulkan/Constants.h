@@ -78,8 +78,11 @@ enum UNIFORM_BUFFER_DESCRIPTOR_SET_BINDING
 // Maximum number of attributes per vertex (we don't have any more than this?)
 constexpr u32 MAX_VERTEX_ATTRIBUTES = 16;
 
-// Number of pixel shader texture slots
-constexpr u32 NUM_UTILITY_PIXEL_SAMPLERS = 8;
+// Number of pixel shader texture slots. 16 (matching MAX_PIXEL_SHADER_SAMPLERS) so multi-pass
+// post-processing presets that read more than 8 inputs in a pass (e.g. crt-royale's mask-apply
+// pass, which needs 9) can bind them all. TEXEL_BUFFER_BINDING and the utility descriptor set
+// layout's texel-buffer binding are offset by this value; keep them in sync.
+constexpr u32 NUM_UTILITY_PIXEL_SAMPLERS = 16;
 
 // Number of texel buffer binding points.
 constexpr u32 NUM_COMPUTE_TEXEL_BUFFERS = 2;

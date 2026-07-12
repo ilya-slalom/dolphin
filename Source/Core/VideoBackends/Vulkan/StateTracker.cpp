@@ -639,7 +639,7 @@ void StateTracker::UpdateUtilityDescriptorSet()
     dswrites[writes++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                           nullptr,
                           m_utility_descriptor_sets[1],
-                          8,
+                          NUM_UTILITY_PIXEL_SAMPLERS,  // texel buffer follows the sampler bindings
                           0,
                           1,
                           VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
