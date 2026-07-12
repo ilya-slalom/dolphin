@@ -3,6 +3,7 @@
 package org.dolphinemu.dolphinemu.features.settings.ui
 
 import android.content.Context
+import android.content.DialogInterface
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -1627,6 +1628,17 @@ class SettingsFragmentPresenter(
         )
 
         sl.add(
+            RunRunnable(
+                context,
+                R.string.post_processing_download,
+                R.string.post_processing_download_description,
+                R.string.post_processing_download_confirmation,
+                0,
+                false
+            ) { downloadShaderPack() }
+        )
+
+        sl.add(
             SwitchSetting(
                 context,
                 BooleanSetting.GFX_HACK_COPY_EFB_SCALED,
@@ -2841,6 +2853,26 @@ class SettingsFragmentPresenter(
         }
 
         fragmentView.adapter!!.notifyAllSettingsChanged()
+    }
+
+    private fun downloadShaderPack() {
+        ThreadUtil.runOnThreadAndShowResult(
+            fragmentView.fragmentActivity,
+            R.string.post_processing_downloading,
+            0,
+            {
+                val count = PostProcessing.downloadShaderPack()
+                if (count >= 0) {
+                    context.resources.getString(R.string.post_processing_download_success, count)
+                } else {
+                    context.resources.getString(R.string.post_processing_download_failure)
+                }
+            },
+            // Reload the settings list so the newly-downloaded presets populate the shader picker.
+            DialogInterface.OnDismissListener {
+                loadSettingsList()
+            }
+        )
     }
 
     private fun convertOnThread(f: BooleanSupplier) {

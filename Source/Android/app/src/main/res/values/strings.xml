@@ -225,6 +225,12 @@
     <string name="texture_filtering_description">Overrides the texture scaling filter selected by the game. Any option except \'Default\' will alter the look of the game\'s textures and might cause issues in a small number of games.</string>
     <string name="post_processing_shader">Post-Processing Effect</string>
     <string name="post_processing_shader_description">Apply a post-processing effect after finishing a frame</string>
+    <string name="post_processing_download">Download Shader Pack</string>
+    <string name="post_processing_download_description">Download the RetroArch slang shader pack from the libretro buildbot</string>
+    <string name="post_processing_download_confirmation">This will download the RetroArch slang shader pack (~50 MB) from the libretro buildbot and install it into your Shaders folder. Continue?</string>
+    <string name="post_processing_downloading">Downloading shader pack…</string>
+    <string name="post_processing_download_success">Installed %1$d shader presets.</string>
+    <string name="post_processing_download_failure">Failed to download the shader pack.</string>
     <string name="postprocessing_shader">Post Processing Shader</string>
     <string name="postprocessing_shader_description">Apply a post-processing effect after finishing a frame.</string>
     <string name="scaled_efb_copy">Scaled EFB Copy</string>
