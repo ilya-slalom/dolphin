@@ -84,9 +84,12 @@ public:
 
   // Draws the specified XFB buffer to the screen, performing any post-processing.
   // Assumes that the backbuffer has already been bound and cleared.
+  // native_width/native_height are the game's resolution before internal-resolution upscaling,
+  // passed to post-processing so effects render resolution-independently.
   virtual void RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
                                  const AbstractTexture* source_texture,
-                                 const MathUtil::Rectangle<int>& source_rc);
+                                 const MathUtil::Rectangle<int>& source_rc, u32 native_width = 0,
+                                 u32 native_height = 0);
 
   VideoCommon::MultipassPostProcessing* GetPostProcessor() const { return m_post_processor.get(); }
   // Final surface changing

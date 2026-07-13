@@ -40,9 +40,15 @@ public:
   void RecompileShader();    // reload preset (config change)
   void RecompilePipeline();  // rebuild pipelines only (format change)
 
-  // Runs the pass chain, presenting into the currently-bound framebuffer over dst.
+  // Runs the pass chain, presenting into the currently-bound framebuffer over dst. `src` is the
+  // (internal-resolution-scaled) region of src_tex to read; `native_width`/`native_height` are
+  // the game's native resolution (before internal-resolution upscaling). The shader's SourceSize
+  // and the pass-chain sizing use the NATIVE size so effects like crt-royale render the same
+  // scanline/mask geometry regardless of internal resolution, while still sampling the high-res
+  // texture. Pass 0 for native size to fall back to the src rect size.
   void BlitFromTexture(const MathUtil::Rectangle<int>& dst, const MathUtil::Rectangle<int>& src,
-                       const AbstractTexture* src_tex, int src_layer = -1);
+                       const AbstractTexture* src_tex, int src_layer = -1, u32 native_width = 0,
+                       u32 native_height = 0);
 
 private:
   struct Pass

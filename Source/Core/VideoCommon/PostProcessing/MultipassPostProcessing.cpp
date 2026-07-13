@@ -392,7 +392,8 @@ void MultipassPostProcessing::BuildPassthroughPipeline()
 
 void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& dst,
                                               const MathUtil::Rectangle<int>& src,
-                                              const AbstractTexture* src_tex, int src_layer)
+                                              const AbstractTexture* src_tex, int src_layer,
+                                              u32 native_width, u32 native_height)
 {
   if (m_passthrough || m_passes.empty())
   {
@@ -409,13 +410,14 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     return;
   }
 
-  // Reallocate the pass chain when the framebuffer format, on-screen target size, OR the game's
-  // source resolution changes -- the source size feeds every pass's SourceSize (scanline/mask
-  // geometry), so an internal-resolution change must resize the chain.
+  // The shader's SourceSize and the pass-chain sizing use the game's NATIVE resolution (before
+  // internal-resolution upscaling) so scanline/mask geometry is identical at any internal
+  // resolution; sampling still reads the high-res src_tex. Fall back to the src rect if the
+  // caller didn't supply a native size.
   const u32 target_width = static_cast<u32>(dst.GetWidth());
   const u32 target_height = static_cast<u32>(dst.GetHeight());
-  const u32 source_width = static_cast<u32>(src.GetWidth());
-  const u32 source_height = static_cast<u32>(src.GetHeight());
+  const u32 source_width = native_width != 0 ? native_width : static_cast<u32>(src.GetWidth());
+  const u32 source_height = native_height != 0 ? native_height : static_cast<u32>(src.GetHeight());
   const AbstractTextureFormat current_format =
       g_gfx->GetCurrentFramebuffer()->GetColorFormat();
   if (current_format != m_framebuffer_format || target_width != m_target_width ||
@@ -435,7 +437,11 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
   AbstractFramebuffer* const entry_framebuffer = g_gfx->GetCurrentFramebuffer();
   const AbstractTexture* const original_tex = src_tex;
   const AbstractTexture* prev_output = src_tex;
-  MathUtil::Rectangle<int> prev_rect = src;
+  // SourceSize/OriginalSize use the native resolution (m_source_width/height), so scanline and
+  // mask geometry are resolution-independent even though we sample the upscaled src_tex.
+  const MathUtil::Rectangle<int> native_rect(0, 0, static_cast<int>(m_source_width),
+                                             static_cast<int>(m_source_height));
+  MathUtil::Rectangle<int> prev_rect = native_rect;
 
   const size_t pass_count = m_passes.size();
   for (size_t i = 0; i < pass_count; ++i)
@@ -529,7 +535,8 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
       }
       if (name == "Original")
       {
-        size_vec(static_cast<u32>(src.GetWidth()), static_cast<u32>(src.GetHeight()), out);
+        size_vec(static_cast<u32>(native_rect.GetWidth()),
+                 static_cast<u32>(native_rect.GetHeight()), out);
         return true;
       }
       for (size_t j = 0; j < i; ++j)
@@ -567,7 +574,8 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
       }
       if (name == "OriginalSize")
       {
-        size_vec(static_cast<u32>(src.GetWidth()), static_cast<u32>(src.GetHeight()), out);
+        size_vec(static_cast<u32>(native_rect.GetWidth()),
+                 static_cast<u32>(native_rect.GetHeight()), out);
         return true;
       }
       if (name == "OutputSize" || name == "FinalViewportSize")
