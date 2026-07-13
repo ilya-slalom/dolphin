@@ -287,16 +287,24 @@ void MultipassPostProcessing::RecompilePipeline()
   const u32 viewport_height = std::max<u32>(1, m_target_height);
   const u32 source_width = std::max<u32>(1, m_source_width);
   const u32 source_height = std::max<u32>(1, m_source_height);
+  const u32 scaled_source_width = std::max<u32>(1, m_scaled_source_width);
+  const u32 scaled_source_height = std::max<u32>(1, m_scaled_source_height);
 
-  // Size every pass's RT from the game's real source resolution (seed) chained through the
-  // preset's scale rules. Seeding from the source -- not the viewport -- is what makes
-  // SourceSize/scanline geometry correct.
   std::vector<SlangPassConfig> configs;
   configs.reserve(m_passes.size());
   for (const Pass& pass : m_passes)
     configs.push_back(pass.config);
-  const std::vector<PassSize> sizes =
+
+  // Two parallel size chains:
+  //  - logical_sizes: seeded from the NATIVE resolution -> reported to shaders as SourceSize so
+  //    CRT scanline/mask geometry is identical at any internal resolution.
+  //  - physical_sizes: seeded from the internal-resolution-SCALED resolution -> the actual RT
+  //    allocation, so higher internal resolution supersamples the content through the effect.
+  // Both use the same viewport for viewport-scaled passes.
+  const std::vector<PassSize> logical_sizes =
       ComputePassChainSizes(configs, source_width, source_height, viewport_width, viewport_height);
+  const std::vector<PassSize> physical_sizes = ComputePassChainSizes(
+      configs, scaled_source_width, scaled_source_height, viewport_width, viewport_height);
 
   const size_t pass_count = m_passes.size();
   for (size_t i = 0; i < pass_count; ++i)
@@ -306,10 +314,15 @@ void MultipassPostProcessing::RecompilePipeline()
     const AbstractTextureFormat output_format =
         is_final ? m_framebuffer_format : INTERMEDIATE_FORMAT;
 
+    // Logical size is what the shader sees; final pass's logical output is the viewport.
+    pass.logical_width = is_final ? viewport_width : logical_sizes[i].width;
+    pass.logical_height = is_final ? viewport_height : logical_sizes[i].height;
+
     if (!is_final)
     {
-      const u32 out_w = sizes[i].width;
-      const u32 out_h = sizes[i].height;
+      // Allocate at the physical (internal-res-scaled) size, but never smaller than logical.
+      const u32 out_w = std::max(physical_sizes[i].width, logical_sizes[i].width);
+      const u32 out_h = std::max(physical_sizes[i].height, logical_sizes[i].height);
 
       const TextureConfig texture_config(out_w, out_h, 1, 1, 1, INTERMEDIATE_FORMAT,
                                          AbstractTextureFlag_RenderTarget,
@@ -410,25 +423,32 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     return;
   }
 
-  // The shader's SourceSize and the pass-chain sizing use the game's NATIVE resolution (before
-  // internal-resolution upscaling) so scanline/mask geometry is identical at any internal
-  // resolution; sampling still reads the high-res src_tex. Fall back to the src rect if the
-  // caller didn't supply a native size.
+  // Two source sizes drive the chain:
+  //  - native (m_source_*): reported to the shader as SourceSize so CRT scanline/mask geometry
+  //    is identical at any internal resolution.
+  //  - scaled (m_scaled_source_*): the actual src_tex region, used to allocate render targets so
+  //    higher internal resolution supersamples the game content fed through the effect.
+  // Fall back to the src rect when the caller didn't supply a native size.
   const u32 target_width = static_cast<u32>(dst.GetWidth());
   const u32 target_height = static_cast<u32>(dst.GetHeight());
-  const u32 source_width = native_width != 0 ? native_width : static_cast<u32>(src.GetWidth());
-  const u32 source_height = native_height != 0 ? native_height : static_cast<u32>(src.GetHeight());
+  const u32 scaled_source_width = static_cast<u32>(src.GetWidth());
+  const u32 scaled_source_height = static_cast<u32>(src.GetHeight());
+  const u32 source_width = native_width != 0 ? native_width : scaled_source_width;
+  const u32 source_height = native_height != 0 ? native_height : scaled_source_height;
   const AbstractTextureFormat current_format =
       g_gfx->GetCurrentFramebuffer()->GetColorFormat();
   if (current_format != m_framebuffer_format || target_width != m_target_width ||
       target_height != m_target_height || source_width != m_source_width ||
-      source_height != m_source_height)
+      source_height != m_source_height || scaled_source_width != m_scaled_source_width ||
+      scaled_source_height != m_scaled_source_height)
   {
     m_framebuffer_format = current_format;
     m_target_width = target_width;
     m_target_height = target_height;
     m_source_width = source_width;
     m_source_height = source_height;
+    m_scaled_source_width = scaled_source_width;
+    m_scaled_source_height = scaled_source_height;
     RecompilePipeline();
   }
 
@@ -513,8 +533,12 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     if (target == nullptr)
       continue;
 
+    // Physical target rect (actual RT/backbuffer pixels) drives the GPU viewport; logical rect
+    // (native-derived) is what the shader's *Size uniforms report.
     const MathUtil::Rectangle<int> target_rect =
         is_final ? dst : pass.output_texture->GetRect();
+    const MathUtil::Rectangle<int> logical_target_rect(
+        0, 0, static_cast<int>(pass.logical_width), static_cast<int>(pass.logical_height));
 
     // Fill + upload the merged PSBlock, packed to match the shader's declared std140 layout.
     // Resolve each member by name: MVP, the *Size semantics, FrameCount, per-input <Name>Size,
@@ -543,8 +567,8 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
       {
         if (m_passes[j].alias == name && m_passes[j].output_texture)
         {
-          size_vec(m_passes[j].output_texture->GetWidth(),
-                   m_passes[j].output_texture->GetHeight(), out);
+          // Report the alias's LOGICAL size (native-derived), not the physical RT size.
+          size_vec(m_passes[j].logical_width, m_passes[j].logical_height, out);
           return true;
         }
       }
@@ -580,8 +604,8 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
       }
       if (name == "OutputSize" || name == "FinalViewportSize")
       {
-        size_vec(static_cast<u32>(target_rect.GetWidth()),
-                 static_cast<u32>(target_rect.GetHeight()), out);
+        size_vec(static_cast<u32>(logical_target_rect.GetWidth()),
+                 static_cast<u32>(logical_target_rect.GetHeight()), out);
         return true;
       }
       if (name == "FrameCount")
@@ -622,7 +646,9 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     if (!is_final)
     {
       prev_output = pass.output_texture.get();
-      prev_rect = pass.output_texture->GetRect();
+      // Advance the logical "Source" size to this pass's logical output (native-derived), so the
+      // next pass's SourceSize is resolution-independent even though prev_output is a larger RT.
+      prev_rect = logical_target_rect;
     }
   }
 

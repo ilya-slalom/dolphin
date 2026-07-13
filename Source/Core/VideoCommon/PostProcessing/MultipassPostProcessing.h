@@ -64,6 +64,12 @@ private:
     std::unique_ptr<AbstractTexture> output_texture;  // null for final pass
     std::unique_ptr<AbstractFramebuffer> output_framebuffer;
     std::string alias;
+    // Logical (native-derived) output size reported to the shader as SourceSize/OutputSize, so
+    // CRT geometry is resolution-independent. The output_texture is allocated at the larger
+    // internal-resolution-scaled size, so higher internal resolution still supersamples the
+    // content fed through the effect.
+    u32 logical_width = 0;
+    u32 logical_height = 0;
   };
   struct Lut
   {
@@ -91,8 +97,13 @@ private:
   u32 m_frame_count = 0;
   u32 m_target_width = 0;
   u32 m_target_height = 0;
-  u32 m_source_width = 0;   // game/input resolution the pass chain was sized against
+  // Native (pre-upscale) source resolution -> drives logical SourceSize (stable CRT geometry).
+  u32 m_source_width = 0;
   u32 m_source_height = 0;
+  // Internal-resolution-scaled source resolution -> drives physical RT allocation (so higher
+  // internal resolution supersamples the content through the effect).
+  u32 m_scaled_source_width = 0;
+  u32 m_scaled_source_height = 0;
 
   std::unique_ptr<AbstractShader> m_passthrough_vertex;
   std::unique_ptr<AbstractShader> m_passthrough_pixel;
