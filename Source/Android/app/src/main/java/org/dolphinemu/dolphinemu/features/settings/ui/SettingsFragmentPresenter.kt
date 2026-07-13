@@ -54,9 +54,6 @@ class SettingsFragmentPresenter(
     private var controllerNumber = 0
     private var controllerType = 0
 
-    // In-memory selected post-processing shader category (top-level folder), or "All".
-    private var postShaderCategory = ""
-
     var gpuDriver: GpuDriverMetadata? = null
     private val libNameSetting: StringSetting = StringSetting.GFX_DRIVER_LIB_NAME
 
@@ -1615,91 +1612,20 @@ class SettingsFragmentPresenter(
             )
         )
 
-        val shaderList = PostProcessing.shaderList
-
-        // Presets are stored as "<category>/<name>" (top-level folder of the buildbot pack).
-        // Offer a category dropdown so the (potentially thousands of) presets are navigable.
-        val allCategory = context.getString(R.string.post_processing_category_all)
-        val categories = shaderList
-            .mapNotNull { it.substringBefore('/', "").ifEmpty { null } }
-            .distinct()
-            .sorted()
-        if (categories.isNotEmpty()) {
-            val categoryEntries = arrayOf(allCategory, *categories.toTypedArray())
-            // Default to "All" unless a previously chosen category is still valid.
-            if (postShaderCategory != allCategory && !categories.contains(postShaderCategory)) {
-                postShaderCategory = allCategory
-            }
-            sl.add(
-                PostProcessingCategorySetting(
-                    context,
-                    R.string.post_processing_category,
-                    R.string.post_processing_category_description,
-                    categoryEntries,
-                    postShaderCategory
-                ) { selected ->
-                    postShaderCategory = selected
-                    loadSettingsList()
-                }
-            )
-        }
-
-        // Filter the preset list to the selected category (top-level = "All" shows everything).
-        val filtered = if (postShaderCategory == allCategory || categories.isEmpty()) {
-            shaderList.toList()
-        } else {
-            shaderList.filter { it.substringBefore('/', "") == postShaderCategory }
-        }
-
-        val shaderListEntries = arrayOf(context.getString(R.string.off), *filtered.toTypedArray())
-        val shaderListValues = arrayOf("", *filtered.toTypedArray())
-
-        sl.add(
-            StringSingleChoiceSetting(
-                context,
-                StringSetting.GFX_ENHANCE_POST_SHADER,
-                R.string.post_processing_shader,
-                R.string.post_processing_shader_description,
-                shaderListEntries,
-                shaderListValues
-            )
-        )
-
-        // Multi-shader chaining: GFX_ENHANCE_POST_SHADER may hold a ';'-separated list of presets
-        // whose pass graphs run back-to-back. The dropdown above picks a single preset (replacing
-        // any chain); these actions build/clear a chain.
-        val currentChain = StringSetting.GFX_ENHANCE_POST_SHADER.string
-        if (currentChain.contains(';')) {
-            sl.add(
-                HeaderSetting(
-                    context,
-                    R.string.post_processing_chain,
-                    0
-                )
-            )
-        }
+        // Post-processing effect picker. A single row whose subtitle shows the current selection
+        // (a shader, an arrow-joined chain, or "Off"). Tapping it opens a two-step picker:
+        // choose a category, then a shader, with "Select" (replace the chain with this shader) and
+        // "Add to Chain" (append it) actions. See openPostProcessingPicker.
         sl.add(
             RunRunnable(
                 context,
-                R.string.post_processing_chain_add,
-                R.string.post_processing_chain_add_description,
+                R.string.post_processing_shader,
+                describePostShaderSelection(StringSetting.GFX_ENHANCE_POST_SHADER.string),
                 0,
                 0,
                 false
-            ) { addToShaderChain(filtered) }
+            ) { openPostProcessingPicker() }
         )
-        if (currentChain.contains(';')) {
-            sl.add(
-                RunRunnable(
-                    context,
-                    R.string.post_processing_chain_clear,
-                    0,
-                    0,
-                    R.string.post_processing_chain_cleared,
-                    false
-                ) { clearShaderChainToFirst() }
-            )
-        }
 
         sl.add(
             RunRunnable(
@@ -2949,35 +2875,94 @@ class SettingsFragmentPresenter(
         )
     }
 
-    // Appends a preset (chosen from the given, category-filtered list) to the post-processing
-    // chain stored in GFX_ENHANCE_POST_SHADER as a ';'-separated list.
-    private fun addToShaderChain(presets: List<String>) {
+    // Builds the subtitle for the post-processing effect row: "Off" when empty, the single preset
+    // name, or an arrow-joined chain (e.g. "crt/crt-royale → interpolation/sharp-bilinear").
+    private fun describePostShaderSelection(spec: String): CharSequence {
+        if (spec.isEmpty()) return context.getString(R.string.off)
+        return spec.split(';').filter { it.isNotEmpty() }.joinToString(" → ")
+    }
+
+    // Two-step post-processing picker. Step 1 lists the shader categories (top-level folders of
+    // the buildbot pack) plus "All"; step 2 lists the shaders in the chosen category with "Select"
+    // (replace the whole chain with this one shader) and "Add to Chain" (append it) actions. The
+    // "Add to Chain" button is only offered once at least one shader is already selected.
+    private fun openPostProcessingPicker() {
+        val shaderList = PostProcessing.shaderList
+        if (shaderList.isEmpty()) {
+            fragmentView.showToastMessage(context.getString(R.string.post_processing_chain_empty))
+            return
+        }
+
+        val allCategory = context.getString(R.string.post_processing_category_all)
+        val categories = shaderList
+            .mapNotNull { it.substringBefore('/', "").ifEmpty { null } }
+            .distinct()
+            .sorted()
+        val categoryEntries = arrayOf(allCategory, *categories.toTypedArray())
+
+        MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
+            .setTitle(R.string.post_processing_shader)
+            .setItems(categoryEntries) { _: DialogInterface, which: Int ->
+                val category = categoryEntries[which]
+                val filtered = if (category == allCategory) {
+                    shaderList.toList()
+                } else {
+                    shaderList.filter { it.substringBefore('/', "") == category }
+                }
+                showPostShaderList(category, filtered)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    // Step 2 of the picker: the shaders in the chosen category, prefixed with "Off". Radio-style
+    // single selection; "Select" replaces the current chain with the highlighted shader, while
+    // "Add to Chain" appends it. "Add to Chain" is hidden until at least one shader is selected.
+    private fun showPostShaderList(category: String, presets: List<String>) {
         val settings = this.settings ?: return
         if (presets.isEmpty()) {
             fragmentView.showToastMessage(context.getString(R.string.post_processing_chain_empty))
             return
         }
-        val entries = presets.toTypedArray()
-        MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
-            .setTitle(R.string.post_processing_chain_add)
-            .setItems(entries) { _: DialogInterface, which: Int ->
-                val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
-                val updated = if (current.isEmpty()) entries[which] else "$current;${entries[which]}"
+
+        val off = context.getString(R.string.off)
+        val entries = arrayOf(off, *presets.toTypedArray())
+        val values = arrayOf("", *presets.toTypedArray())
+
+        // Highlight whichever entry matches the last preset in the current chain, if any.
+        val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
+        val lastPreset = current.split(';').lastOrNull { it.isNotEmpty() } ?: ""
+        var checked = values.indexOf(lastPreset).let { if (it >= 0) it else 0 }
+        val hasSelection = current.isNotEmpty()
+
+        val builder = MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
+            .setTitle(category)
+            .setSingleChoiceItems(entries, checked) { _: DialogInterface, which: Int ->
+                checked = which
+            }
+            // "Select": reset the chain to just the highlighted preset (empty selection = Off).
+            .setPositiveButton(R.string.post_processing_select) { _: DialogInterface, _: Int ->
+                StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, values[checked])
+                fragmentView.onSettingChanged()
+                loadSettingsList()
+            }
+            .setNeutralButton(R.string.cancel, null)
+
+        // "Add to Chain": append the highlighted preset to the existing chain. Only meaningful
+        // when something is already selected, so it is offered only in that case.
+        if (hasSelection) {
+            builder.setNegativeButton(R.string.post_processing_chain_add) { _: DialogInterface, _: Int ->
+                val chosen = values[checked]
+                if (chosen.isEmpty()) return@setNegativeButton  // "Off" has nothing to append.
+                val existing = StringSetting.GFX_ENHANCE_POST_SHADER.string
+                val updated = if (existing.isEmpty()) chosen else "$existing;$chosen"
                 StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, updated)
                 fragmentView.onSettingChanged()
                 loadSettingsList()
             }
-            .show()
-    }
+        }
 
-    // Trims the chain back to just its first preset.
-    private fun clearShaderChainToFirst() {
-        val settings = this.settings ?: return
-        val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
-        val first = current.substringBefore(';')
-        StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, first)
-        fragmentView.onSettingChanged()
-        loadSettingsList()
+        builder.show()
     }
 
     private fun convertOnThread(f: BooleanSupplier) {
