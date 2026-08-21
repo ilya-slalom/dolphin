@@ -68,3 +68,36 @@ TEST(SlangPreset, RejectsMissingShaderCount)
   EXPECT_FALSE(cfg.has_value());
   EXPECT_FALSE(error.empty());
 }
+
+TEST(SlangPreset, CollectsNonStructuralKeysAsParameterOverrides)
+{
+  const std::string text =
+      "shaders = 1\n"
+      "shader0 = stock.slang\n"
+      "filter_linear0 = true\n"
+      "scale0 = 2.0\n"
+      "scale_x0 = 1.5\n"
+      "textures = LUT\n"
+      "LUT = lut.png\n"
+      "LUT_linear = true\n"
+      "masksize = 2.000000\n"
+      "mask_zoom = -1.500000\n"
+      "some_label = notanumber\n";  // non-numeric -> ignored
+
+  std::string error;
+  const auto config = ParseSlangPreset(text, "/base", &error);
+  ASSERT_TRUE(config.has_value()) << error;
+
+  EXPECT_EQ(config->parameter_overrides.size(), 2u);
+  EXPECT_FLOAT_EQ(config->parameter_overrides.at("masksize"), 2.0f);
+  EXPECT_FLOAT_EQ(config->parameter_overrides.at("mask_zoom"), -1.5f);
+  EXPECT_EQ(config->parameter_overrides.count("shaders"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("shader0"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("filter_linear0"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("scale0"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("scale_x0"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("textures"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("LUT"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("LUT_linear"), 0u);
+  EXPECT_EQ(config->parameter_overrides.count("some_label"), 0u);
+}

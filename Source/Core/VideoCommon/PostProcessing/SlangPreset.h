@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -52,6 +53,7 @@ struct SlangPresetConfig
 {
   std::vector<SlangPassConfig> passes;
   std::vector<SlangLutConfig> luts;
+  std::map<std::string, float> parameter_overrides;  // preset-level #pragma parameter overrides
 };
 
 // Parses preset text. base_dir is the directory containing the preset (for path resolution).

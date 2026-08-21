@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -174,7 +175,13 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
       map[key] = value;
   }
 
-  const std::string* shaders_value = Find(map, "shaders");
+  std::set<std::string> consumed;
+  auto use = [&](const std::string& k) -> const std::string* {
+    consumed.insert(k);
+    return Find(map, k);
+  };
+
+  const std::string* shaders_value = use("shaders");
   if (shaders_value == nullptr)
   {
     if (error != nullptr)
@@ -201,7 +208,7 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
   for (long i = 0; i < pass_count; ++i)
   {
     const std::string idx = std::to_string(i);
-    const std::string* shader = Find(map, "shader" + idx);
+    const std::string* shader = use("shader" + idx);
     if (shader == nullptr)
     {
       if (error != nullptr)
@@ -211,26 +218,26 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
 
     SlangPassConfig pass;
     pass.shader_path = ResolvePath(base_dir, *shader);
-    if (const std::string* v = Find(map, "alias" + idx))
+    if (const std::string* v = use("alias" + idx))
       pass.alias = *v;
-    if (const std::string* v = Find(map, "filter_linear" + idx))
+    if (const std::string* v = use("filter_linear" + idx))
       pass.filter_linear = ParseBool(*v);
-    if (const std::string* v = Find(map, "wrap_mode" + idx))
+    if (const std::string* v = use("wrap_mode" + idx))
       pass.wrap_mode = ParseWrapMode(*v);
-    if (const std::string* v = Find(map, "mipmap_input" + idx))
+    if (const std::string* v = use("mipmap_input" + idx))
       pass.mipmap_input = ParseBool(*v);
-    if (const std::string* v = Find(map, "srgb_framebuffer" + idx))
+    if (const std::string* v = use("srgb_framebuffer" + idx))
       pass.srgb_framebuffer = ParseBool(*v);
-    if (const std::string* v = Find(map, "float_framebuffer" + idx))
+    if (const std::string* v = use("float_framebuffer" + idx))
       pass.float_framebuffer = ParseBool(*v);
 
     // Scale: axis-specific keys win; fall back to combined scale_type/scale for both axes.
-    const std::string* combined_type = Find(map, "scale_type" + idx);
-    const std::string* combined_scale = Find(map, "scale" + idx);
-    const std::string* type_x = Find(map, "scale_type_x" + idx);
-    const std::string* type_y = Find(map, "scale_type_y" + idx);
-    const std::string* scale_x = Find(map, "scale_x" + idx);
-    const std::string* scale_y = Find(map, "scale_y" + idx);
+    const std::string* combined_type = use("scale_type" + idx);
+    const std::string* combined_scale = use("scale" + idx);
+    const std::string* type_x = use("scale_type_x" + idx);
+    const std::string* type_y = use("scale_type_y" + idx);
+    const std::string* scale_x = use("scale_x" + idx);
+    const std::string* scale_y = use("scale_y" + idx);
 
     if (type_x != nullptr)
       pass.scale_type_x = ParseScaleType(*type_x);
@@ -256,25 +263,39 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
   }
 
   // Textures (LUTs): "textures = A;B;C" then per-name keys.
-  if (const std::string* textures = Find(map, "textures"))
+  if (const std::string* textures = use("textures"))
   {
     for (const std::string& name : SplitList(*textures, ';'))
     {
-      const std::string* path = Find(map, name);
+      const std::string* path = use(name);
       if (path == nullptr)
         continue;
 
       SlangLutConfig lut;
       lut.name = name;
       lut.path = ResolvePath(base_dir, *path);
-      if (const std::string* v = Find(map, name + "_wrap_mode"))
+      if (const std::string* v = use(name + "_wrap_mode"))
         lut.wrap_mode = ParseWrapMode(*v);
-      if (const std::string* v = Find(map, name + "_linear"))
+      if (const std::string* v = use(name + "_linear"))
         lut.linear = ParseBool(*v);
-      if (const std::string* v = Find(map, name + "_mipmap"))
+      if (const std::string* v = use(name + "_mipmap"))
         lut.mipmap = ParseBool(*v);
       config.luts.push_back(std::move(lut));
     }
+  }
+
+  // Collect non-structural keys that parse as floats into parameter_overrides.
+  for (const auto& [key, value] : map)
+  {
+    if (consumed.count(key) != 0)
+      continue;
+    const std::string trimmed(Trim(value));
+    if (trimmed.empty())
+      continue;
+    char* parse_end = nullptr;
+    const float parsed = std::strtof(trimmed.c_str(), &parse_end);
+    if (parse_end != trimmed.c_str())
+      config.parameter_overrides[key] = parsed;
   }
 
   return config;
