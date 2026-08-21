@@ -228,9 +228,12 @@
     <string name="post_processing_select">Select</string>
     <string name="post_processing_chain_add">Add to Chain</string>
     <string name="post_processing_chain_empty">No shaders available. Download the shader pack first.</string>
-    <string name="post_processing_download">Download Shader Pack</string>
-    <string name="post_processing_download_description">Download the RetroArch slang shader pack from the libretro buildbot</string>
-    <string name="post_processing_download_confirmation">This will download the RetroArch slang shader pack (~50 MB) from the libretro buildbot and install it into your Shaders folder. Continue?</string>
+    <string name="post_processing_download_libretro">Download libretro Shaders</string>
+    <string name="post_processing_download_libretro_description">RetroArch slang shader pack (~50 MB) from the libretro buildbot</string>
+    <string name="post_processing_download_libretro_confirmation">This will download the libretro slang shader pack (~50 MB) and install it into your Shaders folder. Continue?</string>
+    <string name="post_processing_download_satpixie">Download CRT-SatPixie</string>
+    <string name="post_processing_download_satpixie_description">SatPixie CRT shader (small) from GitHub</string>
+    <string name="post_processing_download_satpixie_confirmation">This will download the CRT-SatPixie shader and install it into your Shaders folder. Continue?</string>
     <string name="post_processing_downloading">Downloading shader pack…</string>
     <string name="post_processing_download_success">Installed %1$d shader presets.</string>
     <string name="post_processing_download_failure">Failed to download the shader pack.</string>

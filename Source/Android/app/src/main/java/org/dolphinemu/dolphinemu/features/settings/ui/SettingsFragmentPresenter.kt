@@ -1630,12 +1630,22 @@ class SettingsFragmentPresenter(
         sl.add(
             RunRunnable(
                 context,
-                R.string.post_processing_download,
-                R.string.post_processing_download_description,
-                R.string.post_processing_download_confirmation,
+                R.string.post_processing_download_libretro,
+                R.string.post_processing_download_libretro_description,
+                R.string.post_processing_download_libretro_confirmation,
                 0,
                 false
-            ) { downloadShaderPack() }
+            ) { downloadShaderPack("libretro") }
+        )
+        sl.add(
+            RunRunnable(
+                context,
+                R.string.post_processing_download_satpixie,
+                R.string.post_processing_download_satpixie_description,
+                R.string.post_processing_download_satpixie_confirmation,
+                0,
+                false
+            ) { downloadShaderPack("satpixie") }
         )
 
         sl.add(
@@ -2855,13 +2865,13 @@ class SettingsFragmentPresenter(
         fragmentView.adapter!!.notifyAllSettingsChanged()
     }
 
-    private fun downloadShaderPack() {
+    private fun downloadShaderPack(packId: String) {
         ThreadUtil.runOnThreadAndShowResult(
             fragmentView.fragmentActivity,
             R.string.post_processing_downloading,
             0,
             {
-                val count = PostProcessing.downloadShaderPack()
+                val count = PostProcessing.downloadShaderPack(packId)
                 if (count >= 0) {
                     context.resources.getString(R.string.post_processing_download_success, count)
                 } else {

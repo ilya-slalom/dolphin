@@ -21,15 +21,13 @@ Java_org_dolphinemu_dolphinemu_features_settings_model_PostProcessing_getShaderL
   return SpanToJStringArray(env, VideoCommon::MultipassPostProcessing::GetPresetList());
 }
 
-// Downloads the RetroArch slang shader pack from the libretro buildbot and installs it into the
-// user Shaders dir. Blocking; call off the UI thread. Returns the number of installed .slangp
-// presets, or -1 on failure.
 JNIEXPORT jint JNICALL
-Java_org_dolphinemu_dolphinemu_features_settings_model_PostProcessing_downloadShaderPack(JNIEnv*,
-                                                                                         jclass)
+Java_org_dolphinemu_dolphinemu_features_settings_model_PostProcessing_downloadShaderPack(
+    JNIEnv* env, jclass, jstring pack_id)
 {
-  const VideoCommon::ShaderPackDownloadResult result = VideoCommon::DownloadAndInstallShaderPack(
-      VideoCommon::SLANG_SHADER_PACK_URL, File::GetUserPath(D_SHADERS_IDX));
+  const std::string id = GetJString(env, pack_id);
+  const VideoCommon::ShaderPackDownloadResult result =
+      VideoCommon::DownloadShaderPackById(id, File::GetUserPath(D_SHADERS_IDX));
   return result.ok ? static_cast<jint>(result.preset_count) : -1;
 }
 }
