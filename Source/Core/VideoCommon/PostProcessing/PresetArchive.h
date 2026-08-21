@@ -26,5 +26,6 @@ PresetImportResult ImportPresetArchive(const std::string& zip_path, const std::s
 // (Zip-Slip). Returns the extraction-relative names of all ".slangp" entries found (empty on
 // failure; *error set). Does NOT enforce a single-preset rule -- callers decide.
 std::vector<std::string> ExtractSanitizedArchive(const std::string& zip_path,
-                                                 const std::string& dest_root, std::string* error);
+                                                 const std::string& dest_root, std::string* error,
+                                                 const std::string& strip_prefix = "");
 }  // namespace VideoCommon

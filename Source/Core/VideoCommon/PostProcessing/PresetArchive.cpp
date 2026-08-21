@@ -70,7 +70,8 @@ size_t PathDepth(const std::string& name)
 }  // namespace
 
 std::vector<std::string> ExtractSanitizedArchive(const std::string& zip_path,
-                                                 const std::string& dest_root, std::string* error)
+                                                 const std::string& dest_root, std::string* error,
+                                                 const std::string& strip_prefix)
 {
   const auto fail = [error](std::string message) -> std::vector<std::string> {
     if (error != nullptr)
@@ -100,28 +101,44 @@ std::vector<std::string> ExtractSanitizedArchive(const std::string& zip_path,
     if (IsUnsafeEntryName(name))
       return fail("archive contains an unsafe path: " + name);
 
+    std::string rel = name;
+    if (!strip_prefix.empty())
+    {
+      if (rel.size() < strip_prefix.size() || rel.compare(0, strip_prefix.size(), strip_prefix) != 0)
+      {
+        status = mz_zip_reader_goto_next_entry(reader);
+        continue;
+      }
+      rel = rel.substr(strip_prefix.size());
+      if (rel.empty())  // the prefix directory entry itself
+      {
+        status = mz_zip_reader_goto_next_entry(reader);
+        continue;
+      }
+    }
+
     if (!IsDirectoryEntry(name, info->uncompressed_size))
     {
       // Track presets.
       constexpr std::string_view kExt = ".slangp";
-      if (name.size() >= kExt.size() &&
-          name.compare(name.size() - kExt.size(), kExt.size(), kExt) == 0)
+      if (rel.size() >= kExt.size() &&
+          rel.compare(rel.size() - kExt.size(), kExt.size(), kExt) == 0)
       {
-        slangp_entries.push_back(name);
+        slangp_entries.push_back(rel);
       }
 
       // Extract.
-      const std::string out_path = dest_root + "/" + name;
+      const std::string out_path = dest_root + "/" + rel;
       if (!File::CreateFullPath(out_path))
-        return fail("failed to create path for " + name);
+        return fail("failed to create path for " + rel);
 
       std::vector<u8> buffer(info->uncompressed_size);
       if (info->uncompressed_size != 0 && !Common::ReadFileFromZip(reader, &buffer))
-        return fail("failed to read " + name);
+        return fail("failed to read " + rel);
 
       File::IOFile out(out_path, "wb");
       if (!out || (!buffer.empty() && !out.WriteBytes(buffer.data(), buffer.size())))
-        return fail("failed to write " + name);
+        return fail("failed to write " + rel);
     }
 
     status = mz_zip_reader_goto_next_entry(reader);

@@ -12,6 +12,7 @@
 #include <mz_zip_rw.h>
 
 #include "Common/FileUtil.h"
+#include "Common/ScopeGuard.h"
 #include "VideoCommon/PostProcessing/PresetArchive.h"
 
 using namespace VideoCommon;
@@ -88,4 +89,29 @@ TEST(PresetArchive, RejectsPathTraversalEntries)
   EXPECT_FALSE(result.ok);
   EXPECT_FALSE(File::Exists(tmp + "/evil.slang"));
   File::DeleteDirRecursively(tmp);
+}
+
+TEST(PresetArchive, StripPrefixExtractsOnlySubtree)
+{
+  const std::string dir = File::CreateTempDir();
+  ASSERT_FALSE(dir.empty());
+  Common::ScopeGuard guard{[&] { File::DeleteDirRecursively(dir); }};
+
+  const std::string zip = dir + "/pack.zip";
+  WriteZip(zip, {
+      {"top/RetroArch/shaders/shaders_slang/crt/x.slangp", "shaders = 0\n"},
+      {"top/RetroArch/shaders/shaders_slang/crt/shaders/s.slang", "// stage\n"},
+      {"top/Reshade/ignore.fx", "// not us\n"},
+  });
+
+  const std::string dest = dir + "/out";
+  std::string error;
+  const std::vector<std::string> presets = ExtractSanitizedArchive(
+      zip, dest, &error, "top/RetroArch/shaders/shaders_slang/");
+
+  EXPECT_TRUE(error.empty()) << error;
+  EXPECT_EQ(presets, (std::vector<std::string>{"crt/x.slangp"}));
+  EXPECT_TRUE(File::Exists(dest + "/crt/x.slangp"));
+  EXPECT_TRUE(File::Exists(dest + "/crt/shaders/s.slang"));
+  EXPECT_FALSE(File::Exists(dest + "/Reshade/ignore.fx"));
 }
