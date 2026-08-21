@@ -108,7 +108,13 @@ ShaderPackDownloadResult DownloadShaderPackById(std::string_view id,
   if (source == nullptr)
     return {false, 0, "unknown shader pack id"};
 
-  // Dependencies are ensured by the caller/registry in Phase 2; Phase 1 sources have none.
+  for (const std::string& dep_id : MissingDependencies(*source, shaders_root))
+  {
+    const ShaderPackDownloadResult dep_result = DownloadShaderPackById(dep_id, shaders_root, progress);
+    if (!dep_result.ok)
+      return {false, 0, "failed to install dependency '" + dep_id + "': " + dep_result.error};
+  }
+
   Common::HttpRequest::ProgressCallback curl_progress = nullptr;
   if (progress)
   {

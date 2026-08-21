@@ -17,8 +17,11 @@ struct ShaderPackSource
   std::string extract_subpath;
   std::string install_subdir;
   std::vector<std::string> depends_on;
+  std::string install_marker;  // path under shaders_root that exists iff installed; "" = skip
 };
 
 const std::vector<ShaderPackSource>& GetShaderPackSources();
 const ShaderPackSource* FindShaderPackSource(std::string_view id);
+std::vector<std::string> MissingDependencies(const ShaderPackSource& source,
+                                              const std::string& shaders_root);
 }  // namespace VideoCommon
