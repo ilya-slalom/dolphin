@@ -152,6 +152,8 @@ add_library(videocommon
   PostProcessing/PassSizing.h
   PostProcessing/PresetArchive.cpp
   PostProcessing/PresetArchive.h
+  PostProcessing/RetroCrisisInstall.cpp
+  PostProcessing/RetroCrisisInstall.h
   PostProcessing/ShaderPackDownload.cpp
   PostProcessing/ShaderPackDownload.h
   PostProcessing/ShaderPackSource.cpp

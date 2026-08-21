@@ -10,3 +10,4 @@ add_dolphin_test(ShaderPackDownloadTest PostProcessing/ShaderPackDownloadTest.cp
 add_dolphin_test(ShaderPackSourceTest PostProcessing/ShaderPackSourceTest.cpp)
 add_dolphin_test(PresetNameTest PostProcessing/PresetNameTest.cpp)
 add_dolphin_test(SlangCompileTest PostProcessing/SlangCompileTest.cpp)
+add_dolphin_test(RetroCrisisInstallTest PostProcessing/RetroCrisisInstallTest.cpp)
