@@ -100,7 +100,9 @@ std::vector<std::string> MultipassPostProcessing::GetPresetList()
   const std::array<std::string_view, 1> exts = {".slangp"};
   const std::vector<std::string> paths = Common::DoFileSearch(dirs, exts, /*recursive=*/true);
 
-  const std::vector<std::string> roots = {user_dir, sys_dir};
+  const std::string user_slang = user_dir + "shaders_slang" DIR_SEP;
+  const std::string sys_slang = sys_dir + "shaders_slang" DIR_SEP;
+  const std::vector<std::string> roots = {user_slang, sys_slang, user_dir, sys_dir};
   std::vector<std::string> result;
   result.reserve(paths.size());
   for (const std::string& path : paths)
@@ -170,8 +172,12 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
   if (preset_name.empty())
     return;
 
-  // Resolve preset path: user Shaders dir first, then Sys.
-  std::string path = File::GetUserPath(D_SHADERS_IDX) + preset_name + ".slangp";
+  // Resolve preset path: try shaders_slang/ location first, then legacy flat location.
+  std::string path = File::GetUserPath(D_SHADERS_IDX) + "shaders_slang" DIR_SEP + preset_name + ".slangp";
+  if (!File::Exists(path))
+    path = File::GetUserPath(D_SHADERS_IDX) + preset_name + ".slangp";
+  if (!File::Exists(path))
+    path = File::GetSysDirectory() + SHADERS_DIR DIR_SEP "shaders_slang" DIR_SEP + preset_name + ".slangp";
   if (!File::Exists(path))
     path = File::GetSysDirectory() + SHADERS_DIR DIR_SEP + preset_name + ".slangp";
   if (!File::Exists(path))

@@ -40,3 +40,13 @@ TEST(PresetName, NormalizesBackslashes)
   EXPECT_EQ(PresetNameFromPath("C:\\user\\Shaders\\crt\\crt-royale.slangp", roots),
             "crt/crt-royale");
 }
+
+// After re-rooting, presets live under <Shaders>/shaders_slang/. The display name must strip
+// that segment so existing GFX_ENHANCE_POST_SHADER values (e.g. "crt/crt-royale") keep matching.
+TEST(PresetName, StripsShadersSlangPrefix)
+{
+  const std::vector<std::string> roots = {"/user/Shaders/shaders_slang/", "/user/Shaders/"};
+  EXPECT_EQ(
+      PresetNameFromPath("/user/Shaders/shaders_slang/crt/crt-royale.slangp", roots),
+      "crt/crt-royale");
+}
