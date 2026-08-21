@@ -272,6 +272,7 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
     pass.sampler_names = std::move(translated.sampler_names);
     pass.ubo_members = std::move(translated.ubo_members);
     pass.parameters = parsed->parameters;
+    pass.parameter_overrides = config->parameter_overrides;
     pass.input_sampler =
         MakeSlangSamplerState(pass_config.wrap_mode, pass_config.filter_linear,
                               pass_config.mipmap_input);
@@ -627,14 +628,12 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
         if (input_size(name.substr(0, name.size() - kSize.size()), out))
           return true;
       }
-      // #pragma parameter default.
-      for (const SlangParameter& param : pass.parameters)
+      // Preset override wins over the #pragma parameter default.
+      float param_value = 0.0f;
+      if (ResolveShaderParameter(pass.parameter_overrides, pass.parameters, name, &param_value))
       {
-        if (param.id == name)
-        {
-          out[0] = param.default_value;
-          return true;
-        }
+        out[0] = param_value;
+        return true;
       }
       (void)count;
       return false;  // zero-fill unknown members

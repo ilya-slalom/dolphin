@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <map>
+
 #include "VideoCommon/PostProcessing/SlangShader.h"
 
 using namespace VideoCommon;
@@ -127,4 +129,23 @@ TEST(SlangShader, ExpandsNestedIncludesRelativeToIncluder)
   };
   const std::string expanded = ExpandSlangIncludes(root, "/root", reader);
   EXPECT_NE(expanded.find("RESOLVED_NESTED"), std::string::npos);
+}
+
+TEST(SlangShader, ParameterOverrideBeatsDefault)
+{
+  const std::vector<SlangParameter> params = {
+      {/*id=*/"masksize", "Mask Size", /*default=*/1.0f, 0.0f, 4.0f, 1.0f},
+      {/*id=*/"gamma", "Gamma", /*default=*/2.4f, 0.0f, 5.0f, 0.1f},
+  };
+  const std::map<std::string, float> overrides = {{"masksize", 3.0f}};
+
+  float out = -1.0f;
+  EXPECT_TRUE(ResolveShaderParameter(overrides, params, "masksize", &out));
+  EXPECT_FLOAT_EQ(out, 3.0f);  // override wins
+
+  out = -1.0f;
+  EXPECT_TRUE(ResolveShaderParameter(overrides, params, "gamma", &out));
+  EXPECT_FLOAT_EQ(out, 2.4f);  // falls back to #pragma default
+
+  EXPECT_FALSE(ResolveShaderParameter(overrides, params, "unknown", &out));
 }

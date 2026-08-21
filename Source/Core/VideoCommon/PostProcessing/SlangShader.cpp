@@ -142,6 +142,27 @@ std::string ExpandSlangIncludes(const std::string& text, const std::string& base
   return out;
 }
 
+bool ResolveShaderParameter(const std::map<std::string, float>& overrides,
+                            const std::vector<SlangParameter>& parameters, std::string_view name,
+                            float* out)
+{
+  const auto it = overrides.find(std::string(name));
+  if (it != overrides.end())
+  {
+    *out = it->second;
+    return true;
+  }
+  for (const SlangParameter& param : parameters)
+  {
+    if (param.id == name)
+    {
+      *out = param.default_value;
+      return true;
+    }
+  }
+  return false;
+}
+
 std::optional<SlangShaderSource> ParseSlangShader(const std::string& text, std::string* error)
 {
   SlangShaderSource shader;

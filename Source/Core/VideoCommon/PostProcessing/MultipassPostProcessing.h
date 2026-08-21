@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,6 +58,7 @@ private:
     std::vector<std::string> sampler_names;  // binding index -> input name
     std::vector<UboMember> ubo_members;      // merged PSBlock layout, in declaration order
     std::vector<SlangParameter> parameters;  // #pragma parameter defaults for this pass
+    std::map<std::string, float> parameter_overrides;  // preset-level overrides (flat namespace)
     SamplerState input_sampler;              // sampler applied to this pass's inputs
     std::unique_ptr<AbstractShader> vertex_shader;
     std::unique_ptr<AbstractShader> pixel_shader;

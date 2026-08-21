@@ -4,8 +4,10 @@
 #pragma once
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace VideoCommon
@@ -29,6 +31,10 @@ struct SlangParameter
   float max_value = 0.0f;
   float step = 0.0f;
 };
+
+bool ResolveShaderParameter(const std::map<std::string, float>& overrides,
+                            const std::vector<SlangParameter>& parameters, std::string_view name,
+                            float* out);
 
 struct SlangShaderSource
 {
