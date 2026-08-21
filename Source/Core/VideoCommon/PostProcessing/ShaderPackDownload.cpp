@@ -14,6 +14,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/ScopeGuard.h"
 #include "VideoCommon/PostProcessing/PresetArchive.h"
+#include "VideoCommon/PostProcessing/ShaderPackSource.h"
 
 namespace VideoCommon
 {
@@ -70,5 +71,60 @@ ShaderPackDownloadResult DownloadAndInstallShaderPack(const std::string& url,
   INFO_LOG_FMT(VIDEO, "Downloaded {} bytes; extracting shader pack into {}", response->size(),
                dest_root);
   return InstallShaderPackFromZip(zip_path, dest_root);
+}
+
+ShaderPackDownloadResult InstallShaderPackSource(const ShaderPackSource& source,
+                                                 const std::string& local_zip_path,
+                                                 const std::string& shaders_root)
+{
+  const std::string dest =
+      source.install_subdir.empty() ? shaders_root : shaders_root + DIR_SEP + source.install_subdir;
+
+  std::string error;
+  const std::vector<std::string> presets =
+      ExtractSanitizedArchive(local_zip_path, dest, &error, source.extract_subpath);
+  if (presets.empty() && !error.empty())
+    return {false, 0, error};
+  return {true, static_cast<u32>(presets.size()), ""};
+}
+
+ShaderPackDownloadResult DownloadShaderPackById(std::string_view id,
+                                                const std::string& shaders_root,
+                                                DownloadProgress progress)
+{
+  const ShaderPackSource* source = FindShaderPackSource(id);
+  if (source == nullptr)
+    return {false, 0, "unknown shader pack id"};
+
+  // Dependencies are ensured by the caller/registry in Phase 2; Phase 1 sources have none.
+  Common::HttpRequest::ProgressCallback curl_progress = nullptr;
+  if (progress)
+  {
+    curl_progress = [progress](s64 dltotal, s64 dlnow, s64, s64) -> bool {
+      return progress(dlnow, dltotal);
+    };
+  }
+
+  Common::HttpRequest http(std::chrono::seconds(60), std::move(curl_progress));
+  http.FollowRedirects(10);
+  const Common::HttpRequest::Response response = http.Get(source->url);
+  if (!response)
+  {
+    return {false, 0,
+            "download failed (HTTP " + std::to_string(http.GetLastResponseCode()) + ")"};
+  }
+
+  const std::string tmp_dir = File::CreateTempDir();
+  if (tmp_dir.empty())
+    return {false, 0, "could not create temp directory"};
+  Common::ScopeGuard tmp_guard{[&] { File::DeleteDirRecursively(tmp_dir); }};
+
+  const std::string zip_path = tmp_dir + DIR_SEP "pack.zip";
+  {
+    File::IOFile zip(zip_path, "wb");
+    if (!zip || !zip.WriteBytes(response->data(), response->size()))
+      return {false, 0, "failed to write downloaded archive"};
+  }
+  return InstallShaderPackSource(*source, zip_path, shaders_root);
 }
 }  // namespace VideoCommon

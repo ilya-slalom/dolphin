@@ -5,11 +5,14 @@
 
 #include <functional>
 #include <string>
+#include <string_view>
 
 #include "Common/CommonTypes.h"
 
 namespace VideoCommon
 {
+struct ShaderPackSource;
+
 // The canonical libretro slang shader pack on the buildbot (verified 2026-07-12).
 constexpr char SLANG_SHADER_PACK_URL[] =
     "https://buildbot.libretro.com/assets/frontend/shaders_slang.zip";
@@ -37,4 +40,16 @@ ShaderPackDownloadResult DownloadAndInstallShaderPack(const std::string& url,
 // the .slangp files extracted.
 ShaderPackDownloadResult InstallShaderPackFromZip(const std::string& local_zip_path,
                                                   const std::string& dest_root);
+
+// Installs an already-downloaded zip for a known source id, applying its extract_subpath and
+// install_subdir under shaders_root. Network-free half; used by tests and the downloader.
+ShaderPackDownloadResult InstallShaderPackSource(const ShaderPackSource& source,
+                                                 const std::string& local_zip_path,
+                                                 const std::string& shaders_root);
+
+// Downloads + installs the source with the given id into shaders_root. Returns ok=false with
+// error set if the id is unknown or the download/extract fails.
+ShaderPackDownloadResult DownloadShaderPackById(std::string_view id,
+                                                const std::string& shaders_root,
+                                                DownloadProgress progress = nullptr);
 }  // namespace VideoCommon

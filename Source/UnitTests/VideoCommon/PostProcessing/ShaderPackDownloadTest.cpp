@@ -13,7 +13,9 @@
 
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
+#include "Common/ScopeGuard.h"
 #include "VideoCommon/PostProcessing/ShaderPackDownload.h"
+#include "VideoCommon/PostProcessing/ShaderPackSource.h"
 
 using namespace VideoCommon;
 
@@ -74,4 +76,30 @@ TEST(ShaderPackDownload, RejectsCorruptZip)
   EXPECT_FALSE(result.ok);
   EXPECT_FALSE(result.error.empty());
   File::DeleteDirRecursively(tmp);
+}
+
+TEST(ShaderPackDownload, InstallSourceAppliesSubpathAndSubdir)
+{
+  const std::string dir = File::CreateTempDir();
+  ASSERT_FALSE(dir.empty());
+  Common::ScopeGuard guard{[&] { File::DeleteDirRecursively(dir); }};
+
+  const std::string zip = dir + "/satpixie.zip";
+  WriteZip(zip, {
+      {"satpixie-crt-shader/RetroArch/shaders/shaders_slang/crt/satpixie-crt.slangp", "shaders = 0\n"},
+      {"satpixie-crt-shader/Reshade/ignore.fx", "// no\n"},
+  });
+
+  const VideoCommon::ShaderPackSource source{
+      "satpixie", "CRT-SatPixie", "unused-url",
+      "satpixie-crt-shader/RetroArch/shaders/shaders_slang/", "shaders_slang", {}};
+
+  const std::string shaders_root = dir + "/Shaders";
+  const ShaderPackDownloadResult result =
+      InstallShaderPackSource(source, zip, shaders_root);
+
+  EXPECT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.preset_count, 1u);
+  EXPECT_TRUE(File::Exists(shaders_root + "/shaders_slang/crt/satpixie-crt.slangp"));
+  EXPECT_FALSE(File::Exists(shaders_root + "/shaders_slang/Reshade/ignore.fx"));
 }
