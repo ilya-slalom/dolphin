@@ -103,3 +103,39 @@ TEST(ShaderPackDownload, InstallSourceAppliesSubpathAndSubdir)
   EXPECT_TRUE(File::Exists(shaders_root + "/shaders_slang/crt/satpixie-crt.slangp"));
   EXPECT_FALSE(File::Exists(shaders_root + "/shaders_slang/Reshade/ignore.fx"));
 }
+
+TEST(ShaderPackDownload, UnknownIdReturnsError)
+{
+  const std::string tmp = File::CreateTempDir();
+  ASSERT_FALSE(tmp.empty());
+  Common::ScopeGuard guard{[&] { File::DeleteDirRecursively(tmp); }};
+
+  const ShaderPackDownloadResult result = DownloadShaderPackById("nope", tmp + "/Shaders", nullptr);
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.preset_count, 0u);
+  EXPECT_EQ(result.error, "unknown shader pack id");
+}
+
+TEST(ShaderPackDownload, FailsWhenSubpathMatchesNothing)
+{
+  const std::string dir = File::CreateTempDir();
+  ASSERT_FALSE(dir.empty());
+  Common::ScopeGuard guard{[&] { File::DeleteDirRecursively(dir); }};
+
+  const std::string zip = dir + "/pack.zip";
+  WriteZip(zip, {
+      {"other-subtree/preset.slangp", "shaders = 0\n"},
+      {"other-subtree/shader.slang", "#pragma stage vertex\nvoid main(){}\n"},
+  });
+
+  const VideoCommon::ShaderPackSource source{
+      "test-wrong-path", "Test", "unused-url",
+      "nonexistent-subtree/", "shaders_slang", {}};
+
+  const std::string shaders_root = dir + "/Shaders";
+  const ShaderPackDownloadResult result = InstallShaderPackSource(source, zip, shaders_root);
+
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.preset_count, 0u);
+  EXPECT_FALSE(result.error.empty());
+}

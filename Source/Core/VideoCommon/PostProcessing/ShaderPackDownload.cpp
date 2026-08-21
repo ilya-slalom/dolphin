@@ -77,14 +77,26 @@ ShaderPackDownloadResult InstallShaderPackSource(const ShaderPackSource& source,
                                                  const std::string& local_zip_path,
                                                  const std::string& shaders_root)
 {
+  // Normalize shaders_root: strip trailing DIR_SEP to avoid doubling when appending subdir.
+  std::string root = shaders_root;
+  if (!root.empty() && root.back() == DIR_SEP_CHR)
+    root.pop_back();
+
   const std::string dest =
-      source.install_subdir.empty() ? shaders_root : shaders_root + DIR_SEP + source.install_subdir;
+      source.install_subdir.empty() ? root : root + DIR_SEP + source.install_subdir;
 
   std::string error;
   const std::vector<std::string> presets =
       ExtractSanitizedArchive(local_zip_path, dest, &error, source.extract_subpath);
   if (presets.empty() && !error.empty())
     return {false, 0, error};
+  if (presets.empty())
+  {
+    const std::string message = source.extract_subpath.empty()
+                                    ? "no shader presets found in archive"
+                                    : "no shader presets found matching subpath";
+    return {false, 0, message};
+  }
   return {true, static_cast<u32>(presets.size()), ""};
 }
 
