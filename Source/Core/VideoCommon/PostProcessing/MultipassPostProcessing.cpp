@@ -189,7 +189,10 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
 
   const std::string base_dir = DirectoryOf(path);
   std::string error;
-  const auto config = ParseSlangPreset(text, base_dir, &error);
+  const SlangPresetReader preset_reader = [](const std::string& p, std::string* out) {
+    return File::ReadFileToString(p, *out);
+  };
+  const auto config = ParseSlangPreset(text, base_dir, &error, preset_reader);
   if (!config)
   {
     ERROR_LOG_FMT(VIDEO, "Post-processing: failed to load preset {}: {}", preset_name, error);
