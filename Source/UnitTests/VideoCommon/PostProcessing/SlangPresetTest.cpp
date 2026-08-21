@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <gtest/gtest.h>
+#include <map>
 
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 
@@ -100,4 +101,79 @@ TEST(SlangPreset, CollectsNonStructuralKeysAsParameterOverrides)
   EXPECT_EQ(config->parameter_overrides.count("LUT"), 0u);
   EXPECT_EQ(config->parameter_overrides.count("LUT_linear"), 0u);
   EXPECT_EQ(config->parameter_overrides.count("some_label"), 0u);
+}
+
+namespace
+{
+// In-memory reader mapping absolute preset paths to their text, for #reference tests.
+VideoCommon::SlangPresetReader MapReader(std::map<std::string, std::string> files)
+{
+  return [files = std::move(files)](const std::string& path, std::string* out) {
+    const auto it = files.find(path);
+    if (it == files.end())
+      return false;
+    *out = it->second;
+    return true;
+  };
+}
+}  // namespace
+
+TEST(SlangPreset, ReferenceInheritsPassesAndMergesOverrides)
+{
+  // Child references base and only overrides a parameter.
+  const std::string base =
+      "shaders = 1\n"
+      "shader0 = ../shaders_slang/crt/stock.slang\n"
+      "masksize = 1.000000\n"
+      "gamma = 2.400000\n";
+  const std::string child =
+      "#reference \"../4K Flat/preset.slangp\"\n"
+      "masksize = 3.000000\n";
+
+  const auto reader = MapReader({{"/packs/4K Flat/preset.slangp", base}});
+  std::string error;
+  const auto config =
+      ParseSlangPreset(child, "/packs/1080p Flat", &error, reader);
+  ASSERT_TRUE(config.has_value()) << error;
+
+  // Passes inherited from base, resolved relative to the BASE file's directory.
+  ASSERT_EQ(config->passes.size(), 1u);
+  EXPECT_EQ(config->passes[0].shader_path, "/packs/shaders_slang/crt/stock.slang");
+  // Child override wins; base's other override is retained.
+  EXPECT_FLOAT_EQ(config->parameter_overrides.at("masksize"), 3.0f);
+  EXPECT_FLOAT_EQ(config->parameter_overrides.at("gamma"), 2.4f);
+}
+
+TEST(SlangPreset, ReferenceChainDepthTwo)
+{
+  const std::string k4 =
+      "shaders = 1\n"
+      "shader0 = ../shaders_slang/crt/stock.slang\n"
+      "curvature = 0.000000\n";
+  const std::string k1080 =
+      "#reference \"../4K Flat/p.slangp\"\n"
+      "masksize = 2.000000\n";
+  const std::string curved =
+      "#reference \"../1080p Flat/p.slangp\"\n"
+      "curvature = 1.000000\n";
+
+  const auto reader = MapReader({
+      {"/packs/4K Flat/p.slangp", k4},
+      {"/packs/1080p Flat/p.slangp", k1080},
+  });
+  std::string error;
+  const auto config = ParseSlangPreset(curved, "/packs/1080p Curved", &error, reader);
+  ASSERT_TRUE(config.has_value()) << error;
+  EXPECT_EQ(config->passes[0].shader_path, "/packs/shaders_slang/crt/stock.slang");
+  EXPECT_FLOAT_EQ(config->parameter_overrides.at("masksize"), 2.0f);   // from 1080p Flat
+  EXPECT_FLOAT_EQ(config->parameter_overrides.at("curvature"), 1.0f);  // curved wins over base 0
+}
+
+TEST(SlangPreset, MissingReferenceFails)
+{
+  std::string error;
+  const auto config = ParseSlangPreset("#reference \"nope.slangp\"\nshaders = 0\n",
+                                       "/packs/x", &error, MapReader({}));
+  EXPECT_FALSE(config.has_value());
+  EXPECT_FALSE(error.empty());
 }

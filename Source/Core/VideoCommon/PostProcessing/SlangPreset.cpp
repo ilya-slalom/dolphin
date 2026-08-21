@@ -4,11 +4,13 @@
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <set>
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace VideoCommon
 {
@@ -153,12 +155,22 @@ std::vector<std::string> SplitList(const std::string& value, char delim)
   }
   return out;
 }
-}  // namespace
 
-std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
-                                                  const std::string& base_dir, std::string* error)
+std::string DirectoryOf(const std::string& path)
+{
+  const auto slash = path.find_last_of('/');
+  return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
+constexpr int kMaxReferenceDepth = 16;
+
+std::optional<SlangPresetConfig> ParseSlangPresetImpl(const std::string& text,
+                                                      const std::string& base_dir,
+                                                      std::string* error,
+                                                      const SlangPresetReader& reader, int depth)
 {
   KeyMap map;
+  std::vector<std::string> references;
   std::istringstream in(text);
   std::string line;
   while (std::getline(in, line))
@@ -167,12 +179,53 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
     if (!view.empty() && view.back() == '\r')
       view.remove_suffix(1);
     view = Trim(view);
-    if (view.empty() || view.front() == '#')
+    if (view.empty())
       continue;
+    if (view.front() == '#')
+    {
+      constexpr std::string_view kRef = "#reference";
+      if (view.size() >= kRef.size() && view.compare(0, kRef.size(), kRef) == 0)
+      {
+        const std::string_view rest = Trim(view.substr(kRef.size()));
+        references.emplace_back(Unquote(rest));
+      }
+      continue;
+    }
 
     std::string key, value;
     if (SplitKeyValue(view, &key, &value))
       map[key] = value;
+  }
+
+  SlangPresetConfig config;
+
+  if (!references.empty())
+  {
+    if (depth >= kMaxReferenceDepth)
+    {
+      if (error != nullptr)
+        *error = "#reference nesting too deep";
+      return std::nullopt;
+    }
+    for (const std::string& ref : references)
+    {
+      const std::string ref_path = ResolvePath(base_dir, ref);
+      std::string ref_text;
+      if (!reader || !reader(ref_path, &ref_text))
+      {
+        if (error != nullptr)
+          *error = "could not read #reference target: " + ref_path;
+        return std::nullopt;
+      }
+      const auto base = ParseSlangPresetImpl(ref_text, DirectoryOf(ref_path), error, reader, depth + 1);
+      if (!base)
+        return std::nullopt;
+      // Later reference wins for structure; params merge in order.
+      config.passes = base->passes;
+      config.luts = base->luts;
+      for (const auto& [k, v] : base->parameter_overrides)
+        config.parameter_overrides[k] = v;
+    }
   }
 
   std::set<std::string> consumed;
@@ -184,28 +237,36 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
   const std::string* shaders_value = use("shaders");
   if (shaders_value == nullptr)
   {
-    if (error != nullptr)
-      *error = "missing 'shaders' count";
-    return std::nullopt;
-  }
-
-  long pass_count = 0;
-  {
-    const std::string trimmed(Trim(*shaders_value));
-    char* parse_end = nullptr;
-    pass_count = std::strtol(trimmed.c_str(), &parse_end, 10);
-    if (trimmed.empty() || parse_end == trimmed.c_str() || pass_count < 0)
+    if (references.empty())
     {
       if (error != nullptr)
-        *error = "invalid 'shaders' count";
+        *error = "missing 'shaders' count";
       return std::nullopt;
     }
+    // Inheriting passes/LUTs from #reference; only parameter overrides below.
   }
+  else
+  {
+    // Local shaders key present: local structure REPLACES inherited.
+    config.passes.clear();
+    config.luts.clear();
 
-  SlangPresetConfig config;
-  config.passes.reserve(static_cast<size_t>(pass_count));
+    long pass_count = 0;
+    {
+      const std::string trimmed(Trim(*shaders_value));
+      char* parse_end = nullptr;
+      pass_count = std::strtol(trimmed.c_str(), &parse_end, 10);
+      if (trimmed.empty() || parse_end == trimmed.c_str() || pass_count < 0)
+      {
+        if (error != nullptr)
+          *error = "invalid 'shaders' count";
+        return std::nullopt;
+      }
+    }
 
-  for (long i = 0; i < pass_count; ++i)
+    config.passes.reserve(static_cast<size_t>(pass_count));
+
+    for (long i = 0; i < pass_count; ++i)
   {
     const std::string idx = std::to_string(i);
     const std::string* shader = use("shader" + idx);
@@ -262,25 +323,26 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
     config.passes.push_back(std::move(pass));
   }
 
-  // Textures (LUTs): "textures = A;B;C" then per-name keys.
-  if (const std::string* textures = use("textures"))
-  {
-    for (const std::string& name : SplitList(*textures, ';'))
+    // Textures (LUTs): "textures = A;B;C" then per-name keys.
+    if (const std::string* textures = use("textures"))
     {
-      const std::string* path = use(name);
-      if (path == nullptr)
-        continue;
+      for (const std::string& name : SplitList(*textures, ';'))
+      {
+        const std::string* path = use(name);
+        if (path == nullptr)
+          continue;
 
-      SlangLutConfig lut;
-      lut.name = name;
-      lut.path = ResolvePath(base_dir, *path);
-      if (const std::string* v = use(name + "_wrap_mode"))
-        lut.wrap_mode = ParseWrapMode(*v);
-      if (const std::string* v = use(name + "_linear"))
-        lut.linear = ParseBool(*v);
-      if (const std::string* v = use(name + "_mipmap"))
-        lut.mipmap = ParseBool(*v);
-      config.luts.push_back(std::move(lut));
+        SlangLutConfig lut;
+        lut.name = name;
+        lut.path = ResolvePath(base_dir, *path);
+        if (const std::string* v = use(name + "_wrap_mode"))
+          lut.wrap_mode = ParseWrapMode(*v);
+        if (const std::string* v = use(name + "_linear"))
+          lut.linear = ParseBool(*v);
+        if (const std::string* v = use(name + "_mipmap"))
+          lut.mipmap = ParseBool(*v);
+        config.luts.push_back(std::move(lut));
+      }
     }
   }
 
@@ -299,5 +361,13 @@ std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
   }
 
   return config;
+}
+}  // namespace
+
+std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
+                                                  const std::string& base_dir, std::string* error,
+                                                  const SlangPresetReader& reader)
+{
+  return ParseSlangPresetImpl(text, base_dir, error, reader, 0);
 }
 }  // namespace VideoCommon

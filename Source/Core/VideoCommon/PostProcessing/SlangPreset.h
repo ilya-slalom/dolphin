@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -56,8 +57,11 @@ struct SlangPresetConfig
   std::map<std::string, float> parameter_overrides;  // preset-level #pragma parameter overrides
 };
 
+using SlangPresetReader = std::function<bool(const std::string& path, std::string* out)>;
+
 // Parses preset text. base_dir is the directory containing the preset (for path resolution).
 // Returns std::nullopt with *error set on malformed input.
 std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,
-                                                  const std::string& base_dir, std::string* error);
+                                                  const std::string& base_dir, std::string* error,
+                                                  const SlangPresetReader& reader = {});
 }  // namespace VideoCommon
