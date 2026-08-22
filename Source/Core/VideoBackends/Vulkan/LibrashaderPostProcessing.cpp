@@ -228,8 +228,20 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     const libra_instance_t& lib = GetLibrashaderInstance();
 
     const auto* in_tex = static_cast<const VKTexture*>(src_tex);
-    libra_image_vk_t in{in_tex->GetImage(), in_tex->GetVkFormat(), in_tex->GetWidth(),
-                        in_tex->GetHeight()};
+
+    // librashader derives SourceSize/OriginalSize from the dimensions we declare here, and CRT
+    // presets (crt-royale, RetroCrisis) scale their scanline and phosphor-mask geometry by
+    // SourceSize. Dolphin's XFB source texture is at the internal (upscaled) resolution, so
+    // declaring its full extent would report SourceSize = internal res -> the mask/scanline period
+    // shrinks with the internal-resolution multiplier (moire, invisible scanlines) and every pass
+    // runs against the oversized source (slowdown at high IR). We instead declare the NATIVE
+    // resolution while still binding the full-resolution image: librashader samples the bound image
+    // with normalized coordinates, so it keeps the supersampled detail but computes geometry against
+    // native pixels -- identical to MultipassPostProcessing's native-SourceSize handling. Fall back
+    // to the texture extent for any path that does not supply a native size.
+    const uint32_t source_width = native_width != 0 ? native_width : in_tex->GetWidth();
+    const uint32_t source_height = native_height != 0 ? native_height : in_tex->GetHeight();
+    libra_image_vk_t in{in_tex->GetImage(), in_tex->GetVkFormat(), source_width, source_height};
 
     auto* out_tex = static_cast<VKTexture*>(framebuffer->GetColorAttachment());
     libra_image_vk_t out{out_tex->GetImage(), out_tex->GetVkFormat(), out_tex->GetWidth(),
