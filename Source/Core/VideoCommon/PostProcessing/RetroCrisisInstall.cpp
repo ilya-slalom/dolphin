@@ -10,7 +10,9 @@
 #include "Common/FileSearch.h"
 #include "Common/FileUtil.h"
 #include "Common/IOFile.h"
+#include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
+#include "VideoCommon/PostProcessing/SlangPreset.h"
 
 namespace VideoCommon
 {
@@ -18,33 +20,6 @@ namespace
 {
 constexpr char kRoot[] = "retro crisis/";
 constexpr char kManifest[] = "/.dolphin-retrocrisis-profile";
-
-// Normalizes path segments by resolving ".." (minimal lexical normalization).
-std::string NormalizePath(const std::string& path)
-{
-  std::vector<std::string> segments;
-  std::size_t start = 0;
-  while (start < path.size())
-  {
-    std::size_t end = path.find('/', start);
-    if (end == std::string::npos)
-      end = path.size();
-    const std::string seg = path.substr(start, end - start);
-    if (seg == ".." && !segments.empty())
-      segments.pop_back();
-    else if (!seg.empty() && seg != ".")
-      segments.push_back(seg);
-    start = end + 1;
-  }
-  std::string result;
-  for (std::size_t i = 0; i < segments.size(); ++i)
-  {
-    if (i > 0)
-      result += "/";
-    result += segments[i];
-  }
-  return result;
-}
 
 // Reads #reference targets from preset text (thin re-scan; the full parser is not needed here).
 std::vector<std::string> ReferenceTargets(const std::string& text)
@@ -176,7 +151,11 @@ u32 InstallRetroCrisisProfile(const std::string& extract_root, const std::string
     const std::string src = extract_root + "/" + rel;
     const std::string dst = install_root + "/" + rel;
     File::CreateFullPath(dst);
-    File::Copy(src, dst);
+    if (!File::Copy(src, dst))
+    {
+      WARN_LOG_FMT(VIDEO, "RetroCrisis: failed to copy {} -> {}", src, dst);
+      continue;  // skip counting this file
+    }
     if (profile == chosen_profile)
       ++chosen_count;
   }
@@ -185,7 +164,8 @@ u32 InstallRetroCrisisProfile(const std::string& extract_root, const std::string
   const std::string manifest = install_root + kManifest;
   File::CreateFullPath(manifest);
   File::IOFile mf(manifest, "wb");
-  mf.WriteBytes(chosen_profile.data(), chosen_profile.size());
+  if (!mf || !mf.WriteBytes(chosen_profile.data(), chosen_profile.size()))
+    return 0;  // manifest write failed
   return chosen_count;
 }
 

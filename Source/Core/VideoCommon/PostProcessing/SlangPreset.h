@@ -59,6 +59,9 @@ struct SlangPresetConfig
 
 using SlangPresetReader = std::function<bool(const std::string& path, std::string* out)>;
 
+// Lexically normalizes a POSIX-style path, collapsing '.' and '..'; preserves a leading '/'.
+std::string NormalizePath(const std::string& path);
+
 // Parses preset text. base_dir is the directory containing the preset (for path resolution).
 // Returns std::nullopt with *error set on malformed input.
 std::optional<SlangPresetConfig> ParseSlangPreset(const std::string& text,

@@ -14,36 +14,6 @@
 
 namespace VideoCommon
 {
-namespace
-{
-std::string_view Trim(std::string_view s)
-{
-  const auto first = s.find_first_not_of(" \t\r\n");
-  if (first == std::string_view::npos)
-    return {};
-  const auto last = s.find_last_not_of(" \t\r\n");
-  return s.substr(first, last - first + 1);
-}
-
-// Strips a single pair of surrounding double quotes, if present.
-std::string_view Unquote(std::string_view s)
-{
-  if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
-    return s.substr(1, s.size() - 2);
-  return s;
-}
-
-// Splits "key = value" on the first '='. Returns false if no '=' present.
-bool SplitKeyValue(std::string_view line, std::string* key, std::string* value)
-{
-  const auto eq = line.find('=');
-  if (eq == std::string_view::npos)
-    return false;
-  *key = std::string(Trim(line.substr(0, eq)));
-  *value = std::string(Unquote(Trim(line.substr(eq + 1))));
-  return true;
-}
-
 // Lexically normalizes a POSIX-style path, collapsing "." and ".." segments without
 // touching the filesystem. Preserves a leading "/".
 std::string NormalizePath(const std::string& path)
@@ -85,6 +55,36 @@ std::string NormalizePath(const std::string& path)
     result += std::string(parts[i]);
   }
   return result;
+}
+
+namespace
+{
+std::string_view Trim(std::string_view s)
+{
+  const auto first = s.find_first_not_of(" \t\r\n");
+  if (first == std::string_view::npos)
+    return {};
+  const auto last = s.find_last_not_of(" \t\r\n");
+  return s.substr(first, last - first + 1);
+}
+
+// Strips a single pair of surrounding double quotes, if present.
+std::string_view Unquote(std::string_view s)
+{
+  if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+    return s.substr(1, s.size() - 2);
+  return s;
+}
+
+// Splits "key = value" on the first '='. Returns false if no '=' present.
+bool SplitKeyValue(std::string_view line, std::string* key, std::string* value)
+{
+  const auto eq = line.find('=');
+  if (eq == std::string_view::npos)
+    return false;
+  *key = std::string(Trim(line.substr(0, eq)));
+  *value = std::string(Unquote(Trim(line.substr(eq + 1))));
+  return true;
 }
 
 std::string ResolvePath(const std::string& base_dir, const std::string& value)
