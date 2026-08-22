@@ -148,6 +148,8 @@ add_library(videocommon
   PostProcessing/MultipassPostProcessing.h
   PostProcessing/MipGen.cpp
   PostProcessing/MipGen.h
+  PostProcessing/PassGraph.cpp
+  PostProcessing/PassGraph.h
   PostProcessing/PassSizing.cpp
   PostProcessing/PassSizing.h
   PostProcessing/PresetArchive.cpp

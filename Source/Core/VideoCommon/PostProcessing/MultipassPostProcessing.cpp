@@ -3,8 +3,12 @@
 
 #include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
 
+#include <algorithm>
 #include <array>
+#include <optional>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Common/CommonPaths.h"
@@ -20,6 +24,7 @@
 #include "VideoCommon/AbstractShader.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/PostProcessing/LutTexture.h"
+#include "VideoCommon/PostProcessing/PassGraph.h"
 #include "VideoCommon/PostProcessing/PassSizing.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
@@ -141,7 +146,51 @@ void MultipassPostProcessing::ClearChain()
 {
   m_passes.clear();
   m_luts.clear();
+  m_history_textures.clear();
+  m_max_history = 0;
   m_passthrough = true;
+}
+
+void MultipassPostProcessing::EnsureHistoryTextures(const AbstractTexture* original)
+{
+  const TextureConfig& src = original->GetConfig();
+  const bool matches = m_history_textures.size() == m_max_history &&
+                       (m_history_textures.empty() ||
+                        (m_history_textures[0] && m_history_textures[0]->GetWidth() == src.width &&
+                         m_history_textures[0]->GetHeight() == src.height &&
+                         m_history_textures[0]->GetFormat() == src.format));
+  if (matches)
+    return;
+
+  m_history_textures.clear();
+  m_history_textures.resize(m_max_history);
+  for (u32 k = 0; k < m_max_history; ++k)
+  {
+    // Match the Original frame's format/size so CopyRectangleFromTexture (a straight copy) works.
+    TextureConfig config = src;
+    config.levels = 1;
+    config.flags |= AbstractTextureFlag_RenderTarget;
+    m_history_textures[k] = g_gfx->CreateTexture(config, "slang history " + std::to_string(k));
+  }
+}
+
+void MultipassPostProcessing::ShiftHistory(const AbstractTexture* original)
+{
+  if (m_history_textures.empty())
+    return;
+
+  // Rotate the oldest slot to the front, then overwrite it with this frame's Original. Afterwards
+  // m_history_textures[k] holds the frame from (k+1) frames ago.
+  std::rotate(m_history_textures.begin(), m_history_textures.end() - 1, m_history_textures.end());
+  AbstractTexture* const dst = m_history_textures.front().get();
+  if (dst == nullptr)
+    return;
+
+  const u32 copy_width = std::min(dst->GetWidth(), original->GetWidth());
+  const u32 copy_height = std::min(dst->GetHeight(), original->GetHeight());
+  const MathUtil::Rectangle<int> rect(0, 0, static_cast<int>(copy_width),
+                                      static_cast<int>(copy_height));
+  dst->CopyRectangleFromTexture(original, rect, 0, 0, rect, 0, 0);
 }
 
 void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
@@ -171,7 +220,40 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
   for (const std::string& name : names)
     AppendPreset(name);
 
+  AnalyzeRenderStages();
   m_passthrough = m_passes.empty();
+}
+
+void MultipassPostProcessing::AnalyzeRenderStages()
+{
+  m_max_history = 0;
+  for (Pass& pass : m_passes)
+  {
+    pass.has_feedback = false;
+    pass.generate_mips = false;
+  }
+  if (m_passes.empty())
+    return;
+
+  std::vector<std::vector<std::string>> all_sampler_names;
+  std::vector<bool> mipmap_input_flags;
+  all_sampler_names.reserve(m_passes.size());
+  mipmap_input_flags.reserve(m_passes.size());
+  for (const Pass& pass : m_passes)
+  {
+    all_sampler_names.push_back(pass.sampler_names);
+    mipmap_input_flags.push_back(pass.config.mipmap_input);
+  }
+
+  const std::set<std::string> feedback_aliases = ComputeFeedbackAliases(all_sampler_names);
+  for (Pass& pass : m_passes)
+    pass.has_feedback = !pass.alias.empty() && feedback_aliases.count(pass.alias) != 0;
+
+  const std::set<size_t> mip_sources = ComputeMipmapSourcePasses(mipmap_input_flags);
+  for (size_t i = 0; i < m_passes.size(); ++i)
+    m_passes[i].generate_mips = mip_sources.count(i) != 0;
+
+  m_max_history = ComputeMaxHistoryIndex(all_sampler_names);
 }
 
 void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
@@ -300,6 +382,10 @@ void MultipassPostProcessing::RecompilePipeline()
   if (m_passthrough || m_framebuffer_format == AbstractTextureFormat::Undefined)
     return;
 
+  // Clearing freshly-allocated feedback buffers below binds framebuffers; remember the currently
+  // bound one so callers (e.g. mid-frame in BlitFromTexture) see no surprise framebuffer change.
+  AbstractFramebuffer* const restore_framebuffer = g_gfx->GetCurrentFramebuffer();
+
   const u32 viewport_width = std::max<u32>(1, m_target_width);
   const u32 viewport_height = std::max<u32>(1, m_target_height);
   const u32 source_width = std::max<u32>(1, m_source_width);
@@ -323,6 +409,11 @@ void MultipassPostProcessing::RecompilePipeline()
   const std::vector<PassSize> physical_sizes = ComputePassChainSizes(
       configs, scaled_source_width, scaled_source_height, viewport_width, viewport_height);
 
+  // GPU mip generation is currently implemented only on the Vulkan backend; on other backends
+  // AbstractTexture::GenerateMipmaps() is a no-op, so keep those passes single-level (today's
+  // behavior) rather than allocating a mip chain we can't fill.
+  const bool mips_supported = g_backend_info.api_type == APIType::Vulkan;
+
   const size_t pass_count = m_passes.size();
   for (size_t i = 0; i < pass_count; ++i)
   {
@@ -341,7 +432,15 @@ void MultipassPostProcessing::RecompilePipeline()
       const u32 out_w = std::max(physical_sizes[i].width, logical_sizes[i].width);
       const u32 out_h = std::max(physical_sizes[i].height, logical_sizes[i].height);
 
-      const TextureConfig texture_config(out_w, out_h, 1, 1, 1, INTERMEDIATE_FORMAT,
+      // A later pass sampling this output with mipmap_input=true needs a full mip chain here.
+      u32 levels = 1;
+      if (pass.generate_mips && mips_supported)
+      {
+        for (u32 dim = std::max(out_w, out_h); dim > 1; dim >>= 1)
+          ++levels;
+      }
+
+      const TextureConfig texture_config(out_w, out_h, levels, 1, 1, INTERMEDIATE_FORMAT,
                                          AbstractTextureFlag_RenderTarget,
                                          AbstractTextureType::Texture_2DArray);
       pass.output_texture =
@@ -349,11 +448,34 @@ void MultipassPostProcessing::RecompilePipeline()
       pass.output_framebuffer =
           pass.output_texture ? g_gfx->CreateFramebuffer(pass.output_texture.get(), nullptr)
                               : nullptr;
+
+      if (pass.has_feedback)
+      {
+        // Double-buffer: a second render target holds the previous frame's output.
+        pass.feedback_texture =
+            g_gfx->CreateTexture(texture_config, "slang feedback " + std::to_string(i));
+        pass.feedback_framebuffer =
+            pass.feedback_texture ? g_gfx->CreateFramebuffer(pass.feedback_texture.get(), nullptr)
+                                  : nullptr;
+        // Clear both buffers so the first frame's feedback sample is defined (black), not
+        // undefined memory (which could feed NaNs into an afterglow accumulator).
+        if (pass.output_framebuffer)
+          g_gfx->SetAndClearFramebuffer(pass.output_framebuffer.get());
+        if (pass.feedback_framebuffer)
+          g_gfx->SetAndClearFramebuffer(pass.feedback_framebuffer.get());
+      }
+      else
+      {
+        pass.feedback_texture.reset();
+        pass.feedback_framebuffer.reset();
+      }
     }
     else
     {
       pass.output_texture.reset();
       pass.output_framebuffer.reset();
+      pass.feedback_texture.reset();
+      pass.feedback_framebuffer.reset();
     }
 
     AbstractPipelineConfig pipeline_config = {};
@@ -367,6 +489,10 @@ void MultipassPostProcessing::RecompilePipeline()
     pipeline_config.usage = AbstractPipelineUsage::Utility;
     pass.pipeline = g_gfx->CreatePipeline(pipeline_config);
   }
+
+  // Restore whatever framebuffer was bound before any feedback-buffer clears above.
+  if (restore_framebuffer != nullptr)
+    g_gfx->SetFramebuffer(restore_framebuffer);
 }
 
 void MultipassPostProcessing::BuildPassthroughPipeline()
@@ -471,6 +597,11 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
 
   ++m_frame_count;
 
+  // Frame-history ring: keep copies of the Original frame for OriginalHistoryN (N>=1). No-op for
+  // presets that only use OriginalHistory0 / Original.
+  if (m_max_history >= 1)
+    EnsureHistoryTextures(src_tex);
+
   AbstractFramebuffer* const entry_framebuffer = g_gfx->GetCurrentFramebuffer();
   const AbstractTexture* const original_tex = src_tex;
   const AbstractTexture* prev_output = src_tex;
@@ -504,18 +635,52 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
       {
         texture = prev_output;
       }
+      else if (const std::optional<u32> history_index = ParseOriginalHistoryIndex(name))
+      {
+        // OriginalHistory0 == the current Original frame; N>=1 is N frames earlier. Fall back to
+        // the current frame before that many frames have elapsed (ring not yet populated).
+        if (*history_index == 0)
+          texture = original_tex;
+        else if (*history_index <= m_frame_count && *history_index - 1 < m_history_textures.size() &&
+                 m_history_textures[*history_index - 1])
+          texture = m_history_textures[*history_index - 1].get();
+        else
+          texture = original_tex;
+      }
       else
       {
-        // Alias of an earlier pass?
         bool resolved = false;
-        for (size_t j = 0; j < i; ++j)
+        // "<Alias>Feedback": the previous frame's copy of that alias's output.
+        constexpr std::string_view kFeedback = "Feedback";
+        if (name.size() > kFeedback.size() &&
+            name.compare(name.size() - kFeedback.size(), kFeedback.size(), kFeedback) == 0)
         {
-          if (!m_passes[j].alias.empty() && m_passes[j].alias == name &&
-              m_passes[j].output_texture)
+          const std::string base = name.substr(0, name.size() - kFeedback.size());
+          for (Pass& other : m_passes)
           {
-            texture = m_passes[j].output_texture.get();
-            resolved = true;
-            break;
+            if (other.has_feedback && other.alias == base)
+            {
+              // feedback_texture holds last frame's output; before the first swap it is the
+              // cleared buffer, which is fine (defined black).
+              texture = other.feedback_texture ? other.feedback_texture.get()
+                                                : other.output_texture.get();
+              resolved = true;
+              break;
+            }
+          }
+        }
+        // Alias of an earlier pass (this frame's output)?
+        if (!resolved)
+        {
+          for (size_t j = 0; j < i; ++j)
+          {
+            if (!m_passes[j].alias.empty() && m_passes[j].alias == name &&
+                m_passes[j].output_texture)
+            {
+              texture = m_passes[j].output_texture.get();
+              resolved = true;
+              break;
+            }
           }
         }
         // LUT?
@@ -579,6 +744,28 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
         size_vec(static_cast<u32>(native_rect.GetWidth()),
                  static_cast<u32>(native_rect.GetHeight()), out);
         return true;
+      }
+      // OriginalHistoryN shares the Original's (native) logical size.
+      if (ParseOriginalHistoryIndex(name))
+      {
+        size_vec(static_cast<u32>(native_rect.GetWidth()),
+                 static_cast<u32>(native_rect.GetHeight()), out);
+        return true;
+      }
+      // "<Alias>Feedback" reports the aliased pass's logical size (same as its current output).
+      constexpr std::string_view kFeedback = "Feedback";
+      if (name.size() > kFeedback.size() &&
+          name.compare(name.size() - kFeedback.size(), kFeedback.size(), kFeedback) == 0)
+      {
+        const std::string base = name.substr(0, name.size() - kFeedback.size());
+        for (const Pass& other : m_passes)
+        {
+          if (other.has_feedback && other.alias == base)
+          {
+            size_vec(other.logical_width, other.logical_height, out);
+            return true;
+          }
+        }
       }
       for (size_t j = 0; j < i; ++j)
       {
@@ -660,12 +847,32 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
 
     if (!is_final)
     {
+      // A later pass samples this output with mipmapping: build its mip chain now, from the level-0
+      // content just rendered. (No-op on backends without GPU mip generation.)
+      if (pass.generate_mips && pass.output_texture)
+        pass.output_texture->GenerateMipmaps();
+
       prev_output = pass.output_texture.get();
       // Advance the logical "Source" size to this pass's logical output (native-derived), so the
       // next pass's SourceSize is resolution-independent even though prev_output is a larger RT.
       prev_rect = logical_target_rect;
     }
   }
+
+  // End-of-frame bookkeeping for cross-frame features:
+  //  - Feedback passes: swap this frame's output into the feedback slot so next frame's
+  //    "<Alias>Feedback" sample sees it, and render next frame into the old feedback buffer.
+  //  - History ring: record this frame's Original for OriginalHistoryN.
+  for (Pass& pass : m_passes)
+  {
+    if (pass.has_feedback)
+    {
+      std::swap(pass.output_texture, pass.feedback_texture);
+      std::swap(pass.output_framebuffer, pass.feedback_framebuffer);
+    }
+  }
+  if (m_max_history >= 1)
+    ShiftHistory(src_tex);
 
   // Ensure the final target is the framebuffer we entered with.
   g_gfx->SetFramebuffer(entry_framebuffer);

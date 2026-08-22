@@ -63,8 +63,13 @@ private:
     std::unique_ptr<AbstractShader> vertex_shader;
     std::unique_ptr<AbstractShader> pixel_shader;
     std::unique_ptr<AbstractPipeline> pipeline;
-    std::unique_ptr<AbstractTexture> output_texture;  // null for final pass
+    std::unique_ptr<AbstractTexture> output_texture;  // null for final pass; this frame's output
     std::unique_ptr<AbstractFramebuffer> output_framebuffer;
+    // Previous frame's copy of this pass's output, bound when its alias is sampled as
+    // "<Alias>Feedback". Allocated and swapped with output_texture each frame only when
+    // has_feedback; otherwise null.
+    std::unique_ptr<AbstractTexture> feedback_texture;
+    std::unique_ptr<AbstractFramebuffer> feedback_framebuffer;
     std::string alias;
     // Logical (native-derived) output size reported to the shader as SourceSize/OutputSize, so
     // CRT geometry is resolution-independent. The output_texture is allocated at the larger
@@ -72,6 +77,12 @@ private:
     // content fed through the effect.
     u32 logical_width = 0;
     u32 logical_height = 0;
+    // Some later pass's alias == this pass's alias is sampled as "<Alias>Feedback": double-buffer
+    // this pass's output across frames.
+    bool has_feedback = false;
+    // A later pass samples this pass's output with mipmapping (its mipmap_input=true): allocate a
+    // full mip chain for output_texture and call GenerateMipmaps() after rendering it.
+    bool generate_mips = false;
   };
   struct Lut
   {
@@ -91,6 +102,14 @@ private:
   // Builds the built-in pass-through pipeline (a plain copy of the input) for the current
   // framebuffer format, used when no user preset is active or a preset failed to load.
   void BuildPassthroughPipeline();
+  // Scans the assembled pass chain and sets per-pass render-stage flags (has_feedback,
+  // generate_mips) and m_max_history from the passes' sampler references. Called once per load.
+  void AnalyzeRenderStages();
+  // Lazily (re)allocates the frame-history ring to match the current Original frame. No-op unless
+  // the chain references OriginalHistoryN with N>=1.
+  void EnsureHistoryTextures(const AbstractTexture* original);
+  // Rotates the frame-history ring and copies the current Original frame into the newest slot.
+  void ShiftHistory(const AbstractTexture* original);
 
   std::vector<Pass> m_passes;
   std::vector<Lut> m_luts;
@@ -106,6 +125,11 @@ private:
   // internal resolution supersamples the content through the effect).
   u32 m_scaled_source_width = 0;
   u32 m_scaled_source_height = 0;
+  // Ring of past-frame copies of the Original (game) frame. m_history_textures[k] holds the frame
+  // from (k+1) frames ago; "OriginalHistoryN" (N>=1) binds m_history_textures[N-1].
+  // OriginalHistory0 == Original (the current frame). Empty unless the chain uses N>=1.
+  std::vector<std::unique_ptr<AbstractTexture>> m_history_textures;
+  u32 m_max_history = 0;
 
   std::unique_ptr<AbstractShader> m_passthrough_vertex;
   std::unique_ptr<AbstractShader> m_passthrough_pixel;
