@@ -8,10 +8,14 @@
 #include <utility>
 
 #include "Common/CommonTypes.h"
+#include "Common/Config/Config.h"
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 
+#include "Core/Config/GraphicsSettings.h"
+
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
+#include "VideoBackends/Vulkan/LibrashaderPostProcessing.h"
 #include "VideoBackends/Vulkan/ObjectCache.h"
 #include "VideoBackends/Vulkan/StateTracker.h"
 #include "VideoBackends/Vulkan/VKPipeline.h"
@@ -83,6 +87,16 @@ std::unique_ptr<AbstractPipeline> VKGfx::CreatePipeline(const AbstractPipelineCo
                                                         size_t cache_data_length)
 {
   return VKPipeline::Create(config);
+}
+
+std::unique_ptr<VideoCommon::IPostProcessor> VKGfx::CreatePostProcessor()
+{
+  if (Config::Get(Config::GFX_ENHANCE_POST_PROCESS_RENDERER) == PostProcessRenderer::Librashader &&
+      LibrashaderPostProcessing::IsAvailable())
+  {
+    return std::make_unique<LibrashaderPostProcessing>();
+  }
+  return AbstractGfx::CreatePostProcessor();
 }
 
 std::unique_ptr<AbstractFramebuffer>

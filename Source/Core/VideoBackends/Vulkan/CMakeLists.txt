@@ -10,6 +10,8 @@ add_library(videovulkan
   StagingBuffer.h
   StateTracker.cpp
   StateTracker.h
+  LibrashaderPostProcessing.cpp
+  LibrashaderPostProcessing.h
   VKBoundingBox.cpp
   VKBoundingBox.h
   VKMain.cpp
