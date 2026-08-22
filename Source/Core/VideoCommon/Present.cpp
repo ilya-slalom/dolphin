@@ -380,6 +380,14 @@ void Presenter::ConfigChanged(u32 changed_bits)
     m_post_processor->RecompileShader();
   }
 
+  if (changed_bits & ConfigChangeBits::CONFIG_CHANGE_BIT_POST_PROCESS_RENDERER && g_gfx)
+  {
+    g_gfx->WaitForGPUIdle();
+    m_post_processor = g_gfx->CreatePostProcessor();
+    if (m_post_processor)
+      m_post_processor->Initialize(m_backbuffer_format);
+  }
+
   // Stereo mode change requires recompiling our post processing pipeline and imgui pipelines for
   // rendering the UI.
   if (changed_bits & ConfigChangeBits::CONFIG_CHANGE_BIT_STEREO_MODE)
