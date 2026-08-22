@@ -34,13 +34,18 @@ export RANLIB_aarch64_linux_android=llvm-ranlib
 ```
 
 ### Artifact Details
-- **Library:** `liblibrashader_capi.so` (~13.5 MB)
+- **Library:** `librashader.so` (~13.5 MB)
 - **ABI:** 2
 - **API:** 5
 - **Headers:** `librashader.h`, `librashader_ld.h`
 
+The `cargo build` output is named `liblibrashader_capi.so`; it is vendored as
+`librashader.so` because `librashader_ld.h` loads the runtime with a hardcoded
+`dlopen("librashader.so", RTLD_LAZY)` on Android/Linux. The file carries no
+SONAME, so the rename is safe — nothing references it by an embedded name.
+
 ### Dependencies
-The prebuilt `liblibrashader_capi.so` requires `libc++_shared.so` as a NEEDED dependency. Both are vendored into `Source/Android/app/src/main/jniLibs/arm64-v8a/` to ensure runtime availability. Dolphin builds with `ANDROID_STL=c++_static`, so `libc++_shared.so` is not otherwise present in the APK. The two libc++ instances do not clash because librashader's ABI boundary is plain C.
+The prebuilt `librashader.so` requires `libc++_shared.so` as a NEEDED dependency. Both are vendored into `Source/Android/app/src/main/jniLibs/arm64-v8a/` to ensure runtime availability. Dolphin builds with `ANDROID_STL=c++_static`, so `libc++_shared.so` is not otherwise present in the APK. The two libc++ instances do not clash because librashader's ABI boundary is plain C.
 
 ### Architecture Support
 Only `arm64-v8a` is supported. The `x86_64` ABI correctly falls back to Dolphin's built-in post-processing.
