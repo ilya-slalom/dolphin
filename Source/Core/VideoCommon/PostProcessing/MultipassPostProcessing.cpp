@@ -21,6 +21,7 @@
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/PostProcessing/LutTexture.h"
 #include "VideoCommon/PostProcessing/PassSizing.h"
+#include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangSamplers.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
@@ -105,8 +106,14 @@ std::vector<std::string> MultipassPostProcessing::GetPresetList()
   const std::vector<std::string> roots = {user_slang, sys_slang, user_dir, sys_dir};
   std::vector<std::string> result;
   result.reserve(paths.size());
+  const std::string rc_root = File::GetUserPath(D_SHADERS_IDX) + "RetroCrisis";
+  const std::string rc_profile = ReadRetroCrisisProfile(rc_root);
   for (const std::string& path : paths)
+  {
+    if (!rc_profile.empty() && IsHiddenRetroCrisisPreset(path, rc_root, rc_profile))
+      continue;
     result.push_back(PresetNameFromPath(path, roots));
+  }
   return result;
 }
 

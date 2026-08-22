@@ -176,4 +176,16 @@ std::string ReadRetroCrisisProfile(const std::string& install_root)
     return {};
   return std::string(StripSpaces(text));
 }
+
+bool IsHiddenRetroCrisisPreset(const std::string& preset_abs_path, const std::string& install_root,
+                               const std::string& chosen_profile)
+{
+  if (preset_abs_path.compare(0, install_root.size(), install_root) != 0)
+    return false;  // not under the RetroCrisis tree
+  const std::size_t root_pos = preset_abs_path.rfind("retro crisis/");
+  if (root_pos == std::string::npos)
+    return false;
+  const std::string profile = RetroCrisisProfileOf(preset_abs_path.substr(root_pos));
+  return !profile.empty() && profile != chosen_profile;
+}
 }  // namespace VideoCommon

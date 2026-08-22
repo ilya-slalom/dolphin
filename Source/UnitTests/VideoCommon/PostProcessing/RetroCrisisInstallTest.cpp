@@ -70,3 +70,15 @@ TEST(RetroCrisisInstall, InstallsChosenProfileClosureOnly)
   EXPECT_FALSE(File::Exists(install + "/retro crisis/1440p Flat/nes.slangp"));  // not in closure
   EXPECT_EQ(ReadRetroCrisisProfile(install), "1080p Flat");
 }
+
+TEST(RetroCrisisInstall, HidesNonChosenProfilePresets)
+{
+  const std::string root = "/u/Shaders/RetroCrisis";
+  EXPECT_FALSE(IsHiddenRetroCrisisPreset(
+      root + "/retro crisis/1080p Flat/nes.slangp", root, "1080p Flat"));
+  EXPECT_TRUE(IsHiddenRetroCrisisPreset(
+      root + "/retro crisis/4K Flat/nes.slangp", root, "1080p Flat"));
+  // Non-RetroCrisis preset is never hidden.
+  EXPECT_FALSE(IsHiddenRetroCrisisPreset(
+      "/u/Shaders/shaders_slang/crt/crt-royale.slangp", root, "1080p Flat"));
+}

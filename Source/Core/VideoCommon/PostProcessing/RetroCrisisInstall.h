@@ -27,4 +27,10 @@ u32 InstallRetroCrisisProfile(const std::string& extract_root, const std::string
                               const std::string& chosen_profile);
 
 std::string ReadRetroCrisisProfile(const std::string& install_root);
+
+// True if a discovered preset path should be hidden from the picker because it lives in a
+// RetroCrisis profile folder other than the manifest's chosen profile. install_root is
+// <Shaders>/RetroCrisis. Presets outside the RetroCrisis tree are never hidden.
+bool IsHiddenRetroCrisisPreset(const std::string& preset_abs_path, const std::string& install_root,
+                               const std::string& chosen_profile);
 }  // namespace VideoCommon
