@@ -144,7 +144,9 @@ void LibrashaderPostProcessing::RecompileShader()
   device.queue = g_vulkan_context->GetGraphicsQueue();
   device.entry = ::vkGetInstanceProcAddr;
 
-  // preset_create consumes the preset handle. On error, leave m_chain null (passthrough).
+  // vk_filter_chain_create invalidates the preset handle regardless of success or failure (see the
+  // header: "the shader preset is immediately invalidated"), so it must not be freed on either path
+  // -- doing so would be a double-free. On error, leave m_chain null (passthrough).
   if (CheckError(lib, lib.vk_filter_chain_create(&preset, device, nullptr, &m_chain),
                  "vk_filter_chain_create"))
   {
@@ -219,8 +221,9 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
 
   // Drive the real librashader filter chain when it was created successfully. If the chain is null
   // (no preset, preset failed, or a required device extension is missing) we skip straight to the
-  // Task-4 passthrough copy so the screen never blanks.
-  if (m_chain != nullptr)
+  // Task-4 passthrough copy so the screen never blanks. A framebuffer without a color attachment
+  // likewise falls through to passthrough rather than dereferencing a null attachment.
+  if (m_chain != nullptr && framebuffer->GetColorAttachment() != nullptr)
   {
     const libra_instance_t& lib = GetLibrashaderInstance();
 
