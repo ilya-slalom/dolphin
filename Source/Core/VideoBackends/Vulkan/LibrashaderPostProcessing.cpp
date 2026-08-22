@@ -15,6 +15,9 @@
 // VK_NO_PROTOTYPES and declares Dolphin's function-pointer globals (including ::vkGetInstanceProcAddr).
 // It MUST be included before librashader_ld.h so that when librashader.h re-includes
 // <vulkan/vulkan.h> the header guard suppresses conflicting prototype declarations.
+#include "VideoBackends/Vulkan/CommandBufferManager.h"
+#include "VideoBackends/Vulkan/StateTracker.h"
+#include "VideoBackends/Vulkan/VKTexture.h"
 #include "VideoBackends/Vulkan/VulkanContext.h"
 
 #include "VideoCommon/AbstractFramebuffer.h"
@@ -210,13 +213,50 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
                                                 const AbstractTexture* src_tex, int src_layer,
                                                 u32 native_width, u32 native_height)
 {
-  // Task 4 is passthrough-only: copy the source into the bound framebuffer's dst rect. The real
-  // libra_vk_filter_chain_frame() call (using m_chain) arrives in a later task.
-  ++m_frame_count;
-
   AbstractFramebuffer* const framebuffer = g_gfx->GetCurrentFramebuffer();
   if (framebuffer == nullptr)
     return;
+
+  // Drive the real librashader filter chain when it was created successfully. If the chain is null
+  // (no preset, preset failed, or a required device extension is missing) we skip straight to the
+  // Task-4 passthrough copy so the screen never blanks.
+  if (m_chain != nullptr)
+  {
+    const libra_instance_t& lib = GetLibrashaderInstance();
+
+    const auto* in_tex = static_cast<const VKTexture*>(src_tex);
+    libra_image_vk_t in{in_tex->GetImage(), in_tex->GetVkFormat(), in_tex->GetWidth(),
+                        in_tex->GetHeight()};
+
+    auto* out_tex = static_cast<VKTexture*>(framebuffer->GetColorAttachment());
+    libra_image_vk_t out{out_tex->GetImage(), out_tex->GetVkFormat(), out_tex->GetWidth(),
+                         out_tex->GetHeight()};
+
+    libra_viewport_t vp{static_cast<float>(dst.left), static_cast<float>(dst.top),
+                        static_cast<uint32_t>(dst.GetWidth()),
+                        static_cast<uint32_t>(dst.GetHeight())};
+
+    // libra_vk_filter_chain_frame() must NOT be recorded inside a render pass.
+    StateTracker::GetInstance()->EndRenderPass();
+
+    // The header requires the input in SHADER_READ_ONLY_OPTIMAL and the output in
+    // COLOR_ATTACHMENT_OPTIMAL before the call. No barrier is created for the final pass, so the
+    // output remains in COLOR_ATTACHMENT_OPTIMAL afterward and the caller owns any later
+    // transition. (in_tex is const; VKTexture::TransitionToLayout is const-qualified.)
+    VkCommandBuffer cmd = g_command_buffer_mgr->GetCurrentCommandBuffer();
+    in_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    out_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+    libra_error_t err =
+        lib.vk_filter_chain_frame(&m_chain, cmd, m_frame_count++, in, out, &vp, nullptr, nullptr);
+    if (!CheckError(lib, err, "vk_filter_chain_frame"))
+    {
+      // librashader left the output in COLOR_ATTACHMENT_OPTIMAL; reconcile Dolphin's tracking.
+      out_tex->OverrideImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      return;
+    }
+    // On error, fall through to the passthrough copy for this frame so the screen never blanks.
+  }
 
   BuildPassthroughPipeline();
   if (!m_passthrough_pipeline)
