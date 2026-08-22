@@ -24,7 +24,9 @@
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/AbstractPipeline.h"
 #include "VideoCommon/AbstractShader.h"
+#include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/RenderState.h"
+#include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoConfig.h"
 
 // librashader_ld.h defines many static-inline no-op stubs plus librashader_load_instance(); it is
@@ -210,6 +212,154 @@ void LibrashaderPostProcessing::BuildPassthroughPipeline()
   m_passthrough_format = format;
 }
 
+void LibrashaderPostProcessing::BuildDownscalePipeline(
+    const VideoCommon::SlangSourceDownscalePlan& plan, AbstractTextureFormat format)
+{
+  const u32 factor = plan.box_filter ? plan.factor : 0;
+  if (m_downscale_pipeline && m_downscale_is_box == plan.box_filter &&
+      m_downscale_factor == factor && m_downscale_format == format)
+  {
+    return;
+  }
+
+  // Fullscreen triangle. The Y flip makes v_tex0 align with gl_FragCoord's top-left origin, so the
+  // bilinear path (v_tex0) and the box path (texelFetch on gl_FragCoord) share one orientation and
+  // both preserve the source's orientation into the native texture.
+  const char* const vertex_source =
+      "VARYING_LOCATION(0) out float2 v_tex0;\n"
+      "void main() {\n"
+      "  v_tex0 = float2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n"
+      "  gl_Position.y = -gl_Position.y;\n"
+      "}\n";
+
+  std::string pixel_source;
+  if (plan.box_filter)
+  {
+    // Box average over the whole factor x factor footprint: real SSAA, cheap because the taps run
+    // over the small native target. The factor is baked as a literal so the loop bounds are
+    // compile-time constant (this is why the shader is rebuilt when the factor changes).
+    const std::string n = std::to_string(plan.factor);
+    const std::string n2 = std::to_string(plan.factor * plan.factor);
+    pixel_source = "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
+                   "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
+                   "void main() {\n"
+                   "  int2 base = int2(gl_FragCoord.xy) * " +
+                   n +
+                   ";\n"
+                   "  float4 sum = float4(0.0, 0.0, 0.0, 0.0);\n"
+                   "  for (int y = 0; y < " +
+                   n +
+                   "; ++y)\n"
+                   "    for (int x = 0; x < " +
+                   n +
+                   "; ++x)\n"
+                   "      sum += texelFetch(samp0, int3(base + int2(x, y), 0), 0);\n"
+                   "  ocol0 = sum * (1.0 / " +
+                   n2 +
+                   ".0);\n"
+                   "}\n";
+  }
+  else
+  {
+    // Fractional or mismatched factor: a single bilinear tap. Not SSAA, but correct and orientation-
+    // preserving; the exact-integer case above upgrades this to box averaging.
+    pixel_source = "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
+                   "VARYING_LOCATION(0) in float2 v_tex0;\n"
+                   "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
+                   "void main() {\n"
+                   "  ocol0 = texture(samp0, float3(v_tex0, 0.0));\n"
+                   "}\n";
+  }
+
+  m_downscale_vertex = g_gfx->CreateShaderFromSource(ShaderStage::Vertex, vertex_source, nullptr,
+                                                     "librashader downscale vertex");
+  m_downscale_pixel = g_gfx->CreateShaderFromSource(ShaderStage::Pixel, pixel_source, nullptr,
+                                                    "librashader downscale pixel");
+  m_downscale_pipeline.reset();
+  if (!m_downscale_vertex || !m_downscale_pixel)
+    return;
+
+  AbstractPipelineConfig config = {};
+  config.vertex_shader = m_downscale_vertex.get();
+  config.pixel_shader = m_downscale_pixel.get();
+  config.rasterization_state = RenderState::GetNoCullRasterizationState(PrimitiveType::Triangles);
+  config.depth_state = RenderState::GetNoDepthTestingDepthState();
+  config.blending_state = RenderState::GetNoBlendingBlendState();
+  config.framebuffer_state = RenderState::GetColorFramebufferState(format);
+  config.usage = AbstractPipelineUsage::Utility;
+  m_downscale_pipeline = g_gfx->CreatePipeline(config);
+
+  m_downscale_is_box = plan.box_filter;
+  m_downscale_factor = factor;
+  m_downscale_format = format;
+}
+
+const AbstractTexture* LibrashaderPostProcessing::DownscaleToNativeSource(
+    const VideoCommon::SlangSourceDownscalePlan& plan, const AbstractTexture* src_tex,
+    u32 native_width, u32 native_height)
+{
+  const AbstractTextureFormat format = src_tex->GetFormat();
+
+  // (Re)allocate the native-res render target whenever its size or format changes.
+  if (!m_native_source || m_native_source_width != native_width ||
+      m_native_source_height != native_height || m_native_source_format != format)
+  {
+    m_native_source_fb.reset();
+    m_native_source.reset();
+    const TextureConfig config(native_width, native_height, 1, 1, 1, format,
+                               AbstractTextureFlag_RenderTarget, AbstractTextureType::Texture_2DArray);
+    m_native_source = g_gfx->CreateTexture(config, "librashader native source");
+    if (m_native_source)
+      m_native_source_fb = g_gfx->CreateFramebuffer(m_native_source.get(), nullptr);
+    m_native_source_width = native_width;
+    m_native_source_height = native_height;
+    m_native_source_format = format;
+  }
+  if (!m_native_source || !m_native_source_fb)
+    return nullptr;
+
+  BuildDownscalePipeline(plan, format);
+  if (!m_downscale_pipeline)
+    return nullptr;
+
+  // We overwrite every native texel, so discard the prior contents. Box averaging reads exact
+  // texels (point sampler); the bilinear fallback needs a linear sampler.
+  g_gfx->SetAndDiscardFramebuffer(m_native_source_fb.get());
+  g_gfx->SetTexture(0, src_tex);
+  g_gfx->SetSamplerState(0, plan.box_filter ? RenderState::GetPointSamplerState()
+                                            : RenderState::GetLinearSamplerState());
+  g_gfx->SetViewportAndScissor(
+      g_gfx->ConvertFramebufferRectangle(m_native_source->GetRect(), m_native_source_fb.get()));
+  g_gfx->SetPipeline(m_downscale_pipeline.get());
+  g_gfx->Draw(0, 3);
+
+  // Hand the result to librashader as a shader-read source. End the render pass first so neither
+  // the layout transition nor the following filter-chain frame is recorded inside our draw's pass.
+  auto* native = static_cast<VKTexture*>(m_native_source.get());
+  StateTracker::GetInstance()->EndRenderPass();
+  native->TransitionToLayout(g_command_buffer_mgr->GetCurrentCommandBuffer(),
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  return native;
+}
+
+AbstractTexture* LibrashaderPostProcessing::EnsureOutputTarget(u32 width, u32 height,
+                                                               AbstractTextureFormat format)
+{
+  if (!m_output_target || m_output_target_width != width || m_output_target_height != height ||
+      m_output_target_format != format)
+  {
+    m_output_target.reset();
+    const TextureConfig config(width, height, 1, 1, 1, format, AbstractTextureFlag_RenderTarget,
+                               AbstractTextureType::Texture_2DArray);
+    m_output_target = g_gfx->CreateTexture(config, "librashader chain output");
+    m_output_target_width = width;
+    m_output_target_height = height;
+    m_output_target_format = format;
+  }
+  return m_output_target.get();
+}
+
 void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& dst,
                                                 const MathUtil::Rectangle<int>& src,
                                                 const AbstractTexture* src_tex, int src_layer,
@@ -229,48 +379,86 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
 
     const auto* in_tex = static_cast<const VKTexture*>(src_tex);
 
-    // librashader derives SourceSize/OriginalSize from the dimensions we declare here, and CRT
-    // presets (crt-royale, RetroCrisis) scale their scanline and phosphor-mask geometry by
-    // SourceSize. Dolphin's XFB source texture is at the internal (upscaled) resolution, so
-    // declaring its full extent would report SourceSize = internal res -> the mask/scanline period
-    // shrinks with the internal-resolution multiplier (moire, invisible scanlines) and every pass
-    // runs against the oversized source (slowdown at high IR). We instead declare the NATIVE
-    // resolution while still binding the full-resolution image: librashader samples the bound image
-    // with normalized coordinates, so it keeps the supersampled detail but computes geometry against
-    // native pixels -- identical to MultipassPostProcessing's native-SourceSize handling. Fall back
-    // to the texture extent for any path that does not supply a native size.
-    const uint32_t source_width = native_width != 0 ? native_width : in_tex->GetWidth();
-    const uint32_t source_height = native_height != 0 ? native_height : in_tex->GetHeight();
-    libra_image_vk_t in{in_tex->GetImage(), in_tex->GetVkFormat(), source_width, source_height};
-
-    auto* out_tex = static_cast<VKTexture*>(framebuffer->GetColorAttachment());
-    libra_image_vk_t out{out_tex->GetImage(), out_tex->GetVkFormat(), out_tex->GetWidth(),
-                         out_tex->GetHeight()};
-
-    libra_viewport_t vp{static_cast<float>(dst.left), static_cast<float>(dst.top),
-                        static_cast<uint32_t>(dst.GetWidth()),
-                        static_cast<uint32_t>(dst.GetHeight())};
-
-    // libra_vk_filter_chain_frame() must NOT be recorded inside a render pass.
-    StateTracker::GetInstance()->EndRenderPass();
-
-    // The header requires the input in SHADER_READ_ONLY_OPTIMAL and the output in
-    // COLOR_ATTACHMENT_OPTIMAL before the call. No barrier is created for the final pass, so the
-    // output remains in COLOR_ATTACHMENT_OPTIMAL afterward and the caller owns any later
-    // transition. (in_tex is const; VKTexture::TransitionToLayout is const-qualified.)
-    VkCommandBuffer cmd = g_command_buffer_mgr->GetCurrentCommandBuffer();
-    in_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    out_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-    libra_error_t err =
-        lib.vk_filter_chain_frame(&m_chain, cmd, m_frame_count++, in, out, &vp, nullptr, nullptr);
-    if (!CheckError(lib, err, "vk_filter_chain_frame"))
+    // librashader derives SourceSize/OriginalSize from the input image's dimensions, and CRT presets
+    // (crt-royale, RetroCrisis) scale their scanline and phosphor-mask geometry by SourceSize. The
+    // XFB source is at the internal (upscaled) resolution, so feeding it directly reports
+    // SourceSize = internal res: the mask/scanline period shrinks with the IR multiplier (moire,
+    // invisible scanlines) and every pass runs against the oversized frame. Worse, librashader's
+    // single bilinear tap subsamples that upscaled frame, aliasing high-frequency content into the
+    // NTSC/scanline bands. We instead materialize a REAL native-resolution source by box-averaging
+    // the whole footprint (SSAA) for integer upscales, bilinear for fractional -- so the chain
+    // computes geometry against native pixels while keeping supersampled detail. No-op at 1x or when
+    // no native size is supplied.
+    const VideoCommon::SlangSourceDownscalePlan plan = VideoCommon::PlanSlangSourceDownscale(
+        in_tex->GetWidth(), in_tex->GetHeight(), native_width, native_height);
+    const VKTexture* source = in_tex;
+    if (plan.downscale)
     {
-      // librashader left the output in COLOR_ATTACHMENT_OPTIMAL; reconcile Dolphin's tracking.
-      out_tex->OverrideImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-      return;
+      if (const AbstractTexture* native =
+              DownscaleToNativeSource(plan, src_tex, native_width, native_height))
+      {
+        source = static_cast<const VKTexture*>(native);
+      }
+      // The downscale draw left its own framebuffer bound; restore the caller's so that a
+      // fall-through to the passthrough copy (on chain error) targets the screen, not the native RT.
+      g_gfx->SetFramebuffer(framebuffer);
     }
-    // On error, fall through to the passthrough copy for this frame so the screen never blanks.
+
+    libra_image_vk_t in{source->GetImage(), source->GetVkFormat(), source->GetWidth(),
+                        source->GetHeight()};
+
+    // librashader derives OutputSize, FinalViewportSize, and every scale_type=viewport framebuffer
+    // size from the OUTPUT IMAGE's dimensions, then merely scissors rendering to the viewport rect.
+    // Handing it the full backbuffer plus a pillarboxed sub-rect would size the whole chain
+    // (phosphor mask, scanline geometry, NTSC subcarrier) for the backbuffer width while the pixels
+    // land in the narrower draw rect -- a fixed fractional mismatch that beats against the panel
+    // pixel grid as vertical moire, independent of internal resolution. We instead render the chain
+    // into a draw-rect-sized target at viewport origin (0,0) so OutputSize == the drawn extent, then
+    // blit that 1:1 into the backbuffer at the draw rect. This mirrors how ARMSX2 drives librashader.
+    auto* out_tex = static_cast<VKTexture*>(framebuffer->GetColorAttachment());
+    AbstractTexture* const chain_output = EnsureOutputTarget(
+        static_cast<u32>(dst.GetWidth()), static_cast<u32>(dst.GetHeight()), out_tex->GetFormat());
+    if (chain_output != nullptr)
+    {
+      auto* chain_out_tex = static_cast<VKTexture*>(chain_output);
+      libra_image_vk_t out{chain_out_tex->GetImage(), chain_out_tex->GetVkFormat(),
+                           chain_out_tex->GetWidth(), chain_out_tex->GetHeight()};
+      libra_viewport_t vp{0.0f, 0.0f, chain_out_tex->GetWidth(), chain_out_tex->GetHeight()};
+
+      // libra_vk_filter_chain_frame() must NOT be recorded inside a render pass.
+      StateTracker::GetInstance()->EndRenderPass();
+
+      // The header requires the input in SHADER_READ_ONLY_OPTIMAL and the output in
+      // COLOR_ATTACHMENT_OPTIMAL before the call. (source is const; VKTexture::TransitionToLayout is
+      // const-qualified. When a downscale ran, `source` is the native texture already left in
+      // SHADER_READ_ONLY_OPTIMAL; re-issuing the transition is a no-op there.)
+      VkCommandBuffer cmd = g_command_buffer_mgr->GetCurrentCommandBuffer();
+      source->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      chain_out_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+      libra_error_t err = lib.vk_filter_chain_frame(&m_chain, cmd, m_frame_count++, in, out, &vp,
+                                                    nullptr, nullptr);
+      if (!CheckError(lib, err, "vk_filter_chain_frame"))
+      {
+        // No barrier is created for the final pass, so librashader leaves chain_output in
+        // COLOR_ATTACHMENT_OPTIMAL; reconcile Dolphin's tracking, then present it 1:1 into the
+        // backbuffer draw rect. Point sampling keeps the copy exact (target and rect are equal size).
+        chain_out_tex->OverrideImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        BuildPassthroughPipeline();
+        if (m_passthrough_pipeline)
+        {
+          chain_out_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+          g_gfx->SetFramebuffer(framebuffer);
+          g_gfx->SetTexture(0, chain_output);
+          g_gfx->SetSamplerState(0, RenderState::GetPointSamplerState());
+          g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));
+          g_gfx->SetPipeline(m_passthrough_pipeline.get());
+          g_gfx->Draw(0, 3);
+        }
+        return;
+      }
+      // On error, fall through to the passthrough copy for this frame so the screen never blanks.
+    }
   }
 
   BuildPassthroughPipeline();

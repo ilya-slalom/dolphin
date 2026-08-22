@@ -167,6 +167,8 @@ add_library(videocommon
   PostProcessing/SlangSamplers.h
   PostProcessing/SlangShader.cpp
   PostProcessing/SlangShader.h
+  PostProcessing/SlangSourceDownscale.cpp
+  PostProcessing/SlangSourceDownscale.h
   PostProcessing/SlangTranslator.cpp
   PostProcessing/SlangTranslator.h
   Present.cpp
