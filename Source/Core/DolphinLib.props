@@ -766,6 +766,7 @@
     <ClInclude Include="VideoCommon\PixelShaderManager.h" />
     <ClInclude Include="VideoCommon\PostProcessing\LutTexture.h" />
     <ClInclude Include="VideoCommon\PostProcessing\MipGen.h" />
+    <ClInclude Include="VideoCommon\PostProcessing\IPostProcessor.h" />
     <ClInclude Include="VideoCommon\PostProcessing\MultipassPostProcessing.h" />
     <ClInclude Include="VideoCommon\PostProcessing\PassSizing.h" />
     <ClInclude Include="VideoCommon\PostProcessing\PresetArchive.h" />

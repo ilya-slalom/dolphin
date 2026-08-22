@@ -37,6 +37,7 @@ struct SurfaceInfo
 namespace VideoCommon
 {
 class AsyncShaderCompiler;
+class IPostProcessor;
 class ShaderIncluder;
 }  // namespace VideoCommon
 
@@ -123,6 +124,10 @@ public:
   virtual std::unique_ptr<AbstractPipeline> CreatePipeline(const AbstractPipelineConfig& config,
                                                            const void* cache_data = nullptr,
                                                            size_t cache_data_length = 0) = 0;
+
+  // Builds the post-processing engine for this backend. Default is the backend-agnostic
+  // MultipassPostProcessing; Vulkan overrides this to optionally return LibrashaderPostProcessing.
+  virtual std::unique_ptr<VideoCommon::IPostProcessor> CreatePostProcessor();
 
   AbstractFramebuffer* GetCurrentFramebuffer() const { return m_current_framebuffer; }
 

@@ -144,6 +144,7 @@ add_library(videocommon
   PixelShaderManager.h
   PostProcessing/LutTexture.cpp
   PostProcessing/LutTexture.h
+  PostProcessing/IPostProcessor.h
   PostProcessing/MultipassPostProcessing.cpp
   PostProcessing/MultipassPostProcessing.h
   PostProcessing/MipGen.cpp

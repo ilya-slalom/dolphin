@@ -10,6 +10,7 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/MathUtil.h"
+#include "VideoCommon/PostProcessing/IPostProcessor.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
 #include "VideoCommon/PostProcessing/SlangTranslator.h"
@@ -24,7 +25,7 @@ class AbstractTexture;
 namespace VideoCommon
 {
 // Multi-pass RetroArch-style .slangp post-processor. Replaces the old single-pass PostProcessing.
-class MultipassPostProcessing
+class MultipassPostProcessing final : public IPostProcessor
 {
 public:
   MultipassPostProcessing();
@@ -37,9 +38,9 @@ public:
 
   // Loads the preset named by GFX_ENHANCE_POST_SHADER (a .slangp under the Shaders dir).
   // Empty/failed -> pass-through mode.
-  bool Initialize(AbstractTextureFormat format);
-  void RecompileShader();    // reload preset (config change)
-  void RecompilePipeline();  // rebuild pipelines only (format change)
+  bool Initialize(AbstractTextureFormat format) override;
+  void RecompileShader() override;    // reload preset (config change)
+  void RecompilePipeline() override;  // rebuild pipelines only (format change)
 
   // Runs the pass chain, presenting into the currently-bound framebuffer over dst. `src` is the
   // (internal-resolution-scaled) region of src_tex to read; `native_width`/`native_height` are
@@ -48,8 +49,8 @@ public:
   // scanline/mask geometry regardless of internal resolution, while still sampling the high-res
   // texture. Pass 0 for native size to fall back to the src rect size.
   void BlitFromTexture(const MathUtil::Rectangle<int>& dst, const MathUtil::Rectangle<int>& src,
-                       const AbstractTexture* src_tex, int src_layer = -1, u32 native_width = 0,
-                       u32 native_height = 0);
+                       const AbstractTexture* src_tex, int src_layer, u32 native_width,
+                       u32 native_height) override;
 
 private:
   struct Pass

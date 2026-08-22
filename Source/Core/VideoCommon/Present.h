@@ -22,7 +22,7 @@ enum class DolphinKey;
 
 namespace VideoCommon
 {
-class MultipassPostProcessing;
+class IPostProcessor;
 class OnScreenUI;
 
 // Presenter is a class that deals with putting the final XFB on the screen.
@@ -91,7 +91,7 @@ public:
                                  const MathUtil::Rectangle<int>& source_rc, u32 native_width = 0,
                                  u32 native_height = 0);
 
-  VideoCommon::MultipassPostProcessing* GetPostProcessor() const { return m_post_processor.get(); }
+  VideoCommon::IPostProcessor* GetPostProcessor() const { return m_post_processor.get(); }
   // Final surface changing
   // This is called when the surface is resized (WX) or the window changes (Android).
   void ChangeSurface(void* new_surface_handle);
@@ -165,7 +165,7 @@ private:
   int m_last_window_request_width = 0;
   int m_last_window_request_height = 0;
 
-  std::unique_ptr<VideoCommon::MultipassPostProcessing> m_post_processor;
+  std::unique_ptr<VideoCommon::IPostProcessor> m_post_processor;
   std::unique_ptr<VideoCommon::OnScreenUI> m_onscreen_ui;
 
   u64 m_frame_count = 0;
