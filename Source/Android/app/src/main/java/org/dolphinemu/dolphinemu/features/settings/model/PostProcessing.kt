@@ -13,5 +13,5 @@ object PostProcessing {
      * number of installed presets, or -1 on failure.
      */
     @JvmStatic
-    external fun downloadShaderPack(packId: String): Int
+    external fun downloadShaderPack(packId: String, profile: String): Int
 }

@@ -23,11 +23,12 @@ Java_org_dolphinemu_dolphinemu_features_settings_model_PostProcessing_getShaderL
 
 JNIEXPORT jint JNICALL
 Java_org_dolphinemu_dolphinemu_features_settings_model_PostProcessing_downloadShaderPack(
-    JNIEnv* env, jclass, jstring pack_id)
+    JNIEnv* env, jclass, jstring pack_id, jstring profile)
 {
   const std::string id = GetJString(env, pack_id);
-  const VideoCommon::ShaderPackDownloadResult result =
-      VideoCommon::DownloadShaderPackById(id, File::GetUserPath(D_SHADERS_IDX));
+  const std::string profile_str = GetJString(env, profile);
+  const VideoCommon::ShaderPackDownloadResult result = VideoCommon::DownloadShaderPackById(
+      id, File::GetUserPath(D_SHADERS_IDX), /*progress=*/nullptr, profile_str);
   return result.ok ? static_cast<jint>(result.preset_count) : -1;
 }
 }

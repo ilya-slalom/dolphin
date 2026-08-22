@@ -237,6 +237,18 @@
     <string name="post_processing_downloading">Downloading shader pack…</string>
     <string name="post_processing_download_success">Installed %1$d shader presets.</string>
     <string name="post_processing_download_failure">Failed to download the shader pack.</string>
+    <string name="post_processing_download_retrocrisis">Download RetroCrisis GDV-NTSC</string>
+    <string name="post_processing_download_retrocrisis_description">Config-only CRT pack; downloads the libretro base if missing</string>
+    <string name="post_processing_download_retrocrisis_profile_title">Choose a display profile</string>
+    <string-array name="post_processing_retrocrisis_profiles">
+        <item>1080p Flat</item>
+        <item>1440p Flat</item>
+        <item>4K Flat</item>
+        <item>1080p Curved</item>
+        <item>1440p Curved</item>
+        <item>4K Curved</item>
+        <item>720p Steam Deck</item>
+    </string-array>
     <string name="postprocessing_shader">Post Processing Shader</string>
     <string name="postprocessing_shader_description">Apply a post-processing effect after finishing a frame.</string>
     <string name="scaled_efb_copy">Scaled EFB Copy</string>

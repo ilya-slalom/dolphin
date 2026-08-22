@@ -1635,7 +1635,7 @@ class SettingsFragmentPresenter(
                 R.string.post_processing_download_libretro_confirmation,
                 0,
                 false
-            ) { downloadShaderPack("libretro") }
+            ) { downloadShaderPack("libretro", "") }
         )
         sl.add(
             RunRunnable(
@@ -1645,7 +1645,17 @@ class SettingsFragmentPresenter(
                 R.string.post_processing_download_satpixie_confirmation,
                 0,
                 false
-            ) { downloadShaderPack("satpixie") }
+            ) { downloadShaderPack("satpixie", "") }
+        )
+        sl.add(
+            RunRunnable(
+                context,
+                R.string.post_processing_download_retrocrisis,
+                R.string.post_processing_download_retrocrisis_description,
+                0,
+                0,
+                false
+            ) { promptRetroCrisisProfile() }
         )
 
         sl.add(
@@ -2865,13 +2875,24 @@ class SettingsFragmentPresenter(
         fragmentView.adapter!!.notifyAllSettingsChanged()
     }
 
-    private fun downloadShaderPack(packId: String) {
+    private fun promptRetroCrisisProfile() {
+        val profiles = context.resources.getStringArray(R.array.post_processing_retrocrisis_profiles)
+        MaterialAlertDialogBuilder(context)
+            .setTitle(R.string.post_processing_download_retrocrisis_profile_title)
+            .setItems(profiles) { _, which ->
+                downloadShaderPack("retrocrisis", profiles[which])
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun downloadShaderPack(packId: String, profile: String) {
         ThreadUtil.runOnThreadAndShowResult(
             fragmentView.fragmentActivity,
             R.string.post_processing_downloading,
             0,
             {
-                val count = PostProcessing.downloadShaderPack(packId)
+                val count = PostProcessing.downloadShaderPack(packId, profile)
                 if (count >= 0) {
                     context.resources.getString(R.string.post_processing_download_success, count)
                 } else {
