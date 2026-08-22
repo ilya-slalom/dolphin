@@ -14,6 +14,7 @@
 #include "Common/Logging/Log.h"
 #include "Common/ScopeGuard.h"
 #include "VideoCommon/PostProcessing/PresetArchive.h"
+#include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
 #include "VideoCommon/PostProcessing/ShaderPackSource.h"
 
 namespace VideoCommon
@@ -102,7 +103,8 @@ ShaderPackDownloadResult InstallShaderPackSource(const ShaderPackSource& source,
 
 ShaderPackDownloadResult DownloadShaderPackById(std::string_view id,
                                                 const std::string& shaders_root,
-                                                DownloadProgress progress)
+                                                DownloadProgress progress,
+                                                const std::string& profile)
 {
   const ShaderPackSource* source = FindShaderPackSource(id);
   if (source == nullptr)
@@ -143,6 +145,38 @@ ShaderPackDownloadResult DownloadShaderPackById(std::string_view id,
     if (!zip || !zip.WriteBytes(response->data(), response->size()))
       return {false, 0, "failed to write downloaded archive"};
   }
+
+  // RetroCrisis uses profile-scoped installation: extract the whole zip to a temp dir, then
+  // install only the chosen profile + its closure.
+  if (source->id == "retrocrisis")
+  {
+    // Normalize shaders_root the same way InstallShaderPackSource does.
+    std::string root = shaders_root;
+    if (!root.empty() && root.back() == DIR_SEP_CHR)
+      root.pop_back();
+
+    const std::string install_root =
+        source->install_subdir.empty() ? root : root + DIR_SEP + source->install_subdir;
+
+    const std::string temp_extract = File::CreateTempDir();
+    if (temp_extract.empty())
+      return {false, 0, "could not create temp extraction directory"};
+    Common::ScopeGuard extract_guard{[&] { File::DeleteDirRecursively(temp_extract); }};
+
+    std::string extract_error;
+    const std::vector<std::string> extracted =
+        ExtractSanitizedArchive(zip_path, temp_extract, &extract_error);
+    if (extracted.empty() && !extract_error.empty())
+      return {false, 0, extract_error};
+
+    const u32 preset_count =
+        InstallRetroCrisisProfile(temp_extract, install_root,
+                                  profile.empty() ? "1080p Flat" : profile);
+    if (preset_count == 0)
+      return {false, 0, "no presets installed for profile"};
+    return {true, preset_count, ""};
+  }
+
   return InstallShaderPackSource(*source, zip_path, shaders_root);
 }
 }  // namespace VideoCommon

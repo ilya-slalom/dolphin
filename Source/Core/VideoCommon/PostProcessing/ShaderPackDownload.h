@@ -48,8 +48,10 @@ ShaderPackDownloadResult InstallShaderPackSource(const ShaderPackSource& source,
                                                  const std::string& shaders_root);
 
 // Downloads + installs the source with the given id into shaders_root. Returns ok=false with
-// error set if the id is unknown or the download/extract fails.
+// error set if the id is unknown or the download/extract fails. For retrocrisis, profile
+// selects which profile folder (e.g. "1080p Flat") to install; defaults to "1080p Flat" if empty.
 ShaderPackDownloadResult DownloadShaderPackById(std::string_view id,
                                                 const std::string& shaders_root,
-                                                DownloadProgress progress = nullptr);
+                                                DownloadProgress progress = nullptr,
+                                                const std::string& profile = "");
 }  // namespace VideoCommon

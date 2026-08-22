@@ -7,9 +7,23 @@
 
 #include <gtest/gtest.h>
 
+#include "Common/FileUtil.h"
+#include "Common/IOFile.h"
+#include "Common/ScopeGuard.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
+#include "VideoCommon/PostProcessing/SlangPreset.h"
 
 using namespace VideoCommon;
+
+namespace
+{
+void WriteFile(const std::string& path, const std::string& text)
+{
+  File::CreateFullPath(path);
+  File::IOFile f(path, "wb");
+  f.WriteBytes(text.data(), text.size());
+}
+}  // namespace
 
 TEST(RetroCrisisInstall, ProfileOfExtractsTopFolder)
 {
@@ -31,4 +45,28 @@ TEST(RetroCrisisInstall, ClosureFollowsReferenceChain)
             (std::set<std::string>{"1080p Curved", "1080p Flat", "4K Flat"}));
   EXPECT_EQ(ComputeRetroCrisisClosure("4K Flat", refs),
             (std::set<std::string>{"4K Flat"}));
+}
+
+TEST(RetroCrisisInstall, InstallsChosenProfileClosureOnly)
+{
+  const std::string dir = File::CreateTempDir();
+  ASSERT_FALSE(dir.empty());
+  Common::ScopeGuard guard{[&] { File::DeleteDirRecursively(dir); }};
+
+  const std::string extract = dir + "/extract";
+  WriteFile(extract + "/retro crisis/4K Flat/nes.slangp",
+            "shaders = 1\nshader0 = ../../../shaders_slang/crt/stock.slang\n");
+  WriteFile(extract + "/retro crisis/1080p Flat/nes.slangp",
+            "#reference \"../4K Flat/nes.slangp\"\nmasksize = 2.0\n");
+  WriteFile(extract + "/retro crisis/1440p Flat/nes.slangp",
+            "#reference \"../4K Flat/nes.slangp\"\nmasksize = 3.0\n");
+
+  const std::string install = dir + "/Shaders/RetroCrisis";
+  const u32 count = InstallRetroCrisisProfile(extract, install, "1080p Flat");
+
+  EXPECT_EQ(count, 1u);  // one preset under the chosen profile
+  EXPECT_TRUE(File::Exists(install + "/retro crisis/1080p Flat/nes.slangp"));
+  EXPECT_TRUE(File::Exists(install + "/retro crisis/4K Flat/nes.slangp"));   // closure dep
+  EXPECT_FALSE(File::Exists(install + "/retro crisis/1440p Flat/nes.slangp"));  // not in closure
+  EXPECT_EQ(ReadRetroCrisisProfile(install), "1080p Flat");
 }
