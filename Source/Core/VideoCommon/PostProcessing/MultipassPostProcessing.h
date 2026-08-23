@@ -1,0 +1,147 @@
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#pragma once
+
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "Common/CommonTypes.h"
+#include "Common/MathUtil.h"
+#include "VideoCommon/PostProcessing/IPostProcessor.h"
+#include "VideoCommon/PostProcessing/SlangPreset.h"
+#include "VideoCommon/PostProcessing/SlangShader.h"
+#include "VideoCommon/PostProcessing/SlangTranslator.h"
+#include "VideoCommon/RenderState.h"
+#include "VideoCommon/TextureConfig.h"
+
+class AbstractFramebuffer;
+class AbstractPipeline;
+class AbstractShader;
+class AbstractTexture;
+
+namespace VideoCommon
+{
+// Multi-pass RetroArch-style .slangp post-processor. Replaces the old single-pass PostProcessing.
+class MultipassPostProcessing final : public IPostProcessor
+{
+public:
+  MultipassPostProcessing();
+  ~MultipassPostProcessing();
+
+  // *.slangp presets discovered under the user + sys Shaders dirs, as identifiers relative to
+  // the containing Shaders dir with the extension stripped (e.g. "crt/crt-royale"). This is the
+  // value stored in GFX_ENHANCE_POST_SHADER and resolved back by LoadPreset.
+  static std::vector<std::string> GetPresetList();
+
+  // Loads the preset named by GFX_ENHANCE_POST_SHADER (a .slangp under the Shaders dir).
+  // Empty/failed -> pass-through mode.
+  bool Initialize(AbstractTextureFormat format) override;
+  void RecompileShader() override;    // reload preset (config change)
+  void RecompilePipeline() override;  // rebuild pipelines only (format change)
+
+  // Runs the pass chain, presenting into the currently-bound framebuffer over dst. `src` is the
+  // (internal-resolution-scaled) region of src_tex to read; `native_width`/`native_height` are
+  // the game's native resolution (before internal-resolution upscaling). The shader's SourceSize
+  // and the pass-chain sizing use the NATIVE size so effects like crt-royale render the same
+  // scanline/mask geometry regardless of internal resolution, while still sampling the high-res
+  // texture. Pass 0 for native size to fall back to the src rect size.
+  void BlitFromTexture(const MathUtil::Rectangle<int>& dst, const MathUtil::Rectangle<int>& src,
+                       const AbstractTexture* src_tex, int src_layer, u32 native_width,
+                       u32 native_height) override;
+
+private:
+  struct Pass
+  {
+    SlangPassConfig config;
+    std::vector<std::string> sampler_names;  // binding index -> input name
+    std::vector<UboMember> ubo_members;      // merged PSBlock layout, in declaration order
+    std::vector<SlangParameter> parameters;  // #pragma parameter defaults for this pass
+    std::map<std::string, float> parameter_overrides;  // preset-level overrides (flat namespace)
+    SamplerState input_sampler;              // sampler applied to this pass's inputs
+    std::unique_ptr<AbstractShader> vertex_shader;
+    std::unique_ptr<AbstractShader> pixel_shader;
+    std::unique_ptr<AbstractPipeline> pipeline;
+    std::unique_ptr<AbstractTexture> output_texture;  // null for final pass; this frame's output
+    std::unique_ptr<AbstractFramebuffer> output_framebuffer;
+    // Previous frame's copy of this pass's output, bound when its alias is sampled as
+    // "<Alias>Feedback". Allocated and swapped with output_texture each frame only when
+    // has_feedback; otherwise null.
+    std::unique_ptr<AbstractTexture> feedback_texture;
+    std::unique_ptr<AbstractFramebuffer> feedback_framebuffer;
+    std::string alias;
+    // Logical (native-derived) output size reported to the shader as SourceSize/OutputSize, so
+    // CRT geometry is resolution-independent. The output_texture is allocated at the larger
+    // internal-resolution-scaled size, so higher internal resolution still supersamples the
+    // content fed through the effect.
+    u32 logical_width = 0;
+    u32 logical_height = 0;
+    // Some later pass's alias == this pass's alias is sampled as "<Alias>Feedback": double-buffer
+    // this pass's output across frames.
+    bool has_feedback = false;
+    // A later pass samples this pass's output with mipmapping (its mipmap_input=true): allocate a
+    // full mip chain for output_texture and call GenerateMipmaps() after rendering it.
+    bool generate_mips = false;
+  };
+  struct Lut
+  {
+    std::string name;
+    std::unique_ptr<AbstractTexture> texture;
+    SamplerState sampler;
+  };
+
+  // Loads the preset spec (a single preset name, or a ';'-separated chain) into the pass chain,
+  // falling back to pass-through if nothing loads (a bad/unsupported preset must never block
+  // game boot).
+  void LoadPreset(const std::string& preset_spec);
+  // Appends one preset's LUTs + passes to the current chain (used by LoadPreset for each preset
+  // in a chain). Rolls back its own additions on failure, leaving earlier presets intact.
+  void AppendPreset(const std::string& preset_name);
+  void ClearChain();
+  // Builds the built-in pass-through pipeline (a plain copy of the input) for the current
+  // framebuffer format, used when no user preset is active or a preset failed to load.
+  void BuildPassthroughPipeline();
+  // Scans the assembled pass chain and sets per-pass render-stage flags (has_feedback,
+  // generate_mips) and m_max_history from the passes' sampler references. Called once per load.
+  void AnalyzeRenderStages();
+  // Lazily (re)allocates the frame-history ring to match the current Original frame. No-op unless
+  // the chain references OriginalHistoryN with N>=1.
+  void EnsureHistoryTextures(const AbstractTexture* original);
+  // Rotates the frame-history ring and copies the current Original frame into the newest slot.
+  void ShiftHistory(const AbstractTexture* original);
+
+  std::vector<Pass> m_passes;
+  std::vector<Lut> m_luts;
+  AbstractTextureFormat m_framebuffer_format = AbstractTextureFormat::Undefined;
+  bool m_passthrough = true;
+  u32 m_frame_count = 0;
+  u32 m_target_width = 0;
+  u32 m_target_height = 0;
+  // Native (pre-upscale) source resolution -> drives logical SourceSize (stable CRT geometry).
+  u32 m_source_width = 0;
+  u32 m_source_height = 0;
+  // Internal-resolution-scaled source resolution -> drives physical RT allocation (so higher
+  // internal resolution supersamples the content through the effect).
+  u32 m_scaled_source_width = 0;
+  u32 m_scaled_source_height = 0;
+  // Ring of past-frame copies of the Original (game) frame. m_history_textures[k] holds the frame
+  // from (k+1) frames ago; "OriginalHistoryN" (N>=1) binds m_history_textures[N-1].
+  // OriginalHistory0 == Original (the current frame). Empty unless the chain uses N>=1.
+  std::vector<std::unique_ptr<AbstractTexture>> m_history_textures;
+  u32 m_max_history = 0;
+
+  std::unique_ptr<AbstractShader> m_passthrough_vertex;
+  std::unique_ptr<AbstractShader> m_passthrough_pixel;
+  std::unique_ptr<AbstractPipeline> m_passthrough_pipeline;
+  AbstractTextureFormat m_passthrough_format = AbstractTextureFormat::Undefined;
+};
+
+// Computes the preset identifier for a discovered .slangp path: the path relative to whichever
+// root in `roots` contains it, with separators normalized to '/' and the ".slangp" extension
+// stripped (e.g. "/sys/Shaders/crt/crt-royale.slangp" -> "crt/crt-royale"). If no root matches,
+// falls back to the bare filename without extension. Pure/testable.
+std::string PresetNameFromPath(const std::string& full_path,
+                               const std::vector<std::string>& roots);
+}  // namespace VideoCommon

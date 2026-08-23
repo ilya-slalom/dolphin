@@ -18,7 +18,7 @@
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OnScreenUI.h"
-#include "VideoCommon/PostProcessing.h"
+#include "VideoCommon/PostProcessing/IPostProcessor.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
@@ -120,7 +120,7 @@ bool Presenter::Initialize()
   {
     SetBackbuffer(g_gfx->GetSurfaceInfo());
 
-    m_post_processor = std::make_unique<VideoCommon::PostProcessing>();
+    m_post_processor = g_gfx->CreatePostProcessor();
     if (!m_post_processor->Initialize(m_backbuffer_format))
       return false;
 
@@ -378,6 +378,14 @@ void Presenter::ConfigChanged(u32 changed_bits)
     g_gfx->WaitForGPUIdle();
 
     m_post_processor->RecompileShader();
+  }
+
+  if (changed_bits & ConfigChangeBits::CONFIG_CHANGE_BIT_POST_PROCESS_RENDERER && g_gfx)
+  {
+    g_gfx->WaitForGPUIdle();
+    m_post_processor = g_gfx->CreatePostProcessor();
+    if (m_post_processor)
+      m_post_processor->Initialize(m_backbuffer_format);
   }
 
   // Stereo mode change requires recompiling our post processing pipeline and imgui pipelines for
@@ -873,17 +881,20 @@ std::tuple<int, int> Presenter::CalculateOutputDimensions(int width, int height,
 
 void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
                                   const AbstractTexture* source_texture,
-                                  const MathUtil::Rectangle<int>& source_rc)
+                                  const MathUtil::Rectangle<int>& source_rc, u32 native_width,
+                                  u32 native_height)
 {
   if (g_ActiveConfig.stereo_mode == StereoMode::QuadBuffer &&
       g_backend_info.bUsesExplictQuadBuffering)
   {
     // Quad-buffered stereo is annoying on GL.
     g_gfx->SelectLeftBuffer();
-    m_post_processor->BlitFromTexture(target_rc, source_rc, source_texture, 0);
+    m_post_processor->BlitFromTexture(target_rc, source_rc, source_texture, 0, native_width,
+                                      native_height);
 
     g_gfx->SelectRightBuffer();
-    m_post_processor->BlitFromTexture(target_rc, source_rc, source_texture, 1);
+    m_post_processor->BlitFromTexture(target_rc, source_rc, source_texture, 1, native_width,
+                                      native_height);
 
     g_gfx->SelectMainBuffer();
   }
@@ -892,14 +903,17 @@ void Presenter::RenderXFBToScreen(const MathUtil::Rectangle<int>& target_rc,
   {
     const auto [left_rc, right_rc] = ConvertStereoRectangle(target_rc);
 
-    m_post_processor->BlitFromTexture(left_rc, source_rc, source_texture, 0);
-    m_post_processor->BlitFromTexture(right_rc, source_rc, source_texture, 1);
+    m_post_processor->BlitFromTexture(left_rc, source_rc, source_texture, 0, native_width,
+                                      native_height);
+    m_post_processor->BlitFromTexture(right_rc, source_rc, source_texture, 1, native_width,
+                                      native_height);
   }
   // Every other case will be treated the same (stereo or not).
   // If there's multiple source layers, they should all be copied.
   else
   {
-    m_post_processor->BlitFromTexture(target_rc, source_rc, source_texture);
+    m_post_processor->BlitFromTexture(target_rc, source_rc, source_texture, -1, native_width,
+                                      native_height);
   }
 }
 
@@ -944,7 +958,8 @@ void Presenter::Present(PresentInfo* present_info)
     MathUtil::Rectangle<int> render_source_rc = AdjustForCustomCrop(m_xfb_rect);
     AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                 m_backbuffer_height);
-    RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);
+    RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc,
+                      m_xfb_entry->native_width, m_xfb_entry->native_height);
   }
 
   if (m_onscreen_ui)

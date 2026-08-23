@@ -109,8 +109,6 @@ add_executable(dolphin-emu
   Config/Graphics/HacksWidget.h
   Config/Graphics/ColorCorrectionConfigWindow.cpp
   Config/Graphics/ColorCorrectionConfigWindow.h
-  Config/Graphics/PostProcessingConfigWindow.cpp
-  Config/Graphics/PostProcessingConfigWindow.h
   Config/GraphicsModListWidget.cpp
   Config/GraphicsModListWidget.h
   Config/GraphicsModWarningWidget.cpp

@@ -9,6 +9,8 @@
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/FramebufferManager.h"
+#include "VideoCommon/PostProcessing/IPostProcessor.h"
+#include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
 #include "VideoCommon/ShaderCache.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
@@ -188,4 +190,9 @@ bool AbstractGfx::UseGeometryShaderForUI() const
   // instead drawing twice and the eye selected by glDrawBuffer() (see Presenter::RenderXFBToScreen)
   return g_ActiveConfig.stereo_mode == StereoMode::QuadBuffer &&
          !g_backend_info.bUsesExplictQuadBuffering;
+}
+
+std::unique_ptr<VideoCommon::IPostProcessor> AbstractGfx::CreatePostProcessor()
+{
+  return std::make_unique<VideoCommon::MultipassPostProcessing>();
 }

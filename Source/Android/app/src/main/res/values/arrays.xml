@@ -759,4 +759,13 @@
         <item>1</item>
         <item>2</item>
     </integer-array>
+
+    <string-array name="postProcessingRendererEntries">
+        <item>Built-in</item>
+        <item>librashader (Vulkan)</item>
+    </string-array>
+    <integer-array name="postProcessingRendererValues">
+        <item>0</item>
+        <item>1</item>
+    </integer-array>
 </resources>

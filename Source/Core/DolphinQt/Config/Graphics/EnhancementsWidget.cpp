@@ -5,13 +5,20 @@
 
 #include <utility>
 
+#include <QApplication>
+#include <QEventLoop>
+#include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QMessageBox>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrent>
 
 #include "Common/CommonTypes.h"
+#include "Common/FileUtil.h"
 
 #include "Core/Config/GraphicsSettings.h"
 
@@ -21,11 +28,11 @@
 #include "DolphinQt/Config/GameConfigWidget.h"
 #include "DolphinQt/Config/Graphics/ColorCorrectionConfigWindow.h"
 #include "DolphinQt/Config/Graphics/GraphicsPane.h"
-#include "DolphinQt/Config/Graphics/PostProcessingConfigWindow.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 
-#include "VideoCommon/PostProcessing.h"
+#include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
+#include "VideoCommon/PostProcessing/ShaderPackDownload.h"
 #include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
@@ -144,8 +151,7 @@ void EnhancementsWidget::CreateWidgets()
   const std::vector<std::pair<QString, QString>> separate_data_and_text;
   m_post_processing_effect =
       new ConfigStringChoice(separate_data_and_text, Config::GFX_ENHANCE_POST_SHADER, m_game_layer);
-  m_configure_post_processing_effect = new NonDefaultQPushButton(tr("Configure"));
-  m_configure_post_processing_effect->setDisabled(true);
+  m_download_shader_pack = new NonDefaultQPushButton(tr("Download…"));
 
   m_scaled_efb_copy =
       new ConfigBool(tr("Scaled EFB Copy"), Config::GFX_HACK_COPY_EFB_SCALED, m_game_layer);
@@ -187,7 +193,7 @@ void EnhancementsWidget::CreateWidgets()
 
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
   enhancements_layout->addWidget(m_post_processing_effect, row, 1);
-  enhancements_layout->addWidget(m_configure_post_processing_effect, row, 2);
+  enhancements_layout->addWidget(m_download_shader_pack, row, 2);
   ++row;
 
   enhancements_layout->addWidget(m_scaled_efb_copy, row, 0);
@@ -276,8 +282,8 @@ void EnhancementsWidget::ConnectWidgets()
 
   connect(m_configure_color_correction, &QPushButton::clicked, this,
           &EnhancementsWidget::ConfigureColorCorrection);
-  connect(m_configure_post_processing_effect, &QPushButton::clicked, this,
-          &EnhancementsWidget::ConfigurePostProcessingShader);
+  connect(m_download_shader_pack, &QPushButton::clicked, this,
+          &EnhancementsWidget::DownloadShaderPack);
 
   connect(m_3d_depth, &ConfigFloatSlider::valueChanged, this,
           [this] { m_3d_depth_value->setText(QString::asprintf("%.0f", m_3d_depth->GetValue())); });
@@ -288,57 +294,30 @@ void EnhancementsWidget::ConnectWidgets()
 
 void EnhancementsWidget::LoadPostProcessingShaders()
 {
-  auto stereo_mode = Get(m_game_layer, Config::GFX_STEREO_MODE);
-
   const QSignalBlocker blocker(m_post_processing_effect);
   m_post_processing_effect->clear();
 
-  // Get shader list
-  std::vector<std::string> shaders = VideoCommon::PostProcessing::GetShaderList();
+  // Preset list (*.slangp discovered under the Shaders dirs).
+  const std::vector<std::string> presets = VideoCommon::MultipassPostProcessing::GetPresetList();
 
-  if (stereo_mode == StereoMode::Anaglyph)
-    shaders = VideoCommon::PostProcessing::GetAnaglyphShaderList();
-  else if (stereo_mode == StereoMode::Passive)
-    shaders = VideoCommon::PostProcessing::GetPassiveShaderList();
+  m_post_processing_effect->addItem(tr("(off)"), QStringLiteral(""));
 
-  // Populate widget
-  if (stereo_mode != StereoMode::Anaglyph && stereo_mode != StereoMode::Passive)
-    m_post_processing_effect->addItem(tr("(off)"), QStringLiteral(""));
-
-  auto selected_shader = Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER);
+  const auto selected_shader = Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER);
 
   bool found = false;
-
-  for (const auto& shader : shaders)
+  for (const auto& preset : presets)
   {
-    const QString name = QString::fromStdString(shader);
+    const QString name = QString::fromStdString(preset);
     m_post_processing_effect->addItem(name, name);
-    if (selected_shader == shader)
+    if (selected_shader == preset)
     {
       m_post_processing_effect->setCurrentIndex(m_post_processing_effect->count() - 1);
       found = true;
     }
   }
 
-  // Force a shader for StereoModes that require it.
   if (!found)
-  {
-    if (stereo_mode == StereoMode::Anaglyph)
-      selected_shader = "dubois";
-    else if (stereo_mode == StereoMode::Passive)
-      selected_shader = "horizontal";
-    else
-      selected_shader = "";
-
-    const int index =
-        std::max(0, m_post_processing_effect->findData(QString::fromStdString(selected_shader)));
-    m_post_processing_effect->setCurrentIndex(index);
-
-    // Save forced shader, but avoid forcing an option into a game ini layer.
-    if (m_game_layer == nullptr &&
-        Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER) != selected_shader)
-      Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, selected_shader);
-  }
+    m_post_processing_effect->setCurrentIndex(0);  // "(off)"
 
   m_post_processing_effect->Load();
   ShaderChanged();
@@ -361,14 +340,12 @@ void EnhancementsWidget::OnBackendChanged()
   const bool supports_postprocessing = g_backend_info.bSupportsPostProcessing;
   if (!supports_postprocessing)
   {
-    m_configure_post_processing_effect->setEnabled(false);
     m_post_processing_effect->setEnabled(false);
     m_post_processing_effect->setToolTip(
         tr("%1 doesn't support this feature.").arg(tr(g_video_backend->GetDisplayName().c_str())));
   }
   else if (!m_post_processing_effect->isEnabled() && supports_postprocessing)
   {
-    m_configure_post_processing_effect->setEnabled(true);
     m_post_processing_effect->setEnabled(true);
     m_post_processing_effect->setToolTip(QString{});
     LoadPostProcessingShaders();
@@ -391,17 +368,6 @@ void EnhancementsWidget::ShaderChanged()
       m_game_layer->DeleteKey(Config::GFX_ENHANCE_POST_SHADER.GetLocation());
     else
       Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, shader);
-  }
-
-  if (shader != "" && m_post_processing_effect->isEnabled())
-  {
-    VideoCommon::PostProcessingConfiguration pp_shader;
-    pp_shader.LoadShader(shader);
-    m_configure_post_processing_effect->setEnabled(pp_shader.HasOptions());
-  }
-  else
-  {
-    m_configure_post_processing_effect->setEnabled(false);
   }
 }
 
@@ -622,9 +588,43 @@ void EnhancementsWidget::ConfigureColorCorrection()
   dialog.exec();
 }
 
-void EnhancementsWidget::ConfigurePostProcessingShader()
+void EnhancementsWidget::DownloadShaderPack()
 {
-  const std::string shader = Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER);
-  PostProcessingConfigWindow dialog(this, shader);
-  dialog.exec();
+  QProgressDialog progress(tr("Downloading slang shader pack…"), tr("Cancel"), 0, 100, this);
+  progress.setWindowModality(Qt::WindowModal);
+  progress.setMinimumDuration(0);
+  progress.setValue(0);
+
+  // The DownloadProgress callback runs on the worker thread; marshal percent onto the UI thread.
+  const auto on_progress = [&progress](s64 downloaded, s64 total) -> bool {
+    const int percent = total > 0 ? static_cast<int>((downloaded * 100) / total) : 0;
+    QMetaObject::invokeMethod(
+        &progress, [&progress, percent] { progress.setValue(percent); }, Qt::QueuedConnection);
+    return !progress.wasCanceled();
+  };
+
+  const std::string dest_root = File::GetUserPath(D_SHADERS_IDX);
+  QFutureWatcher<VideoCommon::ShaderPackDownloadResult> watcher;
+  QEventLoop loop;
+  connect(&watcher, &QFutureWatcherBase::finished, &loop, &QEventLoop::quit);
+  watcher.setFuture(QtConcurrent::run([dest_root, on_progress] {
+    return VideoCommon::DownloadAndInstallShaderPack(VideoCommon::SLANG_SHADER_PACK_URL, dest_root,
+                                                     on_progress);
+  }));
+  loop.exec();
+  progress.close();
+
+  const VideoCommon::ShaderPackDownloadResult result = watcher.result();
+  if (result.ok)
+  {
+    QMessageBox::information(
+        this, tr("Shader Pack Installed"),
+        tr("Installed %1 shader presets.").arg(result.preset_count));
+    LoadPostProcessingShaders();
+  }
+  else
+  {
+    QMessageBox::warning(this, tr("Download Failed"),
+                         QString::fromStdString(result.error));
+  }
 }

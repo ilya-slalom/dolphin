@@ -76,6 +76,12 @@ enum class OutputResamplingMode : int
   AreaSampling,
 };
 
+enum class PostProcessRenderer : int
+{
+  Builtin = 0,      // homegrown MultipassPostProcessing (default, all backends)
+  Librashader = 1,  // librashader via dlopen (Vulkan/Android only)
+};
+
 enum class ColorCorrectionRegion : int
 {
   SMPTE_NTSCM,
@@ -121,6 +127,7 @@ enum ConfigChangeBits : u32
   CONFIG_CHANGE_BIT_ASPECT_RATIO = (1 << 8),
   CONFIG_CHANGE_BIT_POST_PROCESSING_SHADER = (1 << 9),
   CONFIG_CHANGE_BIT_HDR = (1 << 10),
+  CONFIG_CHANGE_BIT_POST_PROCESS_RENDERER = (1 << 11),
 };
 
 // Static config per API
@@ -222,6 +229,7 @@ struct VideoConfig final
   OutputResamplingMode output_resampling_mode = OutputResamplingMode::Default;
   AnisotropicFilteringMode iMaxAnisotropy = AnisotropicFilteringMode::Default;
   std::string sPostProcessingShader;
+  PostProcessRenderer post_process_renderer = PostProcessRenderer::Builtin;
   bool bForceTrueColor = false;
   bool bDisableCopyFilter = false;
   bool bArbitraryMipmapDetection = false;

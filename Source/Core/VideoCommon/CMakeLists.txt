@@ -142,8 +142,35 @@ add_library(videocommon
   PixelShaderGen.h
   PixelShaderManager.cpp
   PixelShaderManager.h
-  PostProcessing.cpp
-  PostProcessing.h
+  PostProcessing/LutTexture.cpp
+  PostProcessing/LutTexture.h
+  PostProcessing/IPostProcessor.h
+  PostProcessing/MultipassPostProcessing.cpp
+  PostProcessing/MultipassPostProcessing.h
+  PostProcessing/MipGen.cpp
+  PostProcessing/MipGen.h
+  PostProcessing/PassGraph.cpp
+  PostProcessing/PassGraph.h
+  PostProcessing/PassSizing.cpp
+  PostProcessing/PassSizing.h
+  PostProcessing/PresetArchive.cpp
+  PostProcessing/PresetArchive.h
+  PostProcessing/RetroCrisisInstall.cpp
+  PostProcessing/RetroCrisisInstall.h
+  PostProcessing/ShaderPackDownload.cpp
+  PostProcessing/ShaderPackDownload.h
+  PostProcessing/ShaderPackSource.cpp
+  PostProcessing/ShaderPackSource.h
+  PostProcessing/SlangPreset.cpp
+  PostProcessing/SlangPreset.h
+  PostProcessing/SlangSamplers.cpp
+  PostProcessing/SlangSamplers.h
+  PostProcessing/SlangShader.cpp
+  PostProcessing/SlangShader.h
+  PostProcessing/SlangSourceDownscale.cpp
+  PostProcessing/SlangSourceDownscale.h
+  PostProcessing/SlangTranslator.cpp
+  PostProcessing/SlangTranslator.h
   Present.cpp
   Present.h
   RenderState.cpp

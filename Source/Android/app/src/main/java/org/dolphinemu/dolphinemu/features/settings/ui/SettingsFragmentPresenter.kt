@@ -3,6 +3,8 @@
 package org.dolphinemu.dolphinemu.features.settings.ui
 
 import android.content.Context
+import android.content.DialogInterface
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -1610,23 +1612,61 @@ class SettingsFragmentPresenter(
             )
         )
 
-        val stereoModeValue = IntSetting.GFX_STEREO_MODE.int
-        val anaglyphMode = 3
-        val shaderList =
-            if (stereoModeValue == anaglyphMode) PostProcessing.anaglyphShaderList else PostProcessing.shaderList
+        sl.add(
+            SingleChoiceSetting(
+                context,
+                IntSetting.GFX_ENHANCE_POST_PROCESS_RENDERER,
+                R.string.post_processing_renderer,
+                R.string.post_processing_renderer_description,
+                R.array.postProcessingRendererEntries,
+                R.array.postProcessingRendererValues
+            )
+        )
 
-        val shaderListEntries = arrayOf(context.getString(R.string.off), *shaderList)
-        val shaderListValues = arrayOf("", *shaderList)
+        // Post-processing effect picker. A single row whose subtitle shows the current selection
+        // (a shader, an arrow-joined chain, or "Off"). Tapping it opens a two-step picker:
+        // choose a category, then a shader, with "Select" (replace the chain with this shader) and
+        // "Add to Chain" (append it) actions. See openPostProcessingPicker.
+        sl.add(
+            RunRunnable(
+                context,
+                R.string.post_processing_shader,
+                describePostShaderSelection(StringSetting.GFX_ENHANCE_POST_SHADER.string),
+                0,
+                0,
+                false
+            ) { openPostProcessingPicker() }
+        )
 
         sl.add(
-            StringSingleChoiceSetting(
+            RunRunnable(
                 context,
-                StringSetting.GFX_ENHANCE_POST_SHADER,
-                R.string.post_processing_shader,
+                R.string.post_processing_download_libretro,
+                R.string.post_processing_download_libretro_description,
+                R.string.post_processing_download_libretro_confirmation,
                 0,
-                shaderListEntries,
-                shaderListValues
-            )
+                false
+            ) { downloadShaderPack("libretro", "") }
+        )
+        sl.add(
+            RunRunnable(
+                context,
+                R.string.post_processing_download_satpixie,
+                R.string.post_processing_download_satpixie_description,
+                R.string.post_processing_download_satpixie_confirmation,
+                0,
+                false
+            ) { downloadShaderPack("satpixie", "") }
+        )
+        sl.add(
+            RunRunnable(
+                context,
+                R.string.post_processing_download_retrocrisis,
+                R.string.post_processing_download_retrocrisis_description,
+                0,
+                0,
+                false
+            ) { promptRetroCrisisProfile() }
         )
 
         sl.add(
@@ -2844,6 +2884,127 @@ class SettingsFragmentPresenter(
         }
 
         fragmentView.adapter!!.notifyAllSettingsChanged()
+    }
+
+    private fun promptRetroCrisisProfile() {
+        val profiles = context.resources.getStringArray(R.array.post_processing_retrocrisis_profiles)
+        MaterialAlertDialogBuilder(context)
+            .setTitle(R.string.post_processing_download_retrocrisis_profile_title)
+            .setItems(profiles) { _, which ->
+                downloadShaderPack("retrocrisis", profiles[which])
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun downloadShaderPack(packId: String, profile: String) {
+        ThreadUtil.runOnThreadAndShowResult(
+            fragmentView.fragmentActivity,
+            R.string.post_processing_downloading,
+            0,
+            {
+                val count = PostProcessing.downloadShaderPack(packId, profile)
+                if (count >= 0) {
+                    context.resources.getString(R.string.post_processing_download_success, count)
+                } else {
+                    context.resources.getString(R.string.post_processing_download_failure)
+                }
+            },
+            // Reload the settings list so the newly-downloaded presets populate the shader picker.
+            DialogInterface.OnDismissListener {
+                loadSettingsList()
+            }
+        )
+    }
+
+    // Builds the subtitle for the post-processing effect row: "Off" when empty, the single preset
+    // name, or an arrow-joined chain (e.g. "crt/crt-royale → interpolation/sharp-bilinear").
+    private fun describePostShaderSelection(spec: String): CharSequence {
+        if (spec.isEmpty()) return context.getString(R.string.off)
+        return spec.split(';').filter { it.isNotEmpty() }.joinToString(" → ")
+    }
+
+    // Two-step post-processing picker. Step 1 lists the shader categories (top-level folders of
+    // the buildbot pack) plus "All"; step 2 lists the shaders in the chosen category with "Select"
+    // (replace the whole chain with this one shader) and "Add to Chain" (append it) actions. The
+    // "Add to Chain" button is only offered once at least one shader is already selected.
+    private fun openPostProcessingPicker() {
+        val shaderList = PostProcessing.shaderList
+        if (shaderList.isEmpty()) {
+            fragmentView.showToastMessage(context.getString(R.string.post_processing_chain_empty))
+            return
+        }
+
+        val allCategory = context.getString(R.string.post_processing_category_all)
+        val categories = shaderList
+            .mapNotNull { it.substringBefore('/', "").ifEmpty { null } }
+            .distinct()
+            .sorted()
+        val categoryEntries = arrayOf(allCategory, *categories.toTypedArray())
+
+        MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
+            .setTitle(R.string.post_processing_shader)
+            .setItems(categoryEntries) { _: DialogInterface, which: Int ->
+                val category = categoryEntries[which]
+                val filtered = if (category == allCategory) {
+                    shaderList.toList()
+                } else {
+                    shaderList.filter { it.substringBefore('/', "") == category }
+                }
+                showPostShaderList(category, filtered)
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    // Step 2 of the picker: the shaders in the chosen category, prefixed with "Off". Radio-style
+    // single selection; "Select" replaces the current chain with the highlighted shader, while
+    // "Add to Chain" appends it. "Add to Chain" is hidden until at least one shader is selected.
+    private fun showPostShaderList(category: String, presets: List<String>) {
+        val settings = this.settings ?: return
+        if (presets.isEmpty()) {
+            fragmentView.showToastMessage(context.getString(R.string.post_processing_chain_empty))
+            return
+        }
+
+        val off = context.getString(R.string.off)
+        val entries = arrayOf(off, *presets.toTypedArray())
+        val values = arrayOf("", *presets.toTypedArray())
+
+        // Highlight whichever entry matches the last preset in the current chain, if any.
+        val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
+        val lastPreset = current.split(';').lastOrNull { it.isNotEmpty() } ?: ""
+        var checked = values.indexOf(lastPreset).let { if (it >= 0) it else 0 }
+        val hasSelection = current.isNotEmpty()
+
+        val builder = MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
+            .setTitle(category)
+            .setSingleChoiceItems(entries, checked) { _: DialogInterface, which: Int ->
+                checked = which
+            }
+            // "Select": reset the chain to just the highlighted preset (empty selection = Off).
+            .setPositiveButton(R.string.post_processing_select) { _: DialogInterface, _: Int ->
+                StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, values[checked])
+                fragmentView.onSettingChanged()
+                loadSettingsList()
+            }
+            .setNeutralButton(R.string.cancel, null)
+
+        // "Add to Chain": append the highlighted preset to the existing chain. Only meaningful
+        // when something is already selected, so it is offered only in that case.
+        if (hasSelection) {
+            builder.setNegativeButton(R.string.post_processing_chain_add) { _: DialogInterface, _: Int ->
+                val chosen = values[checked]
+                if (chosen.isEmpty()) return@setNegativeButton  // "Off" has nothing to append.
+                val existing = StringSetting.GFX_ENHANCE_POST_SHADER.string
+                val updated = if (existing.isEmpty()) chosen else "$existing;$chosen"
+                StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, updated)
+                fragmentView.onSettingChanged()
+                loadSettingsList()
+            }
+        }
+
+        builder.show()
     }
 
     private fun convertOnThread(f: BooleanSupplier) {
