@@ -25,6 +25,7 @@
 #include "VideoCommon/AbstractPipeline.h"
 #include "VideoCommon/AbstractShader.h"
 #include "VideoCommon/AbstractTexture.h"
+#include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoConfig.h"
@@ -146,17 +147,33 @@ void LibrashaderPostProcessing::RecompileShader()
   device.queue = g_vulkan_context->GetGraphicsQueue();
   device.entry = ::vkGetInstanceProcAddr;
 
+  // Chain options. frames_in_flight 0 selects librashader's default of three, which is >= Dolphin's
+  // NUM_FRAMES_IN_FLIGHT (2): a pass's per-frame objects are never recycled while a submit that still
+  // references them can be in flight. Dynamic rendering (when the device has it and librashader can
+  // resolve vkCmdBeginRendering) avoids one VkFramebuffer per pass per frame; in render-pass mode
+  // librashader creates those objects every frame.
+  filter_chain_vk_opt_t options = {};
+  options.version = LIBRASHADER_CURRENT_VERSION;
+  options.frames_in_flight = 0;
+  options.force_no_mipmaps = false;
+  options.use_dynamic_rendering = VideoCommon::ChooseDynamicRendering(
+      g_vulkan_context->SupportsDynamicRendering() &&
+          Config::Get(Config::GFX_LIBRASHADER_DYNAMIC_RENDERING),
+      vkGetDeviceProcAddr(g_vulkan_context->GetDevice(), "vkCmdBeginRendering") != nullptr);
+  options.disable_cache = false;
+
   // vk_filter_chain_create invalidates the preset handle regardless of success or failure (see the
   // header: "the shader preset is immediately invalidated"), so it must not be freed on either path
   // -- doing so would be a double-free. On error, leave m_chain null (passthrough).
-  if (CheckError(lib, lib.vk_filter_chain_create(&preset, device, nullptr, &m_chain),
+  if (CheckError(lib, lib.vk_filter_chain_create(&preset, device, &options, &m_chain),
                  "vk_filter_chain_create"))
   {
     m_chain = nullptr;
     return;
   }
 
-  INFO_LOG_FMT(VIDEO, "Librashader: filter chain created from '{}'", path);
+  INFO_LOG_FMT(VIDEO, "Librashader: filter chain created from '{}' (dynamic rendering {})", path,
+               options.use_dynamic_rendering ? "on" : "off");
 }
 
 void LibrashaderPostProcessing::RecompilePipeline()
@@ -415,39 +432,59 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     // pixel grid as vertical moire, independent of internal resolution. We instead render the chain
     // into a draw-rect-sized target at viewport origin (0,0) so OutputSize == the drawn extent, then
     // blit that 1:1 into the backbuffer at the draw rect. This mirrors how ARMSX2 drives librashader.
-    auto* out_tex = static_cast<VKTexture*>(framebuffer->GetColorAttachment());
-    AbstractTexture* const chain_output = EnsureOutputTarget(
-        static_cast<u32>(dst.GetWidth()), static_cast<u32>(dst.GetHeight()), out_tex->GetFormat());
-    if (chain_output != nullptr)
-    {
-      auto* chain_out_tex = static_cast<VKTexture*>(chain_output);
-      libra_image_vk_t out{chain_out_tex->GetImage(), chain_out_tex->GetVkFormat(),
-                           chain_out_tex->GetWidth(), chain_out_tex->GetHeight()};
-      libra_viewport_t vp{0.0f, 0.0f, chain_out_tex->GetWidth(), chain_out_tex->GetHeight()};
+    // Records the whole chain with `target` as its output image (viewport = the full target).
+    // libra_vk_filter_chain_frame() must NOT be recorded inside a render pass, and the header
+    // requires the input in SHADER_READ_ONLY_OPTIMAL and the output in COLOR_ATTACHMENT_OPTIMAL.
+    // (`source` is const; VKTexture::TransitionToLayout is const-qualified. When a downscale ran,
+    // `source` is the native texture already left in SHADER_READ_ONLY_OPTIMAL; re-issuing the
+    // transition is a no-op there.) librashader creates no barrier after its final pass, so on
+    // success the target is left in COLOR_ATTACHMENT_OPTIMAL and Dolphin's tracking is reconciled.
+    const auto run_chain = [&](VKTexture* target) -> bool {
+      libra_image_vk_t out{target->GetImage(), target->GetVkFormat(), target->GetWidth(),
+                           target->GetHeight()};
+      libra_viewport_t vp{0.0f, 0.0f, target->GetWidth(), target->GetHeight()};
 
-      // libra_vk_filter_chain_frame() must NOT be recorded inside a render pass.
       StateTracker::GetInstance()->EndRenderPass();
-
-      // The header requires the input in SHADER_READ_ONLY_OPTIMAL and the output in
-      // COLOR_ATTACHMENT_OPTIMAL before the call. (source is const; VKTexture::TransitionToLayout is
-      // const-qualified. When a downscale ran, `source` is the native texture already left in
-      // SHADER_READ_ONLY_OPTIMAL; re-issuing the transition is a no-op there.)
       VkCommandBuffer cmd = g_command_buffer_mgr->GetCurrentCommandBuffer();
       source->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-      chain_out_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      target->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
       libra_error_t err = lib.vk_filter_chain_frame(&m_chain, cmd, m_frame_count++, in, out, &vp,
                                                     nullptr, nullptr);
-      if (!CheckError(lib, err, "vk_filter_chain_frame"))
+      target->OverrideImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      return !CheckError(lib, err, "vk_filter_chain_frame");
+    };
+
+    auto* out_tex = static_cast<VKTexture*>(framebuffer->GetColorAttachment());
+    if (VideoCommon::ShouldRenderChainDirectly(dst, framebuffer->GetWidth(),
+                                               framebuffer->GetHeight()))
+    {
+      // The draw rect is the entire backbuffer, so OutputSize is identical whether the chain
+      // targets the intermediate texture or the backbuffer itself: render straight into the
+      // backbuffer and skip the extra full-frame write + read of the 1:1 blit. The chain's final
+      // pass covers every backbuffer pixel, which also makes the clear BindBackbuffer deferred
+      // redundant.
+      StateTracker::GetInstance()->DiscardPendingClear();
+      if (run_chain(out_tex))
+        return;
+      // On error, fall through to the passthrough copy; it covers the full rect, so the discarded
+      // clear is not missed.
+    }
+    else
+    {
+      AbstractTexture* const chain_output =
+          EnsureOutputTarget(static_cast<u32>(dst.GetWidth()),
+                             static_cast<u32>(dst.GetHeight()), out_tex->GetFormat());
+      if (chain_output != nullptr && run_chain(static_cast<VKTexture*>(chain_output)))
       {
-        // No barrier is created for the final pass, so librashader leaves chain_output in
-        // COLOR_ATTACHMENT_OPTIMAL; reconcile Dolphin's tracking, then present it 1:1 into the
-        // backbuffer draw rect. Point sampling keeps the copy exact (target and rect are equal size).
-        chain_out_tex->OverrideImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        // Present the chain output 1:1 into the backbuffer draw rect. Point sampling keeps the copy
+        // exact (target and rect are equal size).
         BuildPassthroughPipeline();
         if (m_passthrough_pipeline)
         {
-          chain_out_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+          auto* chain_out_tex = static_cast<VKTexture*>(chain_output);
+          chain_out_tex->TransitionToLayout(g_command_buffer_mgr->GetCurrentCommandBuffer(),
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
           g_gfx->SetFramebuffer(framebuffer);
           g_gfx->SetTexture(0, chain_output);
           g_gfx->SetSamplerState(0, RenderState::GetPointSamplerState());

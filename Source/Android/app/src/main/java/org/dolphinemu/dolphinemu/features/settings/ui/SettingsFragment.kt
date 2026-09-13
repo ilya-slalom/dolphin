@@ -14,7 +14,6 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Toast
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
@@ -26,12 +25,11 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.snackbar.Snackbar
 import org.dolphinemu.dolphinemu.R
 import org.dolphinemu.dolphinemu.databinding.FragmentSettingsBinding
 import org.dolphinemu.dolphinemu.features.settings.model.Settings
 import org.dolphinemu.dolphinemu.features.settings.model.view.SettingsItem
-import org.dolphinemu.dolphinemu.utils.GpuDriverInstallResult
+import org.dolphinemu.dolphinemu.utils.InstalledGpuDriver
 import org.dolphinemu.dolphinemu.utils.SerializableHelper.serializable
 import java.util.*
 import kotlin.collections.ArrayList
@@ -133,11 +131,6 @@ class SettingsFragment : Fragment(), SettingsFragmentView {
     }
 
     override fun loadSubMenu(menuKey: MenuTag) {
-        if (menuKey == MenuTag.GPU_DRIVERS) {
-            showGpuDriverDialog()
-            return
-        }
-
         activityView!!.showSettingsFragment(
             menuKey,
             null,
@@ -197,21 +190,16 @@ class SettingsFragment : Fragment(), SettingsFragmentView {
         }
     }
 
-    override fun showGpuDriverDialog() {
-        if (presenter.gpuDriver == null) {
-            return
-        }
-        val msg = "${presenter.gpuDriver!!.name} ${presenter.gpuDriver!!.driverVersion}"
-
+    override fun showDriverActionDialog(driver: InstalledGpuDriver) {
         MaterialAlertDialogBuilder(requireContext())
-            .setTitle(getString(R.string.gpu_driver_dialog_title))
-            .setMessage(msg)
+            .setTitle(driver.metadata.name)
+            .setMessage(driver.metadata.description)
             .setNegativeButton(android.R.string.cancel, null)
-            .setNeutralButton(R.string.gpu_driver_dialog_system) { _: DialogInterface?, _: Int ->
-                presenter.useSystemDriver()
+            .setNeutralButton(R.string.gpu_driver_delete) { _: DialogInterface?, _: Int ->
+                presenter.deleteDriver(driver)
             }
-            .setPositiveButton(R.string.gpu_driver_dialog_install) { _: DialogInterface?, _: Int ->
-                askForDriverFile()
+            .setPositiveButton(R.string.gpu_driver_use) { _: DialogInterface?, _: Int ->
+                presenter.selectDriver(driver)
             }
             .show()
     }
@@ -220,37 +208,12 @@ class SettingsFragment : Fragment(), SettingsFragmentView {
         return lifecycle
     }
 
-    private fun askForDriverFile() {
+    override fun askForDriverFile() {
         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             type = "application/zip"
         }
         requestGpuDriver.launch(intent)
-    }
-
-    override fun onDriverInstallDone(result: GpuDriverInstallResult) {
-        val view = binding?.root ?: return
-        Snackbar
-            .make(view, resolveInstallResultString(result), Snackbar.LENGTH_LONG)
-            .show()
-    }
-
-    override fun onDriverUninstallDone() {
-        Toast.makeText(
-            requireContext(),
-            R.string.gpu_driver_dialog_uninstall_done,
-            Toast.LENGTH_SHORT
-        ).show()
-    }
-
-    private fun resolveInstallResultString(result: GpuDriverInstallResult) = when (result) {
-        GpuDriverInstallResult.Success -> getString(R.string.gpu_driver_install_success)
-        GpuDriverInstallResult.InvalidArchive -> getString(R.string.gpu_driver_install_invalid_archive)
-        GpuDriverInstallResult.MissingMetadata -> getString(R.string.gpu_driver_install_missing_metadata)
-        GpuDriverInstallResult.InvalidMetadata -> getString(R.string.gpu_driver_install_invalid_metadata)
-        GpuDriverInstallResult.UnsupportedAndroidVersion -> getString(R.string.gpu_driver_install_unsupported_android_version)
-        GpuDriverInstallResult.AlreadyInstalled -> getString(R.string.gpu_driver_install_already_installed)
-        GpuDriverInstallResult.FileNotFound -> getString(R.string.gpu_driver_install_file_not_found)
     }
 
     companion object {
@@ -278,6 +241,7 @@ class SettingsFragment : Fragment(), SettingsFragmentView {
             titles[MenuTag.HACKS] = R.string.hacks_submenu
             titles[MenuTag.STATISTICS] = R.string.statistics_submenu
             titles[MenuTag.ADVANCED_GRAPHICS] = R.string.advanced_graphics_submenu
+            titles[MenuTag.GPU_DRIVERS] = R.string.gpu_driver_submenu
             titles[MenuTag.CONFIG_LOG] = R.string.log_submenu
             titles[MenuTag.GCPAD_TYPE] = R.string.gcpad_settings
             titles[MenuTag.WIIMOTE] = R.string.wiimote_settings

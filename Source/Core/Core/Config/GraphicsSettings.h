@@ -196,6 +196,11 @@ extern const Info<bool> GFX_PERF_QUERIES_ENABLE;
 // Android custom GPU drivers
 
 extern const Info<std::string> GFX_DRIVER_LIB_NAME;
+extern const Info<std::string> GFX_DRIVER_PACKAGE;
+
+// librashader post-processing (Vulkan)
+
+extern const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING;
 
 // Vertex loader
 

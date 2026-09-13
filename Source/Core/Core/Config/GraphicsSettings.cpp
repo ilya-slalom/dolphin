@@ -133,6 +133,12 @@ const Info<bool> GFX_PREFER_GLES{{System::GFX, "Settings", "PreferGLES"}, false}
 const Info<bool> GFX_MODS_ENABLE{{System::GFX, "Settings", "EnableMods"}, false};
 
 const Info<std::string> GFX_DRIVER_LIB_NAME{{System::GFX, "Settings", "DriverLibName"}, ""};
+const Info<std::string> GFX_DRIVER_PACKAGE{{System::GFX, "Settings", "DriverPackage"}, ""};
+
+// Kill switch for the librashader chain's dynamic-rendering path (used only when the device
+// supports the feature). Lets a driver-specific problem be worked around from GFX.ini.
+const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING{
+    {System::GFX, "Settings", "LibrashaderDynamicRendering"}, true};
 
 const Info<VertexLoaderType> GFX_VERTEX_LOADER_TYPE{{System::GFX, "Settings", "VertexLoaderType"},
                                                     VertexLoaderType::Native};

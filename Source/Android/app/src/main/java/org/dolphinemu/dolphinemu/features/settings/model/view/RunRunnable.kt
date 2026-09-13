@@ -48,6 +48,22 @@ class RunRunnable : SettingsItem {
         this.runnable = runnable
     }
 
+    // Variant with both title and description computed at runtime, e.g. one row per installed
+    // GPU driver.
+    constructor(
+        title: CharSequence,
+        description: CharSequence,
+        alertText: Int,
+        toastTextAfterRun: Int,
+        worksDuringEmulation: Boolean,
+        runnable: Runnable
+    ) : super(title, description) {
+        this.alertText = alertText
+        this.toastTextAfterRun = toastTextAfterRun
+        this.worksDuringEmulation = worksDuringEmulation
+        this.runnable = runnable
+    }
+
     override val isEditable: Boolean
         get() = worksDuringEmulation || NativeLibrary.IsUninitialized()
 }
