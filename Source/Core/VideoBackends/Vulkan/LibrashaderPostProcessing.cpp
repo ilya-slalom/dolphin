@@ -157,7 +157,8 @@ void LibrashaderPostProcessing::RecompileShader()
   options.frames_in_flight = 0;
   options.force_no_mipmaps = false;
   options.use_dynamic_rendering = VideoCommon::ChooseDynamicRendering(
-      g_vulkan_context->SupportsDynamicRendering(),
+      g_vulkan_context->SupportsDynamicRendering() &&
+          Config::Get(Config::GFX_LIBRASHADER_DYNAMIC_RENDERING),
       vkGetDeviceProcAddr(g_vulkan_context->GetDevice(), "vkCmdBeginRendering") != nullptr);
   options.disable_cache = false;
 
