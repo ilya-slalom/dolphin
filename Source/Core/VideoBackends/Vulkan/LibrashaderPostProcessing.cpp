@@ -25,6 +25,7 @@
 #include "VideoCommon/AbstractPipeline.h"
 #include "VideoCommon/AbstractShader.h"
 #include "VideoCommon/AbstractTexture.h"
+#include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoConfig.h"
@@ -146,17 +147,32 @@ void LibrashaderPostProcessing::RecompileShader()
   device.queue = g_vulkan_context->GetGraphicsQueue();
   device.entry = ::vkGetInstanceProcAddr;
 
+  // Chain options. frames_in_flight 0 selects librashader's default of three, which is >= Dolphin's
+  // NUM_FRAMES_IN_FLIGHT (2): a pass's per-frame objects are never recycled while a submit that still
+  // references them can be in flight. Dynamic rendering (when the device has it and librashader can
+  // resolve vkCmdBeginRendering) avoids one VkFramebuffer per pass per frame; in render-pass mode
+  // librashader creates those objects every frame.
+  filter_chain_vk_opt_t options = {};
+  options.version = LIBRASHADER_CURRENT_VERSION;
+  options.frames_in_flight = 0;
+  options.force_no_mipmaps = false;
+  options.use_dynamic_rendering = VideoCommon::ChooseDynamicRendering(
+      g_vulkan_context->SupportsDynamicRendering(),
+      vkGetDeviceProcAddr(g_vulkan_context->GetDevice(), "vkCmdBeginRendering") != nullptr);
+  options.disable_cache = false;
+
   // vk_filter_chain_create invalidates the preset handle regardless of success or failure (see the
   // header: "the shader preset is immediately invalidated"), so it must not be freed on either path
   // -- doing so would be a double-free. On error, leave m_chain null (passthrough).
-  if (CheckError(lib, lib.vk_filter_chain_create(&preset, device, nullptr, &m_chain),
+  if (CheckError(lib, lib.vk_filter_chain_create(&preset, device, &options, &m_chain),
                  "vk_filter_chain_create"))
   {
     m_chain = nullptr;
     return;
   }
 
-  INFO_LOG_FMT(VIDEO, "Librashader: filter chain created from '{}'", path);
+  INFO_LOG_FMT(VIDEO, "Librashader: filter chain created from '{}' (dynamic rendering {})", path,
+               options.use_dynamic_rendering ? "on" : "off");
 }
 
 void LibrashaderPostProcessing::RecompilePipeline()
