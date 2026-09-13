@@ -43,6 +43,7 @@ object DirectoryInitialization {
 
     private lateinit var userPath: String
     private lateinit var driverPath: String
+    private lateinit var installedDriverPath: String
     private var usingLegacyUserDirectory = false
 
     enum class DirectoryInitializationState {
@@ -154,6 +155,8 @@ object DirectoryInitialization {
         driverDirectory.mkdirs()
         val driverExtractedDir = File(driverDirectory, "Extracted")
         driverExtractedDir.mkdirs()
+        val driverInstalledDir = File(driverDirectory, "Installed")
+        driverInstalledDir.mkdirs()
         val driverTmpDir = File(driverDirectory, "Tmp")
         driverTmpDir.mkdirs()
         val driverFileRedirectDir = File(driverDirectory, "FileRedirect")
@@ -161,6 +164,7 @@ object DirectoryInitialization {
 
         SetGpuDriverDirectories(driverDirectory.path, context.applicationInfo.nativeLibraryDir)
         driverPath = driverExtractedDir.absolutePath
+        installedDriverPath = driverInstalledDir.absolutePath
     }
 
     private fun deleteDirectoryRecursively(file: File) {
@@ -213,6 +217,18 @@ object DirectoryInitialization {
         }
 
         return driverPath
+    }
+
+    /** Root of the multi-slot driver store: one `<id>/` directory per installed driver. */
+    @JvmStatic
+    fun getInstalledDriversDirectory(): String {
+        if (!areDirectoriesAvailable) {
+            throw IllegalStateException(
+                "DirectoryInitialization must run before accessing the driver directory!"
+            )
+        }
+
+        return installedDriverPath
     }
 
     @JvmStatic

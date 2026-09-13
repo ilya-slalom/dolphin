@@ -171,6 +171,9 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.tooling)
     implementation(libs.androidx.compose.ui.tooling.preview)
+
+    // JVM unit tests (Source/Android/app/src/test)
+    testImplementation("junit:junit:4.13.2")
 }
 
 fun getGitVersion(): String {
