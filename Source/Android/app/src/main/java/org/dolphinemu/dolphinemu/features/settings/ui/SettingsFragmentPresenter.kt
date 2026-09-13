@@ -3028,6 +3028,9 @@ class SettingsFragmentPresenter(
 
         sl.add(HeaderSetting(context, R.string.gpu_driver_installed_header, 0))
         val activeSuffix = " " + context.getString(R.string.gpu_driver_active_suffix)
+        // List first: it may migrate a legacy single-slot install and record it as the active
+        // package, which the marker below has to see.
+        val installed = GpuDriverHelper.listInstalled(settings)
         val activePackage = StringSetting.GFX_DRIVER_PACKAGE.string
         val systemActive = StringSetting.GFX_DRIVER_LIB_NAME.string.isEmpty()
         sl.add(
@@ -3039,7 +3042,7 @@ class SettingsFragmentPresenter(
                 false
             ) { selectDriver(null) }
         )
-        for (driver in GpuDriverHelper.listInstalled(settings)) {
+        for (driver in installed) {
             val meta = driver.metadata
             val isActive = !systemActive && driver.id == activePackage
             val title = buildString {
