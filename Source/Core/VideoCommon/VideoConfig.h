@@ -358,6 +358,7 @@ struct VideoConfig final
 
   // Loading custom drivers on Android
   std::string customDriverLibraryName;
+  std::string customDriverPackage;
 
   // Vertex loader
   VertexLoaderType vertex_loader_type;
