@@ -280,9 +280,32 @@ void StateTracker::InvalidateCachedState()
     m_dirty_flags |= DIRTY_FLAG_INDEX_BUFFER;
 }
 
+void StateTracker::SetPendingClear(VKFramebuffer* framebuffer, const VkClearValue& color_value,
+                                   const VkClearValue& depth_value)
+{
+  m_pending_clear_framebuffer = framebuffer;
+  m_pending_clear_color = color_value;
+  m_pending_clear_depth = depth_value;
+}
+
+bool StateTracker::BeginPendingClearRenderPass()
+{
+  if (!HasPendingClear(m_framebuffer))
+    return false;
+
+  // Consume first: SetAndClear() re-enters this class through BeginClearRenderPass().
+  m_pending_clear_framebuffer = nullptr;
+  m_framebuffer->SetAndClear(m_framebuffer->GetRect(), m_pending_clear_color,
+                             m_pending_clear_depth);
+  return true;
+}
+
 void StateTracker::BeginRenderPass()
 {
   if (InRenderPass())
+    return;
+
+  if (BeginPendingClearRenderPass())
     return;
 
   m_current_render_pass = m_framebuffer->GetLoadRenderPass();
@@ -304,6 +327,11 @@ void StateTracker::BeginRenderPass()
 void StateTracker::BeginDiscardRenderPass()
 {
   if (InRenderPass())
+    return;
+
+  // A deferred clear outranks a discard: honouring it keeps the framebuffer's visible contents
+  // identical to the eager-clear behaviour it replaces.
+  if (BeginPendingClearRenderPass())
     return;
 
   m_current_render_pass = m_framebuffer->GetDiscardRenderPass();
