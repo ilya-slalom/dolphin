@@ -121,4 +121,10 @@ inline OGLGfx* GetOGLGfx()
   return static_cast<OGLGfx*>(g_gfx.get());
 }
 
+// glActiveTexture(GL_MUTABLE_TEXTURE_INDEX) plus the cache invalidation that has to go with it.
+// Always use this instead of the bare glActiveTexture: the scratch unit is a real sampler slot, so
+// binding into it makes OGLGfx::SetTexture's cached binding for that slot a lie, and SetTexture
+// early-returns on a cache hit and would then leave the scratch texture bound for the draw.
+void ActivateMutableTextureUnit();
+
 }  // namespace OGL

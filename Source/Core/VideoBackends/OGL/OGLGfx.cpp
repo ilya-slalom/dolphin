@@ -652,6 +652,17 @@ void OGLGfx::SetTexture(u32 index, const AbstractTexture* texture)
   m_bound_textures[index] = gl_texture;
 }
 
+static_assert(GL_MUTABLE_TEXTURE_UNIT < VideoCommon::MAX_PIXEL_SHADER_SAMPLERS,
+              "The scratch unit is assumed to be a sampler slot whose binding cache needs "
+              "invalidating; if it moves outside the range, InvalidateTextureBinding would be an "
+              "out-of-bounds write and this call would no longer be needed at all.");
+
+void ActivateMutableTextureUnit()
+{
+  glActiveTexture(GL_MUTABLE_TEXTURE_INDEX);
+  GetOGLGfx()->InvalidateTextureBinding(GL_MUTABLE_TEXTURE_UNIT);
+}
+
 void OGLGfx::SetSamplerState(u32 index, const SamplerState& state)
 {
   g_sampler_cache->SetSamplerState(index, state);
