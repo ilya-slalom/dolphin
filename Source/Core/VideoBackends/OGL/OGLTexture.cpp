@@ -399,6 +399,16 @@ void OGLTexture::Load(u32 level, u32 width, u32 height, u32 row_length, const u8
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 }
 
+void OGLTexture::GenerateMipmaps()
+{
+  if (GetLevels() <= 1)
+    return;
+  const GLenum target = GetGLTarget();
+  glActiveTexture(GL_MUTABLE_TEXTURE_INDEX);
+  glBindTexture(target, m_texId);
+  glGenerateMipmap(target);
+}
+
 GLenum OGLTexture::GetGLFormatForImageTexture() const
 {
   return GetGLInternalFormatForTextureFormat(m_config.format, true);
