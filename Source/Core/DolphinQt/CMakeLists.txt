@@ -687,6 +687,17 @@ if(APPLE)
     endif()
   endif()
 
+  # Copy librashader into the bundle, next to MoltenVK (see LibrashaderLibraryPath).
+  if(ENABLE_VULKAN)
+    set(LIBRASHADER_DYLIB "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/macos-arm64/librashader.dylib")
+    if(EXISTS "${LIBRASHADER_DYLIB}")
+      target_sources(dolphin-emu PRIVATE "${LIBRASHADER_DYLIB}")
+      set_source_files_properties("${LIBRASHADER_DYLIB}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    else()
+      message(STATUS "librashader.dylib not found; the librashader post-processing renderer will be unavailable.")
+    endif()
+  endif()
+
   if(POSTPROCESS_BUNDLE)
     # Update library references to make the bundle portable
     include(DolphinPostprocessBundle)
@@ -709,6 +720,19 @@ if(APPLE)
   endif()
 elseif (NOT WIN32)
   install(TARGETS dolphin-emu RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# Copy librashader.dll to the build output directory on Windows.
+if(ENABLE_VULKAN AND WIN32)
+  set(LIBRASHADER_DLL "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/windows-x64/librashader.dll")
+  if(EXISTS "${LIBRASHADER_DLL}")
+    add_custom_command(TARGET dolphin-emu POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBRASHADER_DLL}" "$<TARGET_FILE_DIR:dolphin-emu>")
+    # Windows has no install(TARGETS dolphin-emu ...) rule yet, but keep the install rule for when one is added.
+    install(FILES "${LIBRASHADER_DLL}" DESTINATION ${CMAKE_INSTALL_BINDIR})
+  else()
+    message(STATUS "librashader.dll not found; the librashader post-processing renderer will be unavailable.")
+  endif()
 endif()
 
 if(USE_MGBA)

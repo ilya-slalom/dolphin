@@ -52,7 +52,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         }                                                       \
     }
 typedef HMODULE _LIBRASHADER_IMPL_HANDLE;
+#ifndef _LIBRASHADER_LOAD
 #define _LIBRASHADER_LOAD LoadLibraryW(L"librashader.dll")
+#endif
 #elif defined(__APPLE__)
 #include <dlfcn.h>
 #define _LIBRASHADER_ASSIGN(HMOD, INSTANCE, NAME)        \
@@ -63,7 +65,9 @@ typedef HMODULE _LIBRASHADER_IMPL_HANDLE;
         }                                                \
     }
 typedef void *_LIBRASHADER_IMPL_HANDLE;
+#ifndef _LIBRASHADER_LOAD
 #define _LIBRASHADER_LOAD dlopen("librashader.dylib", RTLD_LAZY)
+#endif
 #elif defined(__unix__) || defined(__linux__)
 #include <dlfcn.h>
 #define _LIBRASHADER_ASSIGN(HMOD, INSTANCE, NAME)        \
@@ -74,7 +78,9 @@ typedef void *_LIBRASHADER_IMPL_HANDLE;
         }                                                \
     }
 typedef void *_LIBRASHADER_IMPL_HANDLE;
+#ifndef _LIBRASHADER_LOAD
 #define _LIBRASHADER_LOAD dlopen("librashader.so", RTLD_LAZY)
+#endif
 #endif
 
 #include "librashader.h"

@@ -26,9 +26,21 @@
 #include "VideoCommon/AbstractShader.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
+#include "VideoCommon/PostProcessing/LibrashaderLibrary.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoConfig.h"
+
+// Override librashader_ld.h's bare-name load with the absolute packaged path. Android and Linux
+// keep the header's default, which their loaders resolve correctly.
+#if defined(_WIN32)
+#include <windows.h>
+#include "Common/StringUtil.h"
+#define _LIBRASHADER_LOAD LoadLibraryW(UTF8ToWString(VideoCommon::LibrashaderLibraryPath()).c_str())
+#elif defined(__APPLE__) && !defined(ANDROID)
+#include <dlfcn.h>
+#define _LIBRASHADER_LOAD dlopen(VideoCommon::LibrashaderLibraryPath().c_str(), RTLD_LAZY)
+#endif
 
 // librashader_ld.h defines many static-inline no-op stubs plus librashader_load_instance(); it is
 // included in exactly this one translation unit. LIBRA_RUNTIME_VULKAN selects the Vulkan runtime
