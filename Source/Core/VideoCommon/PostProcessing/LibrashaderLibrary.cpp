@@ -9,6 +9,7 @@ namespace VideoCommon
 {
 std::string LibrashaderLibraryPath()
 {
+  // Check ANDROID first: it is Linux, so it would otherwise fall through to the generic #else arm.
 #if defined(ANDROID)
   return "librashader.so";
 #elif defined(__APPLE__)

@@ -98,3 +98,6 @@ The upstream `librashader_ld.h` has been patched to make the `_LIBRASHADER_LOAD`
 - Line 77-79: Wrapped `#define _LIBRASHADER_LOAD dlopen("librashader.so", RTLD_LAZY)` with `#ifndef _LIBRASHADER_LOAD` / `#endif`
 
 Android and Linux keep the header's default load paths; macOS and Windows override `_LIBRASHADER_LOAD` before including the header.
+
+**macOS dylib install name:**  
+The macOS dylib's `LC_ID_DYLIB` install name still references the build-time path (`/private/tmp/librashader/target/aarch64-apple-darwin/release/deps/liblibrashader_capi.dylib`). This is harmless because `dlopen` with an absolute path ignores the install name. Do not rewrite it with `install_name_tool` unless `POSTPROCESS_BUNDLE=ON` (default OFF) requires it — the current packaging has been verified to work as-is.
