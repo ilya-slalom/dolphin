@@ -4,6 +4,7 @@
 #include "DolphinQt/Config/Graphics/EnhancementsWidget.h"
 
 #include <atomic>
+#include <memory>
 #include <utility>
 
 #include <QApplication>
@@ -15,8 +16,10 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
 
@@ -78,11 +81,25 @@ void EnhancementsWidget::MigrateRemovedStereoModes()
   // setCurrentIndex(-1) and leave the combo blank -- the user could not tell which mode they were
   // in, and VideoConfig::VerifyValidity() is meanwhile rendering them as Off. Rewrite the stored
   // value once so the control always shows a real mode.
-  const StereoMode mode = Config::Get(m_game_layer, Config::GFX_STEREO_MODE);
+  //
+  // The value to test is the one the combo will display, and that is not always this pane's layer.
+  // ConfigChoice reads through ConfigControl::ReadValue, which falls back to Config::GetBase when
+  // the game INI has no key; Config::Get(const Layer*, ...) has no base fallback and hands back the
+  // default instead. Reading the game layer alone would therefore see Off and return early on a
+  // per-game pane whose combo is about to display an inherited Anaglyph -- exactly the blank combo
+  // this function exists to prevent. Mirror ReadValue's resolution order instead.
+  const bool has_game_value =
+      m_game_layer != nullptr && m_game_layer->Exists(Config::GFX_STEREO_MODE.GetLocation());
+  const StereoMode mode = has_game_value ? m_game_layer->Get(Config::GFX_STEREO_MODE) :
+                          m_game_layer != nullptr ? Config::GetBase(Config::GFX_STEREO_MODE) :
+                                                    Config::Get(Config::GFX_STEREO_MODE);
   if (mode != StereoMode::Anaglyph && mode != StereoMode::Passive)
     return;
 
-  if (m_game_layer != nullptr)
+  // Rewrite whichever layer the displayed value came from. A value inherited from base must not be
+  // written into the game layer: that would invent a per-game override the user never asked for,
+  // and the stale value is a base-layer one that every other pane reading it needs normalized too.
+  if (has_game_value)
   {
     m_game_layer->Set(Config::GFX_STEREO_MODE, StereoMode::Off);
     Config::OnConfigChanged();
@@ -638,37 +655,77 @@ void EnhancementsWidget::AddDescriptions()
 
 void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const std::string& profile)
 {
-  QProgressDialog progress(tr("Downloading slang shader pack…"), tr("Cancel"), 0, 100, this);
-  progress.setWindowModality(Qt::WindowModal);
-  progress.setMinimumDuration(0);
-  progress.setValue(0);
+  // Parented to `this` for window modality, and heap-allocated because of that parenting: ~QObject
+  // deletes its children, so a stack-allocated child would be `delete`d at a stack address if this
+  // widget were destroyed while the nested event loop below is spinning.
+  auto* const progress =
+      new QProgressDialog(tr("Downloading slang shader pack…"), tr("Cancel"), 0, 100, this);
+  progress->setWindowModality(Qt::WindowModal);
+  progress->setMinimumDuration(0);
+  progress->setValue(0);
 
-  // Cancellation channel: QWidget state may only be touched on the GUI thread, so the worker never
-  // reads the dialog. QProgressDialog::canceled() fires on the GUI thread and publishes the flag;
-  // the worker only ever loads this atomic. Lives on this stack frame, which outlives the worker
-  // because loop.exec() below does not return until the future has finished.
-  std::atomic<bool> canceled{false};
-  connect(&progress, &QProgressDialog::canceled, &progress, [&canceled] { canceled = true; });
+  // Both directions of worker traffic go through this shared, refcounted state -- percent out,
+  // cancellation in -- so the worker holds no pointer into this stack frame and none to a QObject.
+  // QWidget state may only be touched on the GUI thread anyway, and the dialog is a child of
+  // `this`, which can be destroyed while the worker is still running.
+  struct DownloadState
+  {
+    std::atomic<int> percent{0};
+    std::atomic<bool> canceled{false};
+  };
+  const auto state = std::make_shared<DownloadState>();
 
-  // The DownloadProgress callback runs on the worker thread; marshal percent onto the UI thread.
-  const auto on_progress = [&progress, &canceled](s64 downloaded, s64 total) -> bool {
-    const int percent = total > 0 ? static_cast<int>((downloaded * 100) / total) : 0;
-    QMetaObject::invokeMethod(
-        &progress, [&progress, percent] { progress.setValue(percent); }, Qt::QueuedConnection);
-    return !canceled;
+  connect(progress, &QProgressDialog::canceled, progress, [state] { state->canceled = true; });
+
+  // Progress is polled on the GUI thread rather than pushed from the worker, because pushing
+  // needs a pointer to the dialog on the worker side. The re-entrancy guard is the QTBUG-10561
+  // one: a modal QProgressDialog::setValue() spins the event loop, which can dispatch the next
+  // timeout inside it.
+  auto* const poll = new QTimer(progress);
+  connect(poll, &QTimer::timeout, progress, [progress, state, setting = false]() mutable {
+    if (setting)
+      return;
+    setting = true;
+    progress->setValue(state->percent);
+    setting = false;
+  });
+  poll->start(100);
+
+  const auto on_progress = [state](s64 downloaded, s64 total) -> bool {
+    state->percent = total > 0 ? static_cast<int>((downloaded * 100) / total) : 0;
+    return !state->canceled;
   };
 
   const std::string dest_root = File::GetUserPath(D_SHADERS_IDX);
   QFutureWatcher<VideoCommon::ShaderPackDownloadResult> watcher;
   QEventLoop loop;
   connect(&watcher, &QFutureWatcherBase::finished, &loop, &QEventLoop::quit);
+  // A nested event loop can outlive the object that started it. Stop dispatching events through a
+  // destroyed widget, and re-check below before touching `this` or its children again.
+  const QPointer<EnhancementsWidget> self(this);
+  connect(this, &QObject::destroyed, &loop, &QEventLoop::quit);
   watcher.setFuture(QtConcurrent::run([pack_id, dest_root, on_progress, profile] {
     return VideoCommon::DownloadShaderPackById(pack_id, dest_root, on_progress, profile);
   }));
   loop.exec();
-  progress.close();
+
+  // `watcher` and `loop` are locals, so the future has to be finished before this returns, and
+  // watcher.result() is the only thing that guarantees it. loop.exec() returning does not:
+  // QCoreApplication::exit() sets quitNow, which unwinds every loop in the thread's stack of them,
+  // nested ones included, and the destroyed() connection above exits this one deliberately.
+  // result() blocks until the future completes on all three paths -- so if nothing is left to show
+  // the answer to, ask the worker to stop rather than making teardown wait out a whole download.
+  if (self)
+    progress->close();
+  else
+    state->canceled = true;
 
   const VideoCommon::ShaderPackDownloadResult result = watcher.result();
+  if (!self)
+    return;
+
+  progress->deleteLater();
+
   if (result.ok)
   {
     QMessageBox::information(
