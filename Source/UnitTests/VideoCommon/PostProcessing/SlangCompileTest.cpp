@@ -17,6 +17,9 @@
 #include <cstdlib>
 #include <fstream>
 
+#include <spirv_hlsl.hpp>
+#include <spirv_msl.hpp>
+
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
 #include "VideoCommon/PostProcessing/SlangTranslator.h"
@@ -213,6 +216,40 @@ bool CompilesOnBackend(const TranslatedPass& pass, const BackendShaderHeader& ba
   }
   return true;
 }
+
+// Cross-compiles fragment SPIR-V exactly the way D3DCommon/Shader.cpp GetHLSLFromSPIRV does for
+// feature level 11 (shader_model = 50).
+std::string HlslFromSpirv(const SPIRV::CodeVector& spv)
+{
+  spirv_cross::CompilerHLSL::Options options;
+  options.shader_model = 50;
+  spirv_cross::CompilerHLSL compiler(spv);
+  compiler.set_hlsl_options(options);
+  return compiler.compile();
+}
+
+// ... and the way Metal/MTLUtil.mm does on macOS (MSL 2.3, framebuffer-fetch subpasses).
+std::string MslFromSpirv(const SPIRV::CodeVector& spv)
+{
+  spirv_cross::CompilerMSL::Options options;
+  options.platform = spirv_cross::CompilerMSL::Options::macOS;
+  options.set_msl_version(2, 3);
+  options.use_framebuffer_fetch_subpasses = true;
+  spirv_cross::CompilerMSL compiler(spv);
+  compiler.set_msl_options(options);
+  return compiler.compile();
+}
+
+const BackendShaderHeader& BackendNamed(const char* name)
+{
+  for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+  {
+    if (std::string_view(backend.name) == name)
+      return backend;
+  }
+  ADD_FAILURE() << "no backend named " << name;
+  return BACKEND_HEADERS[0];
+}
 }  // namespace
 
 // The canonical RetroArch "stock" passthrough shader: dual uniform blocks (push_constant Push
@@ -300,6 +337,122 @@ TEST(SlangCompile, CompatMacrosCompileOnAllBackends)
         TranslateSlangPass(*parsed, {}, {}, SlangNeedsClipYFlip(backend.api_type));
     ASSERT_TRUE(translated.ok) << translated.error;
 
+    std::string which;
+    EXPECT_TRUE(CompilesOnBackend(translated, backend, &which))
+        << which << " stage failed:\nVS:\n"
+        << translated.vertex_glsl << "\nFS:\n"
+        << translated.fragment_glsl;
+  }
+}
+
+namespace
+{
+// A pass shaped like the ones that actually break: the sampler is handed to a user function
+// (crt-royale's `tex2D_linearize(sampler2D tex, vec2 coords)`) and reached through a macro, so no
+// name-based rewrite of the call sites could ever see it. Also exercises every sampling entry
+// point the real libretro pack uses on a 2D sampler.
+constexpr const char* SAMPLER_SHADER = R"(#version 450
+layout(push_constant) uniform Push { vec4 SourceSize; } params;
+layout(std140, set = 0, binding = 0) uniform UBO { mat4 MVP; } global;
+#pragma stage vertex
+layout(location = 0) in vec4 Position;
+layout(location = 1) in vec2 TexCoord;
+layout(location = 0) out vec2 vTexCoord;
+void main() { gl_Position = global.MVP * Position; vTexCoord = TexCoord; }
+#pragma stage fragment
+layout(location = 0) in vec2 vTexCoord;
+layout(location = 0) out vec4 FragColor;
+layout(set = 0, binding = 2) uniform sampler2D Source;
+#define SAMPLE(t, c) texture(t, c)
+vec4 tex2D_linearize(sampler2D tex, vec2 coords)
+{
+  return SAMPLE(tex, coords) + texelFetch(tex, ivec2(coords), 0) +
+         textureLod(tex, coords, 1.0) + textureOffset(tex, coords, ivec2(1, 0)) +
+         textureLodOffset(tex, coords, 1.0, ivec2(1, 0)) +
+         texelFetchOffset(tex, ivec2(coords), 0, ivec2(1, 0)) +
+         textureGrad(tex, coords, vec2(0.0), vec2(0.0)) + textureGather(tex, coords) +
+         textureGather(tex, coords, 1) + texture(tex, coords, 0.5) +
+         vec4(vec2(textureSize(tex, 0)), 0.0, 0.0);
+}
+void main() { FragColor = tex2D_linearize(Source, vTexCoord); }
+)";
+
+TranslatedPass TranslateForBackend(const char* shader_text, const BackendShaderHeader& backend)
+{
+  std::string error;
+  const auto parsed = ParseSlangShader(shader_text, &error);
+  EXPECT_TRUE(parsed.has_value()) << error;
+  if (!parsed.has_value())
+    return {};
+  return TranslateSlangPass(*parsed, {}, {}, SlangNeedsClipYFlip(backend.api_type));
+}
+}  // namespace
+
+// H1. Every texture the slang chain binds is allocated as SLANG_INPUT_TEXTURE_TYPE, which is
+// Texture_2DArray: MultipassPostProcessing's pass outputs and feedback buffers, the history
+// textures that clone the XFB's config, the XFB itself, and the LUTs. A `sampler2D` declared
+// against one of those samples the texture unit's *2D* binding, which nothing ever sets -- on
+// desktop OpenGL that is object 0, i.e. black, returned with GL_NO_ERROR (measured on GL 4.6 /
+// NVIDIA 596.49). glslang accepts `sampler2D` happily, so this can only be caught by asserting on
+// the generated declaration.
+TEST(SlangCompile, SamplersAreDeclaredAsArrays)
+{
+  const std::string expected =
+      "uniform " + std::string(SlangSamplerGlslType(SLANG_INPUT_TEXTURE_TYPE)) + " Source;";
+  for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+  {
+    SCOPED_TRACE(backend.name);
+    const auto translated = TranslateForBackend(SAMPLER_SHADER, backend);
+    ASSERT_TRUE(translated.ok) << translated.error;
+    EXPECT_NE(translated.fragment_glsl.find(expected), std::string::npos)
+        << "expected `" << expected << "` in:\n"
+        << translated.fragment_glsl;
+    EXPECT_EQ(translated.fragment_glsl.find("uniform sampler2D Source;"), std::string::npos)
+        << "sampler2D declared against a Texture_2DArray binding";
+  }
+}
+
+// The real oracle: assert what reaches the driver, not what the translator wrote. This is the
+// assertion the previous oracle was missing -- it stopped at SPIRV::Compile*, and `sampler2D` is
+// valid GLSL, so all four rows passed a chain that rendered black.
+TEST(SlangCompile, CrossCompiledSamplersAreArrayTextures)
+{
+  {
+    const BackendShaderHeader& d3d = BackendNamed("D3D");
+    const auto translated = TranslateForBackend(SAMPLER_SHADER, d3d);
+    ASSERT_TRUE(translated.ok) << translated.error;
+    const auto spv = SPIRV::CompileFragmentShader(std::string(d3d.header) + "\n" +
+                                                      translated.fragment_glsl,
+                                                  d3d.api_type, d3d.spv_version, nullptr);
+    ASSERT_TRUE(spv.has_value()) << translated.fragment_glsl;
+    const std::string hlsl = HlslFromSpirv(*spv);
+    EXPECT_NE(hlsl.find("Texture2DArray<float4> Source"), std::string::npos) << hlsl;
+    EXPECT_EQ(hlsl.find("Texture2D<float4> Source"), std::string::npos) << hlsl;
+  }
+  {
+    const BackendShaderHeader& metal = BackendNamed("Metal");
+    const auto translated = TranslateForBackend(SAMPLER_SHADER, metal);
+    ASSERT_TRUE(translated.ok) << translated.error;
+    const auto spv = SPIRV::CompileFragmentShader(std::string(metal.header) + "\n" +
+                                                      translated.fragment_glsl,
+                                                  metal.api_type, metal.spv_version, nullptr);
+    ASSERT_TRUE(spv.has_value()) << translated.fragment_glsl;
+    const std::string msl = MslFromSpirv(*spv);
+    EXPECT_NE(msl.find("texture2d_array<float> Source"), std::string::npos) << msl;
+    EXPECT_EQ(msl.find("texture2d<float> Source"), std::string::npos) << msl;
+  }
+}
+
+// The array declaration is only useful if the 2-coordinate call sites still compile. They are
+// reached through a macro and through a user function's sampler parameter, so the shim overloads
+// -- not a call-site rewrite -- are what has to carry them.
+TEST(SlangCompile, TwoCoordinateCallSitesCompileOnAllBackends)
+{
+  for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+  {
+    SCOPED_TRACE(backend.name);
+    const auto translated = TranslateForBackend(SAMPLER_SHADER, backend);
+    ASSERT_TRUE(translated.ok) << translated.error;
     std::string which;
     EXPECT_TRUE(CompilesOnBackend(translated, backend, &which))
         << which << " stage failed:\nVS:\n"

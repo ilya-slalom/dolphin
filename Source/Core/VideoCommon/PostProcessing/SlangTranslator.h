@@ -6,16 +6,33 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Common/CommonTypes.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
+#include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoCommon.h"
 
 class AbstractShader;
 
 namespace VideoCommon
 {
+// Every texture a translated slang pass can sample is allocated with this type: the pass outputs
+// and feedback buffers (MultipassPostProcessing::ConfigureChain), the Original history textures
+// (which clone the XFB's config), the XFB itself (TextureCacheBase, layered for stereo), and the
+// LUTs (LutTexture). Backends derive the view/target from TextureConfig::type alone, never from the
+// layer count, so a pass must declare its samplers to match or the binding is silently wrong: on
+// desktop OpenGL a sampler2D reads the texture unit's GL_TEXTURE_2D binding, which nothing sets for
+// an array texture, and returns black with GL_NO_ERROR. Change these two together or not at all.
+constexpr AbstractTextureType SLANG_INPUT_TEXTURE_TYPE = AbstractTextureType::Texture_2DArray;
+
+// The GLSL sampler type that matches an AbstractTextureType binding.
+constexpr std::string_view SlangSamplerGlslType(AbstractTextureType type)
+{
+  return type == AbstractTextureType::Texture_2DArray ? "sampler2DArray" : "sampler2D";
+}
+
 // The set of texture samplers a pass reads, in binding order (index 0..N-1).
 // Includes "Source", "Original", each referenced alias, and each referenced LUT.
 // GLSL scalar/vector/matrix category of a UBO member, used for std140 packing by the executor.

@@ -424,7 +424,7 @@ void MultipassPostProcessing::RecompilePipeline()
 
       const TextureConfig texture_config(out_w, out_h, levels, 1, 1, INTERMEDIATE_FORMAT,
                                          AbstractTextureFlag_RenderTarget,
-                                         AbstractTextureType::Texture_2DArray);
+                                         SLANG_INPUT_TEXTURE_TYPE);
       pass.output_texture =
           g_gfx->CreateTexture(texture_config, "slang pass " + std::to_string(i));
       pass.output_framebuffer =

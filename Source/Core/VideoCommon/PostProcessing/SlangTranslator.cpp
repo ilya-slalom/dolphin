@@ -34,17 +34,27 @@ std::string_view Trim(std::string_view s)
   return s.substr(first, last - first + 1);
 }
 
-// Extracts the sampler name from a line declaring `... uniform sampler2D <Name>;`.
-// Returns empty if the line does not declare a uniform sampler2D (e.g. a `sampler2D` function
+// Extracts the sampler name from a line declaring `... uniform sampler2D[Array] <Name>;`.
+// Returns empty if the line does not declare a uniform sampler (e.g. a `sampler2D` function
 // parameter or a helper typedef is ignored -- only uniform declarations count).
+// The array spelling is tested first: "sampler2D" is a prefix of "sampler2DArray", so the other
+// order would report the name of an already-array declaration as "Array".
 std::string ExtractSamplerName(std::string_view line)
 {
   if (line.find("uniform") == std::string_view::npos)
     return {};
-  const auto kw = line.find("sampler2D");
+  constexpr std::string_view ARRAY_KW = "sampler2DArray";
+  constexpr std::string_view PLAIN_KW = "sampler2D";
+  auto kw = line.find(ARRAY_KW);
+  size_t kw_size = ARRAY_KW.size();
+  if (kw == std::string_view::npos)
+  {
+    kw = line.find(PLAIN_KW);
+    kw_size = PLAIN_KW.size();
+  }
   if (kw == std::string_view::npos)
     return {};
-  std::string_view rest = Trim(line.substr(kw + std::string_view("sampler2D").size()));
+  std::string_view rest = Trim(line.substr(kw + kw_size));
   // Name runs until ';' or whitespace.
   size_t end = 0;
   while (end < rest.size() && (std::isalnum(static_cast<unsigned char>(rest[end])) != 0 ||
@@ -79,6 +89,69 @@ int ExtractSamplerBinding(std::string_view line)
   }
   return any ? value : -1;
 }
+
+static_assert(SLANG_INPUT_TEXTURE_TYPE == AbstractTextureType::Texture_2DArray,
+              "the layer-0 shim overloads below are written for the array sampler type");
+
+// Slang shaders sample with 2-component coordinates, but Dolphin binds 2D-array textures, so the
+// declarations are sampler2DArray (see SLANG_INPUT_TEXTURE_TYPE). Rewriting the call sites is not
+// an option: the real libretro pack has ~5000 of them, most behind macros, and crt-royale hands
+// samplers to user functions (`vec4 tex2D_linearize(sampler2D tex, vec2 coords)`) whose bodies name
+// no sampler at all. So the built-ins are shimmed instead, by three different mechanisms, because
+// GLSL constrains them differently:
+//
+// 1. Overloads, for built-ins whose arguments are ordinary values. The built-in array signatures
+//    take vec3/ivec3, so a vec2/ivec2 overload does not collide and the inner call still resolves
+//    to the built-in.
+// 2. Self-named function-like macros, for the *Offset built-ins. Their `offset` must be a
+//    compile-time constant, and a function parameter never is -- glslang rejects an overload
+//    outright ("'texel offset' : argument must be compile-time constant"). A macro forwards the
+//    token verbatim, so a literal stays literal; the recursive use is safe because the
+//    preprocessor does not re-expand a macro inside its own expansion. This is also how the pack
+//    itself writes them (`#define PACK(x, y) textureOffset(Source, vTexCoord, ivec2(x, y))`).
+// 3. A renamed helper plus a name-token swap, for textureSize -- see TEXTURE_SIZE_HELPER.
+//
+// textureGather's `comp` is likewise required to be constant, but the pack calls textureGather with
+// both 2 and 3 arguments and a macro cannot be overloaded on arity, so the 3-argument form is an
+// overload that dispatches to four constant `comp` values.
+//
+// A sampling built-in not covered here fails to compile -- loudly, unlike the silent black frame a
+// dimension mismatch produces. Known gaps, none of which the libretro pack uses: the bias form of
+// textureOffset, textureGatherOffset, and textureProj (which has no array form in GLSL at all).
+constexpr std::string_view SAMPLER_SHIMS = R"(
+vec4 texture(sampler2DArray s, vec2 c) { return texture(s, vec3(c, 0.0)); }
+vec4 textureLod(sampler2DArray s, vec2 c, float l) { return textureLod(s, vec3(c, 0.0), l); }
+vec4 textureGrad(sampler2DArray s, vec2 c, vec2 dx, vec2 dy)
+{
+  return textureGrad(s, vec3(c, 0.0), dx, dy);
+}
+vec4 texelFetch(sampler2DArray s, ivec2 c, int l) { return texelFetch(s, ivec3(c, 0), l); }
+vec4 textureGather(sampler2DArray s, vec2 c) { return textureGather(s, vec3(c, 0.0)); }
+vec4 textureGather(sampler2DArray s, vec2 c, int comp)
+{
+  vec3 p = vec3(c, 0.0);
+  if (comp == 1) return textureGather(s, p, 1);
+  if (comp == 2) return textureGather(s, p, 2);
+  if (comp == 3) return textureGather(s, p, 3);
+  return textureGather(s, p, 0);
+}
+ivec2 dolphin_textureSize(sampler2DArray s, int l) { return textureSize(s, l).xy; }
+#define textureOffset(s, c, o) textureOffset(s, vec3((c), 0.0), o)
+#define textureLodOffset(s, c, l, o) textureLodOffset(s, vec3((c), 0.0), l, o)
+#define texelFetchOffset(s, c, l, o) texelFetchOffset(s, ivec3((c), 0), l, o)
+)";
+
+// The optional `bias` argument of the implicit-LOD built-ins is accepted only in fragment shaders,
+// so this overload must not be declared in the vertex stage.
+constexpr std::string_view SAMPLER_SHIMS_FRAGMENT_ONLY = R"(
+vec4 texture(sampler2DArray s, vec2 c, float bias) { return texture(s, vec3(c, 0.0), bias); }
+)";
+
+// textureSize cannot be shimmed by overloading: the array form differs from the 2D form only in
+// return type (ivec3 vs ivec2), and GLSL forbids overloading on return type. The helper above
+// supplies the ivec2 form under a new name, and the function-name token is swapped -- a name swap,
+// not an argument rewrite, so macro-hidden uses are covered too.
+constexpr std::string_view TEXTURE_SIZE_HELPER = "dolphin_textureSize";
 
 // Replaces every whole-word occurrence of `from` with `to` in `text`.
 std::string ReplaceWord(const std::string& text, const std::string& from, const std::string& to)
@@ -379,8 +452,8 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       if (!sampler.empty())
       {
         const int binding = binding_of(sampler);
-        out += "SAMPLER_BINDING(" + std::to_string(binding) + ") uniform sampler2D " + sampler +
-               ";\n";
+        out += "SAMPLER_BINDING(" + std::to_string(binding) + ") uniform " +
+               std::string(SlangSamplerGlslType(SLANG_INPUT_TEXTURE_TYPE)) + " " + sampler + ";\n";
         continue;
       }
 
@@ -444,8 +517,19 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       }
     }
 
-    // Replace FragColor references with ocol0 in the body.
-    return ReplaceWord(out, "FragColor", "ocol0");
+    // Body rewrites, applied before the shims are prepended so the shims' own `textureSize` call
+    // is not renamed into a recursive call to itself.
+    out = ReplaceWord(out, "FragColor", "ocol0");
+    // Sampler function parameters -- the declarations above are already emitted as the array type.
+    // Whole-word matching leaves `sampler2DArray`, `isampler2D` and `usampler2D` alone.
+    const std::string sampler_type(SlangSamplerGlslType(SLANG_INPUT_TEXTURE_TYPE));
+    out = ReplaceWord(out, "sampler2D", sampler_type);
+    out = ReplaceWord(out, "textureSize", std::string(TEXTURE_SIZE_HELPER));
+
+    std::string shims(SAMPLER_SHIMS);
+    if (!is_vertex)
+      shims += SAMPLER_SHIMS_FRAGMENT_ONLY;
+    return shims + out;
   };
 
   // Assemble: merged UBO block + #undef of compat macros, then the stage body.
