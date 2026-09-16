@@ -411,10 +411,9 @@ void MultipassPostProcessing::RecompilePipeline()
   const std::vector<PassSize> physical_sizes = ComputePassChainSizes(
       configs, scaled_source_width, scaled_source_height, viewport_width, viewport_height);
 
-  // Passes that a later pass samples with mipmapping need a real mip chain. Backends that can
-  // generate one on the GPU do so in AbstractTexture::GenerateMipmaps(); the rest go through
-  // MipChainBuilder (see the mip generation call site below).
-  const bool mips_supported = g_backend_info.bSupportsGPUMipGeneration;
+  // Passes sampled with mipmapping always get a real chain: backends that can generate one on the
+  // GPU do it in AbstractTexture::GenerateMipmaps(), the rest go through MipChainBuilder.
+  constexpr bool mips_supported = true;
 
   const size_t pass_count = m_passes.size();
   for (size_t i = 0; i < pass_count; ++i)
@@ -845,9 +844,14 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     if (!is_final)
     {
       // A later pass samples this output with mipmapping: build its mip chain now, from the level-0
-      // content just rendered. (No-op on backends without GPU mip generation.)
+      // content just rendered.
       if (pass.generate_mips && pass.output_texture)
-        pass.output_texture->GenerateMipmaps();
+      {
+        if (g_backend_info.bSupportsGPUMipGeneration)
+          pass.output_texture->GenerateMipmaps();
+        else
+          m_mip_builder.Generate(pass.output_texture.get());
+      }
 
       prev_output = pass.output_texture.get();
       // Advance the logical "Source" size to this pass's logical output (native-derived), so the

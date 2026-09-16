@@ -116,6 +116,8 @@ add_library(videocommon
   LightingShaderGen.cpp
   LightingShaderGen.h
   LookUpTables.h
+  MipChainBuilder.cpp
+  MipChainBuilder.h
   NativeVertexFormat.h
   NetPlayChatUI.cpp
   NetPlayChatUI.h
