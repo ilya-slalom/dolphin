@@ -31,13 +31,16 @@ namespace VideoCommon
 // post-processing -- and the history textures must copy the XFB's config verbatim, because
 // ShiftHistory moves frames with CopyRectangleFromTexture. Writing SLANG_INPUT_TEXTURE_TYPE into
 // either would invert the dependency and read as though the chain dictated the frame format. So the
-// direction is kept honest by checking instead of imposing: the static_assert below pins this to
-// the TextureConfig default that both XFB allocations spell out and the history clone inherits, and
-// MultipassPostProcessing asserts the actual incoming type in BlitFromTexture and the cloned one in
-// EnsureHistoryTextures. Change any of them and one of those three fires.
+// direction is kept honest by checking instead of imposing -- at run time only. There is nothing
+// here for a static_assert to catch: the XFB's type is an argument at its allocation site
+// (TextureCacheBase spells Texture_2DArray out by hand rather than leaning on the TextureConfig
+// default), and the history textures copy it from the texture they are handed, so both are values
+// no translation unit can see. The live checks are in MultipassPostProcessing: BlitFromTexture
+// asserts the incoming type in the rebuild branch, which every preset passes through on its first
+// frame and on every geometry change, and repeats the test per frame as a debug-only assert to
+// cover a type that changes with the geometry unmoved; EnsureHistoryTextures asserts the type it is
+// about to clone, and is only reached by presets that ask for OriginalHistoryN with N >= 1.
 constexpr AbstractTextureType SLANG_INPUT_TEXTURE_TYPE = AbstractTextureType::Texture_2DArray;
-static_assert(TextureConfig{}.type == SLANG_INPUT_TEXTURE_TYPE,
-              "the frame handed to the chain is allocated from a default-typed TextureConfig");
 
 // The GLSL sampler type that matches an AbstractTextureType binding.
 constexpr std::string_view SlangSamplerGlslType(AbstractTextureType type)
