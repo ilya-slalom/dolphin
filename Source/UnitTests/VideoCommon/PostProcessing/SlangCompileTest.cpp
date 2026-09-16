@@ -58,22 +58,156 @@ constexpr const char* VULKAN_SHADER_HEADER = R"(
   #define gl_InstanceID gl_InstanceIndex
 )";
 
-// Compiles both stages of a translated pass with glslang; returns true only if both succeed.
-bool CompilesOnVulkan(const TranslatedPass& pass, std::string* which_failed)
+// D3D backend header, copied verbatim from VideoBackends/D3DCommon/Shader.cpp SHADER_HEADER.
+constexpr const char* D3D_SHADER_HEADER = R"(
+  // Target GLSL 4.5.
+  #version 450 core
+
+  #extension GL_ARB_shading_language_include : enable
+
+  #define ATTRIBUTE_LOCATION(x) layout(location = x)
+  #define FRAGMENT_OUTPUT_LOCATION(x) layout(location = x)
+  #define FRAGMENT_OUTPUT_LOCATION_INDEXED(x, y) layout(location = x, index = y)
+  #define UBO_BINDING(packing, x) layout(packing, binding = (x - 1))
+  #define SAMPLER_BINDING(x) layout(binding = x)
+  #define TEXEL_BUFFER_BINDING(x) layout(binding = x)
+  #define SSBO_BINDING(x) layout(binding = (x + 2))
+  #define VARYING_LOCATION(x) layout(location = x)
+  #define FORCE_EARLY_Z layout(early_fragment_tests) in
+
+  // hlsl to glsl function translation
+  #define float2 vec2
+  #define float3 vec3
+  #define float4 vec4
+  #define uint2 uvec2
+  #define uint3 uvec3
+  #define uint4 uvec4
+  #define int2 ivec2
+  #define int3 ivec3
+  #define int4 ivec4
+  #define frac fract
+  #define lerp mix
+
+  #define API_D3D 1
+)";
+
+// Metal backend header, copied verbatim from VideoBackends/Metal/MTLUtil.mm SHADER_HEADER.
+constexpr const char* METAL_SHADER_HEADER = R"(
+// Target GLSL 4.5.
+#version 450 core
+// Always available on Metal
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+#define ATTRIBUTE_LOCATION(x) layout(location = x)
+#define FRAGMENT_OUTPUT_LOCATION(x) layout(location = x)
+#define FRAGMENT_OUTPUT_LOCATION_INDEXED(x, y) layout(location = x, index = y)
+#define UBO_BINDING(packing, x) layout(packing, set = 0, binding = (x - 1))
+#define SAMPLER_BINDING(x) layout(set = 1, binding = x)
+#define TEXEL_BUFFER_BINDING(x) layout(set = 1, binding = (x + 8))
+#define SSBO_BINDING(x) layout(std430, set = 2, binding = x)
+#define INPUT_ATTACHMENT_BINDING(x, y, z) layout(set = x, binding = y, input_attachment_index = z)
+#define VARYING_LOCATION(x) layout(location = x)
+#define FORCE_EARLY_Z layout(early_fragment_tests) in
+
+// Metal framebuffer fetch helpers.
+#define FB_FETCH_VALUE subpassLoad(in_ocol0)
+
+// hlsl to glsl function translation
+#define API_METAL 1
+#define float2 vec2
+#define float3 vec3
+#define float4 vec4
+#define uint2 uvec2
+#define uint3 uvec3
+#define uint4 uvec4
+#define int2 ivec2
+#define int3 ivec3
+#define int4 ivec4
+#define frac fract
+#define lerp mix
+
+// These were changed in Vulkan
+#define gl_VertexID gl_VertexIndex
+#define gl_InstanceID gl_InstanceIndex
+)";
+
+// OpenGL backend header — hand-maintained mirror of the modern-desktop variant assembled at
+// ProgramShaderCache.cpp runtime. The real OGL backend leaves VARYING_LOCATION empty
+// (ProgramShaderCache.cpp:790, with a TODO to define it if using bSupportsExplicitLayoutInShader)
+// and matches varyings by name, because it hands GLSL straight to the driver. This test must
+// define VARYING_LOCATION anyway: SPIRV::Compile* always targets SPIR-V (Spirv.cpp:179), and
+// SPIR-V requires explicit locations on user varyings. Therefore this row does NOT prove
+// name-based varying matching — that coverage is not available through this API and is a known
+// gap. What it DOES prove: the translated GLSL compiles under APIType::OpenGL, i.e. without
+// EShMsgVulkanRules and without the Vulkan header's gl_VertexID/gl_InstanceID aliases, so no
+// Vulkan-only builtin or construct survives translation. That is real, distinct coverage. Note
+// the real OGL backend never calls SPIRV::Compile* at all (no such call exists anywhere under
+// Source/Core/VideoBackends/OGL/), so this row is a translate-and-compile proxy rather than
+// driver acceptance.
+constexpr const char* OGL_SHADER_HEADER = R"(
+  #version 450 core
+
+  #extension GL_ARB_explicit_attrib_location : enable
+  #define ATTRIBUTE_LOCATION(x) layout(location = x)
+  #define FRAGMENT_OUTPUT_LOCATION(x) layout(location = x)
+  #define FRAGMENT_OUTPUT_LOCATION_INDEXED(x, y) layout(location = x, index = y)
+  #define UBO_BINDING(packing, x) layout(packing, binding = x)
+  #define SAMPLER_BINDING(x) layout(binding = x)
+  #define TEXEL_BUFFER_BINDING(x) layout(binding = x)
+  #define SSBO_BINDING(x) layout(std430, binding = x)
+  #define IMAGE_BINDING(format, x) layout(format, binding = x)
+
+  #define VARYING_LOCATION(x) layout(location = x)
+
+  #define API_OPENGL 1
+  #define float2 vec2
+  #define float3 vec3
+  #define float4 vec4
+  #define uint2 uvec2
+  #define uint3 uvec3
+  #define uint4 uvec4
+  #define int2 ivec2
+  #define int3 ivec3
+  #define int4 ivec4
+  #define frac fract
+  #define lerp mix
+)";
+
+struct BackendShaderHeader
 {
-  const auto lang = glslang::EShTargetSpv_1_0;
-  const std::string vs_src = std::string(VULKAN_SHADER_HEADER) + "\n" + pass.vertex_glsl;
-  const std::string fs_src = std::string(VULKAN_SHADER_HEADER) + "\n" + pass.fragment_glsl;
-  const auto vs = SPIRV::CompileVertexShader(vs_src, APIType::Vulkan, lang, nullptr);
+  const char* name;
+  APIType api_type;
+  const char* header;
+  glslang::EShTargetLanguageVersion spv_version;
+};
+
+constexpr BackendShaderHeader BACKEND_HEADERS[] = {
+    {"Vulkan", APIType::Vulkan, VULKAN_SHADER_HEADER, glslang::EShTargetSpv_1_0},
+    {"D3D", APIType::D3D, D3D_SHADER_HEADER, glslang::EShTargetSpv_1_0},
+    {"Metal", APIType::Metal, METAL_SHADER_HEADER, glslang::EShTargetSpv_1_5},
+    {"OpenGL", APIType::OpenGL, OGL_SHADER_HEADER, glslang::EShTargetSpv_1_0},
+};
+
+// Compiles both stages of a translated pass with one backend's GLSL preamble; returns true only if
+// both succeed, and on failure *which_failed names the backend and stage.
+bool CompilesOnBackend(const TranslatedPass& pass, const BackendShaderHeader& backend,
+                       std::string* which_failed)
+{
+  const std::string vs_src = std::string(backend.header) + "\n" + pass.vertex_glsl;
+  const std::string fs_src = std::string(backend.header) + "\n" + pass.fragment_glsl;
+  const auto vs = SPIRV::CompileVertexShader(vs_src, backend.api_type, backend.spv_version, nullptr);
   if (!vs)
   {
-    *which_failed = "vertex";
+    *which_failed = std::string(backend.name) + " vertex";
     return false;
   }
-  const auto fs = SPIRV::CompileFragmentShader(fs_src, APIType::Vulkan, lang, nullptr);
+  const auto fs = SPIRV::CompileFragmentShader(fs_src, backend.api_type, backend.spv_version, nullptr);
   if (!fs)
   {
-    *which_failed = "fragment";
+    *which_failed = std::string(backend.name) + " fragment";
     return false;
   }
   return true;
@@ -82,7 +216,7 @@ bool CompilesOnVulkan(const TranslatedPass& pass, std::string* which_failed)
 
 // The canonical RetroArch "stock" passthrough shader: dual uniform blocks (push_constant Push
 // {} params + std140 UBO {} global), vertex attributes Position/TexCoord, and global.MVP.
-TEST(SlangCompile, StockShaderCompilesOnVulkan)
+TEST(SlangCompile, StockShaderCompilesOnAllBackends)
 {
   const std::string text =
       "#version 450\n"
@@ -118,19 +252,25 @@ TEST(SlangCompile, StockShaderCompilesOnVulkan)
   std::string error;
   const auto parsed = ParseSlangShader(text, &error);
   ASSERT_TRUE(parsed.has_value()) << error;
-  const auto translated = TranslateSlangPass(*parsed, {}, {}, /*flip_clip_y=*/true);
-  ASSERT_TRUE(translated.ok) << translated.error;
 
-  std::string which;
-  EXPECT_TRUE(CompilesOnVulkan(translated, &which))
-      << which << " stage failed to compile:\nVS:\n"
-      << translated.vertex_glsl << "\nFS:\n"
-      << translated.fragment_glsl;
+  for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+  {
+    SCOPED_TRACE(backend.name);
+    const auto translated =
+        TranslateSlangPass(*parsed, {}, {}, SlangNeedsClipYFlip(backend.api_type));
+    ASSERT_TRUE(translated.ok) << translated.error;
+
+    std::string which;
+    EXPECT_TRUE(CompilesOnBackend(translated, backend, &which))
+        << which << " stage failed to compile:\nVS:\n"
+        << translated.vertex_glsl << "\nFS:\n"
+        << translated.fragment_glsl;
+  }
 }
 
 // The HLSL-compat macros RetroArch shaders pull in (lerp/frac/mul/float2...) collide with
 // Dolphin's own backend-prepended macros; the translation must compile regardless.
-TEST(SlangCompile, CompatMacrosCompileOnVulkan)
+TEST(SlangCompile, CompatMacrosCompileOnAllBackends)
 {
   const std::string text =
       "#version 450\n"
@@ -151,14 +291,20 @@ TEST(SlangCompile, CompatMacrosCompileOnVulkan)
   std::string error;
   const auto parsed = ParseSlangShader(text, &error);
   ASSERT_TRUE(parsed.has_value()) << error;
-  const auto translated = TranslateSlangPass(*parsed, {}, {}, /*flip_clip_y=*/true);
-  ASSERT_TRUE(translated.ok) << translated.error;
 
-  std::string which;
-  EXPECT_TRUE(CompilesOnVulkan(translated, &which))
-      << which << " stage failed:\nVS:\n"
-      << translated.vertex_glsl << "\nFS:\n"
-      << translated.fragment_glsl;
+  for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+  {
+    SCOPED_TRACE(backend.name);
+    const auto translated =
+        TranslateSlangPass(*parsed, {}, {}, SlangNeedsClipYFlip(backend.api_type));
+    ASSERT_TRUE(translated.ok) << translated.error;
+
+    std::string which;
+    EXPECT_TRUE(CompilesOnBackend(translated, backend, &which))
+        << which << " stage failed:\nVS:\n"
+        << translated.vertex_glsl << "\nFS:\n"
+        << translated.fragment_glsl;
+  }
 }
 
 namespace
@@ -172,7 +318,7 @@ std::string ReadFile(const std::string& path)
 }
 std::string DirName(const std::string& p)
 {
-  const auto s = p.find_last_of('/');
+  const auto s = p.find_last_of("/\\");
   return s == std::string::npos ? "" : p.substr(0, s);
 }
 }  // namespace
@@ -215,15 +361,21 @@ TEST(SlangCompile, RealPresetCompilesAllPasses)
     src = ExpandSlangIncludes(src, DirName(pass.shader_path), reader);
     const auto parsed = ParseSlangShader(src, &error);
     ASSERT_TRUE(parsed.has_value()) << "pass " << i << " parse: " << error;
-    const auto translated = TranslateSlangPass(*parsed, known_aliases, lut_names, /*flip_clip_y=*/true);
-    ASSERT_TRUE(translated.ok) << "pass " << i << " translate: " << translated.error;
 
-    std::string which;
-    const bool compiled = CompilesOnVulkan(translated, &which);
-    EXPECT_TRUE(compiled) << "pass " << i << " (" << pass.shader_path << ") " << which
-                          << " stage failed to compile";
-    if (compiled)
-      ++ok;
+    for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+    {
+      SCOPED_TRACE(backend.name);
+      const auto translated =
+          TranslateSlangPass(*parsed, known_aliases, lut_names, SlangNeedsClipYFlip(backend.api_type));
+      ASSERT_TRUE(translated.ok) << "pass " << i << " translate: " << translated.error;
+
+      std::string which;
+      const bool compiled = CompilesOnBackend(translated, backend, &which);
+      EXPECT_TRUE(compiled) << "pass " << i << " (" << pass.shader_path << ") " << which
+                            << " stage failed to compile";
+      if (compiled)
+        ++ok;
+    }
     if (!pass.alias.empty())
       known_aliases.push_back(pass.alias);
   }
