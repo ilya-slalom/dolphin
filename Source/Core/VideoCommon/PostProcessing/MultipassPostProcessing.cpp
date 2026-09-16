@@ -587,9 +587,10 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
   {
     // Release-live counterpart of the debug assert above, placed where the sampler declarations are
     // about to be fixed: RecompilePipeline() re-translates every pass, emitting the sampler type
-    // from SLANG_INPUT_TEXTURE_TYPE. Every preset reaches this on its first frame, which is what
-    // makes it the check that actually covers the chain -- the one in EnsureHistoryTextures is
-    // skipped entirely by presets that never ask for OriginalHistoryN.
+    // from SLANG_INPUT_TEXTURE_TYPE. Every preset that has a translated chain reaches this on its
+    // first frame -- the passthrough path returns before both asserts, so neither covers it -- and
+    // that is what makes this the check that actually covers the chain: the one in
+    // EnsureHistoryTextures is skipped entirely by presets that never ask for OriginalHistoryN.
     ASSERT_MSG(VIDEO, src_tex->GetConfig().type == SLANG_INPUT_TEXTURE_TYPE,
                "slang chain source is {}, but the passes sample {}", src_tex->GetConfig().type,
                SLANG_INPUT_TEXTURE_TYPE);

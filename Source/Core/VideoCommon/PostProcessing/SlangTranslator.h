@@ -36,10 +36,12 @@ namespace VideoCommon
 // (TextureCacheBase spells Texture_2DArray out by hand rather than leaning on the TextureConfig
 // default), and the history textures copy it from the texture they are handed, so both are values
 // no translation unit can see. The live checks are in MultipassPostProcessing: BlitFromTexture
-// asserts the incoming type in the rebuild branch, which every preset passes through on its first
-// frame and on every geometry change, and repeats the test per frame as a debug-only assert to
-// cover a type that changes with the geometry unmoved; EnsureHistoryTextures asserts the type it is
-// about to clone, and is only reached by presets that ask for OriginalHistoryN with N >= 1.
+// asserts the incoming type in the rebuild branch, which every preset with a translated chain
+// passes through on its first frame and on every geometry change, and repeats the test per frame as
+// a debug-only assert to cover a type that changes with the geometry unmoved; EnsureHistoryTextures
+// asserts the type it is about to clone, and is only reached by presets that ask for
+// OriginalHistoryN with N >= 1. The passthrough path returns before all three, so it is covered by
+// nothing here -- its own shader spells sampler2DArray out, and that is the only thing holding it.
 constexpr AbstractTextureType SLANG_INPUT_TEXTURE_TYPE = AbstractTextureType::Texture_2DArray;
 
 // The GLSL sampler type that matches an AbstractTextureType binding.

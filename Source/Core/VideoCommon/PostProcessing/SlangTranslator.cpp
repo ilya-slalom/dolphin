@@ -298,9 +298,14 @@ bool IsWordChar(char c)
 // either side into a third one. GLSL has no string literals, so nothing here can be quoted.
 //
 // One knowingly unhandled corner: C99 splices a `\`-continued line before it removes comments, so a
-// `//` comment ending in a backslash swallows the next line too. Treating that next line as code is
-// the safe direction -- it can only make a search say yes where the compiler says no, never the
-// reverse -- and no shader in the libretro pack does it.
+// `//` comment ending in a backslash swallows the next line too. Five shaders in the libretro pack
+// do it (grade.slang, grade-no-LUT.slang, grade_orig.slang, pre-shaders-afterglow-grade.slang,
+// dave_hoskins-ray-q-bert.slang), so this is a corner the corpus actually reaches -- but treating
+// that next line as code is the safe direction: it can only make a search say yes where the
+// compiler says no, never the reverse, and a false yes costs an unused helper the version guard
+// already makes harmless. The dangerous direction is the other one, and it is closed: the only way
+// this function can drop real code is an unterminated `/*`, which is a hard glslang error before
+// any of this matters.
 std::string StripComments(std::string_view text)
 {
   std::string out;
