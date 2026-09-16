@@ -49,6 +49,16 @@ std::unique_ptr<DXTexture> DXTexture::Create(const TextureConfig& config, std::s
       config.type == AbstractTextureType::Texture_CubeMap ? D3D11_RESOURCE_MISC_TEXTURECUBE : 0;
   // ID3D11DeviceContext::GenerateMips only works on resources created with this flag; it needs
   // both RENDER_TARGET and SHADER_RESOURCE bind flags, which render targets already have.
+  //
+  // This is correct even though tex_format is typeless for render targets, and even though
+  // CheckFormatSupport on a typeless format reports MIP_AUTOGEN, RENDER_TARGET and SHADER_SAMPLE as
+  // unsupported. A typeless resource is validated through its typed views, not through its own
+  // format's capability bits: the SRV/RTV format here is e.g. R16G16B16A16_FLOAT, which does report
+  // MIP_AUTOGEN. Measured on D3D11/NVIDIA with the debug layer on: CreateTexture2D returns S_OK and
+  // GenerateMips is accepted silently, while the same texture created *without* this flag draws
+  // debug message 277 -- so the check was active and the silence is a genuine pass. (If the
+  // capability-bit reading were right, rendering to a typeless resource could never work at all,
+  // and Dolphin's EFB has always done exactly that.) Do not "fix" this.
   if (config.IsRenderTarget() && config.levels > 1)
     misc_flags |= D3D11_RESOURCE_MISC_GENERATE_MIPS;
   CD3D11_TEXTURE2D_DESC desc(tex_format, config.width, config.height, config.layers, config.levels,
