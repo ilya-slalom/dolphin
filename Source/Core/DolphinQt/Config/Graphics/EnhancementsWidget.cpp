@@ -4,12 +4,12 @@
 #include "DolphinQt/Config/Graphics/EnhancementsWidget.h"
 
 #include <atomic>
+#include <future>
 #include <memory>
 #include <utility>
 
 #include <QApplication>
 #include <QEventLoop>
-#include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QInputDialog>
@@ -21,7 +21,6 @@
 #include <QPushButton>
 #include <QTimer>
 #include <QVBoxLayout>
-#include <QtConcurrent/QtConcurrent>
 
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
@@ -711,23 +710,36 @@ void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const st
   };
 
   const std::string dest_root = File::GetUserPath(D_SHADERS_IDX);
-  QFutureWatcher<VideoCommon::ShaderPackDownloadResult> watcher;
   QEventLoop loop;
-  connect(&watcher, &QFutureWatcherBase::finished, &loop, &QEventLoop::quit);
   // A nested event loop can outlive the object that started it. Stop dispatching events through a
   // destroyed widget, and re-check below before touching `this` or its children again.
   const QPointer<EnhancementsWidget> self(this);
   connect(this, &QObject::destroyed, &loop, &QEventLoop::quit);
-  watcher.setFuture(QtConcurrent::run([pack_id, dest_root, on_progress, profile] {
-    return VideoCommon::DownloadShaderPackById(pack_id, dest_root, on_progress, profile);
-  }));
+  // std::async rather than QtConcurrent::run: the Qt subset vendored for the Windows build
+  // (Externals/Qt) ships Core, Gui, Svg, SvgWidgets and Widgets only, so QtConcurrent is not
+  // available there -- and DolphinQt never linked Qt6::Concurrent in the first place, so the macOS
+  // build was relying on a header that happened to be in the same prefix. ConvertDialog.cpp already
+  // drives its background conversions this way.
+  //
+  // The worker wakes the loop by posting to it rather than by emitting a signal, which is what
+  // QFutureWatcher::finished did for us before. Posting to a stack-local QEventLoop is safe for the
+  // same reason that was: the post always happens before DownloadShaderPackById returns, so `loop`
+  // is still alive when it is made, and ~QObject purges any event still undelivered by the time the
+  // loop goes out of scope below.
+  std::future<VideoCommon::ShaderPackDownloadResult> future =
+      std::async(std::launch::async, [pack_id, dest_root, on_progress, profile, &loop] {
+        VideoCommon::ShaderPackDownloadResult result =
+            VideoCommon::DownloadShaderPackById(pack_id, dest_root, on_progress, profile);
+        QMetaObject::invokeMethod(&loop, &QEventLoop::quit, Qt::QueuedConnection);
+        return result;
+      });
   loop.exec();
 
-  // `watcher` and `loop` are locals, so the future has to be finished before this returns, and
-  // watcher.result() is the only thing that guarantees it. loop.exec() returning does not:
+  // `future` and `loop` are locals, so the worker has to be finished before this returns, and
+  // future.get() is the only thing that guarantees it. loop.exec() returning does not:
   // QCoreApplication::exit() sets quitNow, which unwinds every loop in the thread's stack of them,
   // nested ones included, and the destroyed() connection above exits this one deliberately.
-  // result() blocks until the future completes on all three paths -- so if nothing is left to show
+  // get() blocks until the worker completes on all three paths -- so if nothing is left to show
   // the answer to, ask the worker to stop rather than making teardown wait out a whole download.
   if (self)
   {
@@ -743,7 +755,7 @@ void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const st
     state->canceled = true;
   }
 
-  const VideoCommon::ShaderPackDownloadResult result = watcher.result();
+  const VideoCommon::ShaderPackDownloadResult result = future.get();
   if (!self)
     return;
 
