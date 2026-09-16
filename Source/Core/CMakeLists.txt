@@ -89,18 +89,30 @@ endif()
 
 # Copy librashader.dll to the build output directory on Windows for all frontend targets.
 # Both dolphin-emu (Qt) and dolphin-nogui link videovulkan when ENABLE_VULKAN=ON, so both
-# need the DLL. CMAKE_RUNTIME_OUTPUT_DIRECTORY is global (set to ${CMAKE_BINARY_DIR}/Binaries),
-# so copy_if_different to each target's output directory ensures the DLL is available.
+# need the DLL. Neither overrides RUNTIME_OUTPUT_DIRECTORY, so both land in the global
+# CMAKE_RUNTIME_OUTPUT_DIRECTORY (${CMAKE_BINARY_DIR}/Binaries, set in the root CMakeLists);
+# one copy into that directory therefore serves every frontend.
+#
+# This must not use add_custom_command(TARGET ...), which requires the target to have been
+# created in the *same* directory as the call: both frontends are created in subdirectories,
+# so that form fails configure with "TARGET '...' was not created in this directory".
+# if(TARGET) is global while add_custom_command(TARGET) is directory-scoped, so the guard
+# passes and the command then hard-errors.
 if(WIN32 AND ENABLE_VULKAN)
   set(LIBRASHADER_DLL "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/windows-x64/librashader.dll")
   if(EXISTS "${LIBRASHADER_DLL}")
-    if(TARGET dolphin-emu)
-      add_custom_command(TARGET dolphin-emu POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBRASHADER_DLL}" "$<TARGET_FILE_DIR:dolphin-emu>")
-    endif()
-    if(TARGET dolphin-nogui)
-      add_custom_command(TARGET dolphin-nogui POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${LIBRASHADER_DLL}" "$<TARGET_FILE_DIR:dolphin-nogui>")
+    if(TARGET dolphin-emu OR TARGET dolphin-nogui)
+      add_custom_target(librashader-dll ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${LIBRASHADER_DLL}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+        COMMENT "Copying librashader.dll to the runtime output directory")
+      # add_dependencies is not directory-scoped, so it may name targets from subdirectories.
+      foreach(frontend dolphin-emu dolphin-nogui)
+        if(TARGET ${frontend})
+          add_dependencies(${frontend} librashader-dll)
+        endif()
+      endforeach()
     endif()
     # Windows has no install(TARGETS ...) rule for these executables yet, but keep the install
     # rule for when one is added.
