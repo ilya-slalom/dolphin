@@ -589,19 +589,9 @@ void HotkeyScheduler::Run()
         }
       }
 
-      if (IsHotkey(HK_TOGGLE_STEREO_ANAGLYPH))
-      {
-        if (Config::Get(Config::GFX_STEREO_MODE) != StereoMode::Anaglyph)
-        {
-          Config::SetCurrent(Config::GFX_STEREO_MODE, StereoMode::Anaglyph);
-          Config::SetCurrent(Config::GFX_ENHANCE_POST_SHADER, DUBOIS_ALGORITHM_SHADER);
-        }
-        else
-        {
-          Config::SetCurrent(Config::GFX_STEREO_MODE, StereoMode::Off);
-          Config::SetCurrent(Config::GFX_ENHANCE_POST_SHADER, "");
-        }
-      }
+      // HK_TOGGLE_STEREO_ANAGLYPH intentionally has no handler: StereoMode::Anaglyph was
+      // implemented by the removed post-processing shader. The enumerator stays so hotkey IDs
+      // in existing user configs keep their meaning.
 
       CheckGBAHotkeys();
     }

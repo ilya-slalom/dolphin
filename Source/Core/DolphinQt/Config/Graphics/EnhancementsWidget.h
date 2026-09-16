@@ -5,8 +5,12 @@
 
 #include <QWidget>
 
+#include "VideoCommon/VideoConfig.h"
+
 class ConfigBool;
 class ConfigChoice;
+template <typename T>
+class ConfigChoiceMap;
 class ConfigComplexChoice;
 class ConfigStringChoice;
 class ConfigFloatSlider;
@@ -38,16 +42,13 @@ private:
   void LoadPostProcessingShaders();
   void ShaderChanged();
 
-  void ConfigureColorCorrection();
   void DownloadShaderPack();
 
   // Enhancements
   ConfigChoice* m_ir_combo;
   ConfigComplexChoice* m_antialiasing_combo;
   ConfigComplexChoice* m_texture_filtering_combo;
-  ConfigChoice* m_output_resampling_combo;
   ConfigStringChoice* m_post_processing_effect;
-  ToolTipPushButton* m_configure_color_correction;
   QPushButton* m_download_shader_pack;
   ConfigBool* m_scaled_efb_copy;
   ConfigBool* m_per_pixel_lighting;
@@ -59,7 +60,7 @@ private:
   ConfigBool* m_hdr;
 
   // Stereoscopy
-  ConfigChoice* m_3d_mode;
+  ConfigChoiceMap<StereoMode>* m_3d_mode;
   ConfigFloatSlider* m_3d_depth;
   QLabel* m_3d_depth_value;
   ConfigFloatSlider* m_3d_convergence;

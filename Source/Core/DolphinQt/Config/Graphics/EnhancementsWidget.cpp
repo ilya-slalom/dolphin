@@ -26,7 +26,6 @@
 #include "DolphinQt/Config/ConfigControls/ConfigChoice.h"
 #include "DolphinQt/Config/ConfigControls/ConfigFloatSlider.h"
 #include "DolphinQt/Config/GameConfigWidget.h"
-#include "DolphinQt/Config/Graphics/ColorCorrectionConfigWindow.h"
 #include "DolphinQt/Config/Graphics/GraphicsPane.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
@@ -138,12 +137,6 @@ void EnhancementsWidget::CreateWidgets()
   m_texture_filtering_combo->Refresh();
   m_texture_filtering_combo->setEnabled(Get(m_game_layer, Config::GFX_HACK_FAST_TEXTURE_SAMPLING));
 
-  m_output_resampling_combo = new ConfigChoice(
-      {tr("Default"), tr("Bilinear"), tr("Bicubic: B-Spline"), tr("Bicubic: Mitchell-Netravali"),
-       tr("Bicubic: Catmull-Rom"), tr("Sharp Bilinear"), tr("Area Sampling")},
-      Config::GFX_ENHANCE_OUTPUT_RESAMPLING, m_game_layer);
-
-  m_configure_color_correction = new ToolTipPushButton(tr("Configure"));
 
   // The post-processing effect "(off)" has the config value "", so we need to use the constructor
   // that sets ConfigStringChoice's m_text_is_data to false. m_post_processing_effect is cleared in
@@ -183,14 +176,6 @@ void EnhancementsWidget::CreateWidgets()
   enhancements_layout->addWidget(m_texture_filtering_combo, row, 1, 1, -1);
   ++row;
 
-  enhancements_layout->addWidget(new QLabel(tr("Output Resampling:")), row, 0);
-  enhancements_layout->addWidget(m_output_resampling_combo, row, 1, 1, -1);
-  ++row;
-
-  enhancements_layout->addWidget(new QLabel(tr("Color Correction:")), row, 0);
-  enhancements_layout->addWidget(m_configure_color_correction, row, 1, 1, -1);
-  ++row;
-
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
   enhancements_layout->addWidget(m_post_processing_effect, row, 1);
   enhancements_layout->addWidget(m_download_shader_pack, row, 2);
@@ -217,9 +202,14 @@ void EnhancementsWidget::CreateWidgets()
   auto* stereoscopy_layout = new QGridLayout();
   stereoscopy_box->setLayout(stereoscopy_layout);
 
-  m_3d_mode = new ConfigChoice({tr("Off"), tr("Side-by-Side"), tr("Top-and-Bottom"), tr("Anaglyph"),
-                                tr("HDMI 3D"), tr("Passive")},
-                               Config::GFX_STEREO_MODE, m_game_layer);
+  // Anaglyph and Passive were implemented by the old post-processing shader, which no longer
+  // exists; selecting them renders a second layer for no visible effect. ConfigChoiceMap stores
+  // explicit values, so the remaining entries keep their StereoMode meanings.
+  m_3d_mode = new ConfigChoiceMap<StereoMode>({{tr("Off"), StereoMode::Off},
+                                               {tr("Side-by-Side"), StereoMode::SideBySide},
+                                               {tr("Top-and-Bottom"), StereoMode::TopAndBottom},
+                                               {tr("HDMI 3D"), StereoMode::QuadBuffer}},
+                                              Config::GFX_STEREO_MODE, m_game_layer);
   m_3d_depth = new ConfigFloatSlider(0, Config::GFX_STEREO_DEPTH_MAXIMUM, Config::GFX_STEREO_DEPTH,
                                      1.0f, m_game_layer);
   m_3d_convergence = new ConfigFloatSlider(0, Config::GFX_STEREO_CONVERGENCE_MAXIMUM,
@@ -280,8 +270,6 @@ void EnhancementsWidget::ConnectWidgets()
   connect(m_post_processing_effect, &QComboBox::currentIndexChanged, this,
           &EnhancementsWidget::ShaderChanged);
 
-  connect(m_configure_color_correction, &QPushButton::clicked, this,
-          &EnhancementsWidget::ConfigureColorCorrection);
   connect(m_download_shader_pack, &QPushButton::clicked, this,
           &EnhancementsWidget::DownloadShaderPack);
 
@@ -325,8 +313,6 @@ void EnhancementsWidget::LoadPostProcessingShaders()
 
 void EnhancementsWidget::OnBackendChanged()
 {
-  m_output_resampling_combo->setEnabled(g_backend_info.bSupportsPostProcessing);
-  m_configure_color_correction->setEnabled(g_backend_info.bSupportsPostProcessing);
   m_hdr->setEnabled(g_backend_info.bSupportsHDROutput);
 
   // Stereoscopy
@@ -427,40 +413,6 @@ void EnhancementsWidget::AddDescriptions()
       "of the game's textures and might cause issues in a small number of games.<br><br>This "
       "setting is disabled when Manual Texture Sampling is enabled.<br><br>"
       "<dolphin_emphasis>If unsure, select 'Default'.</dolphin_emphasis>");
-  static const char TR_OUTPUT_RESAMPLING_DESCRIPTION[] =
-      QT_TR_NOOP("Affects how the game output is scaled to the window resolution."
-                 "<br>The performance mostly depends on the number of samples each method uses."
-                 "<br>Compared to SSAA, resampling is useful in case the output window"
-                 "<br>resolution isn't a multiplier of the native emulation resolution."
-
-                 "<br><br><b>Default</b> - [fastest]"
-                 "<br>Internal GPU bilinear sampler which is not gamma corrected."
-                 "<br>This setting might be ignored if gamma correction is forced on."
-
-                 "<br><br><b>Bilinear</b> - [4 samples]"
-                 "<br>Gamma corrected linear interpolation between pixels."
-
-                 "<br><br><b>Bicubic</b> - [16 samples]"
-                 "<br>Gamma corrected cubic interpolation between pixels."
-                 "<br>Good when rescaling between close resolutions, e.g. 1080p and 1440p."
-                 "<br>Comes in various flavors:"
-                 "<br><b>B-Spline</b>: Blurry, but avoids all lobing artifacts"
-                 "<br><b>Mitchell-Netravali</b>: Good middle ground between blurry and lobing"
-                 "<br><b>Catmull-Rom</b>: Sharper, but can cause lobing artifacts"
-
-                 "<br><br><b>Sharp Bilinear</b> - [1-4 samples]"
-                 "<br>Similar to \"Nearest Neighbor\", it maintains a sharp look,"
-                 "<br>but also does some blending to avoid shimmering."
-                 "<br>Works best with 2D games at low resolutions."
-
-                 "<br><br><b>Area Sampling</b> - [up to 324 samples]"
-                 "<br>Weighs pixels by the percentage of area they occupy. Gamma corrected."
-                 "<br>Best for downscaling by more than 2x."
-
-                 "<br><br><dolphin_emphasis>If unsure, select 'Default'.</dolphin_emphasis>");
-  static const char TR_COLOR_CORRECTION_DESCRIPTION[] =
-      QT_TR_NOOP("A group of features to make the colors more accurate, matching the color space "
-                 "Wii and GC games were meant for.");
   static const char TR_POSTPROCESSING_DESCRIPTION[] =
       QT_TR_NOOP("Applies a post-processing effect after rendering a frame.<br><br "
                  "/><dolphin_emphasis>If unsure, select (off).</dolphin_emphasis>");
@@ -490,9 +442,8 @@ void EnhancementsWidget::AddDescriptions()
       "Selects the stereoscopic 3D mode. Stereoscopy allows a better feeling "
       "of depth if the necessary hardware is present. Heavily decreases "
       "emulation speed and sometimes causes issues.<br><br>Side-by-Side and Top-and-Bottom are "
-      "used by most 3D TVs.<br>Anaglyph is used for Red-Cyan colored glasses.<br>HDMI 3D is "
-      "used when the monitor supports 3D display resolutions.<br>Passive is another type of 3D "
-      "used by some TVs.<br><br><dolphin_emphasis>If unsure, select Off.</dolphin_emphasis>");
+      "used by most 3D TVs.<br>HDMI 3D is "
+      "used when the monitor supports 3D display resolutions.<br><br><dolphin_emphasis>If unsure, select Off.</dolphin_emphasis>");
   static const char TR_3D_DEPTH_DESCRIPTION[] = QT_TR_NOOP(
       "Controls the separation distance between the virtual cameras.<br><br>A higher "
       "value creates a stronger feeling of depth while a lower value is more comfortable.");
@@ -543,12 +494,6 @@ void EnhancementsWidget::AddDescriptions()
   m_texture_filtering_combo->SetTitle(tr("Texture Filtering"));
   m_texture_filtering_combo->SetDescription(tr(TR_FORCE_TEXTURE_FILTERING_DESCRIPTION));
 
-  m_output_resampling_combo->SetTitle(tr("Output Resampling"));
-  m_output_resampling_combo->SetDescription(tr(TR_OUTPUT_RESAMPLING_DESCRIPTION));
-
-  m_configure_color_correction->SetTitle(tr("Color Correction"));
-  m_configure_color_correction->SetDescription(tr(TR_COLOR_CORRECTION_DESCRIPTION));
-
   m_post_processing_effect->SetTitle(tr("Post-Processing Effect"));
   m_post_processing_effect->SetDescription(tr(TR_POSTPROCESSING_DESCRIPTION));
 
@@ -580,12 +525,6 @@ void EnhancementsWidget::AddDescriptions()
   m_3d_per_eye_resolution->SetDescription(tr(TR_3D_PER_EYE_RESOLUTION_DESCRIPTION));
 
   m_3d_swap_eyes->SetDescription(tr(TR_3D_SWAP_EYES_DESCRIPTION));
-}
-
-void EnhancementsWidget::ConfigureColorCorrection()
-{
-  ColorCorrectionConfigWindow dialog(this);
-  dialog.exec();
 }
 
 void EnhancementsWidget::DownloadShaderPack()
