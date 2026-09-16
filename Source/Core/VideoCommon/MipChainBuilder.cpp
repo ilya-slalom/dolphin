@@ -6,6 +6,7 @@
 #include <array>
 #include <string>
 
+#include "Common/Assert.h"
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
 #include "VideoCommon/AbstractFramebuffer.h"
@@ -39,6 +40,7 @@ bool MipChainBuilder::EnsurePipeline(AbstractTextureFormat format)
       "  v_tex0 = float2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
       "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n" +
       flip_y + "}\n";
+  // Layer 0 only -- see the array-layer precondition on MipChainBuilder::Generate.
   const char* const pixel_source =
       "UBO_BINDING(std140, 1) uniform PSBlock { float4 src_lod; };\n"
       "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
@@ -95,6 +97,10 @@ bool MipChainBuilder::Generate(AbstractTexture* texture)
   if (m_failed)
     return false;
 
+  DEBUG_ASSERT_MSG(VIDEO, texture->GetLayers() == 1,
+                   "MipChainBuilder only fills array layer 0, but was given a {}-layer texture",
+                   texture->GetLayers());
+
   const AbstractTextureFormat format = texture->GetFormat();
   if (!EnsurePipeline(format) ||
       !EnsureScratch(MipLevelSize(texture->GetWidth(), 1), MipLevelSize(texture->GetHeight(), 1),
@@ -106,7 +112,9 @@ bool MipChainBuilder::Generate(AbstractTexture* texture)
     return false;
   }
 
-  g_gfx->BeginUtilityDrawing();
+  // No Begin/EndUtilityDrawing() here: every caller is already inside the present path's utility
+  // scope (see the precondition in the header). Opening a nested scope is not harmless -- the inner
+  // EndUtilityDrawing() rebinds the EFB and restores the stored viewport mid-present.
   for (u32 level = 1; level < levels; ++level)
   {
     const u32 width = MipLevelSize(texture->GetWidth(), level);
@@ -119,7 +127,19 @@ bool MipChainBuilder::Generate(AbstractTexture* texture)
     const std::array<float, 4> uniforms = {static_cast<float>(level - 1), 0.0f, 0.0f, 0.0f};
     g_vertex_manager->UploadUtilityUniforms(uniforms.data(), sizeof(uniforms));
 
-    g_gfx->SetFramebuffer(m_scratch_framebuffer.get());
+    // SetAndDiscardFramebuffer, not SetFramebuffer: this is the same framebuffer object every
+    // iteration, and D3D12's SetFramebuffer early-returns on an unchanged pointer without setting
+    // DirtyState_Framebuffer -- so the transition back to RENDER_TARGET (only BindFramebuffer does
+    // it) would be skipped for level >= 2, after FinishedRendering() and the copy below have moved
+    // the scratch to PIXEL_SHADER_RESOURCE. SetAndDiscardFramebuffer transitions unconditionally,
+    // and discarding is correct here because the draw overwrites the whole rect.
+    g_gfx->SetAndDiscardFramebuffer(m_scratch_framebuffer.get());
+    // Deliberately not ConvertFramebufferRectangle(): the CopyRectangleFromTexture() below reads
+    // this same rect straight out of the scratch texture, and texture copies address texels
+    // identically on every backend. Converting only the viewport would push the draw to the far end
+    // of the (level-1-sized, hence oversized for level >= 2) scratch on lower-left-origin backends
+    // while the copy kept reading rows 0..height-1. The vertex shader's SlangNeedsClipYFlip already
+    // makes source texel row 0 land on scratch texel row 0 on every backend.
     g_gfx->SetViewportAndScissor(rect);
     g_gfx->SetPipeline(m_pipeline.get());
     g_gfx->SetTexture(0, texture);
@@ -129,7 +149,6 @@ bool MipChainBuilder::Generate(AbstractTexture* texture)
     m_scratch->FinishedRendering();
     texture->CopyRectangleFromTexture(m_scratch.get(), rect, 0, 0, rect, 0, level);
   }
-  g_gfx->EndUtilityDrawing();
   texture->FinishedRendering();
   return true;
 }

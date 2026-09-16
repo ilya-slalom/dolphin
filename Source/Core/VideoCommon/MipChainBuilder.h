@@ -30,6 +30,14 @@ public:
 
   // Returns false if the pipeline or scratch target could not be created, in which case the
   // texture's mip levels are left as they were. Safe to call with a single-level texture (no-op).
+  //
+  // Preconditions:
+  //  - The caller is already inside a g_gfx->BeginUtilityDrawing()/EndUtilityDrawing() scope.
+  //    Generate() does not open its own: a nested EndUtilityDrawing() rebinds the EFB and restores
+  //    the stored viewport, which is wrong in the middle of presenting. Generate() leaves the
+  //    framebuffer, viewport, pipeline, texture and sampler bindings dirty for the caller to reset.
+  //  - `texture` has exactly one array layer. Only layer 0 is downsampled and written; layers >= 1
+  //    would keep whatever they were allocated with.
   bool Generate(AbstractTexture* texture);
 
 private:
