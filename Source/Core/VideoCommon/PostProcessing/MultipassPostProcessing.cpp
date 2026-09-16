@@ -339,7 +339,8 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
       return;
     }
 
-    TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names);
+    TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names,
+                                                   SlangNeedsClipYFlip(g_backend_info.api_type));
     if (!translated.ok)
     {
       ERROR_LOG_FMT(VIDEO, "Post-processing: cannot translate {}: {}; skipping preset {}",
@@ -507,8 +508,7 @@ void MultipassPostProcessing::BuildPassthroughPipeline()
   // Fullscreen-triangle vertex shader + a plain textured copy. Uses Dolphin's per-backend
   // shader macros (defined by the backend header CreateShaderFromSource prepends), so it works
   // for any backbuffer format -- unlike ScaleTexture, which only supports RGBA8 targets.
-  // Vulkan needs Y inverted (matching the old post-processor's vertex shader).
-  const std::string flip_y = g_backend_info.api_type == APIType::Vulkan ?
+  const std::string flip_y = SlangNeedsClipYFlip(g_backend_info.api_type) ?
                                  "  gl_Position.y = -gl_Position.y;\n" :
                                  "";
   const std::string vertex_source =

@@ -258,7 +258,7 @@ std::string ExtractUniformBlocks(const std::string& source, std::vector<std::str
 
 TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
                                   const std::vector<std::string>& known_aliases,
-                                  const std::vector<std::string>& lut_names)
+                                  const std::vector<std::string>& lut_names, bool flip_clip_y)
 {
   TranslatedPass result;
 
@@ -429,13 +429,12 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       // TexCoord spans [0,1]. On Vulkan the clip-space Y is inverted (matching Dolphin's
       // fixed post-process vertex shader and pass-through pipeline); since MVP is identity we
       // bake the flip into Position.y.
+      const std::string flip = flip_clip_y ? "  Position.y = -Position.y;\n" : "";
       const std::string inject =
           "  vec2 dolphin_fsq = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
           "  vec4 Position = vec4(dolphin_fsq * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);\n"
-          "  vec2 TexCoord = dolphin_fsq;\n"
-          "#ifdef API_VULKAN\n"
-          "  Position.y = -Position.y;\n"
-          "#endif\n";
+          "  vec2 TexCoord = dolphin_fsq;\n" +
+          flip;
       const auto main_pos = out.find("void main");
       if (main_pos != std::string::npos)
       {

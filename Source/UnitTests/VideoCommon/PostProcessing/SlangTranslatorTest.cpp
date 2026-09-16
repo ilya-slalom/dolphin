@@ -27,7 +27,7 @@ static SlangShaderSource MakeShader(const std::string& frag_extra)
 
 TEST(SlangTranslator, EmitsBindingMacrosAndSourceSampler)
 {
-  const auto result = TranslateSlangPass(MakeShader(""), {}, {});
+  const auto result = TranslateSlangPass(MakeShader(""), {}, {}, /*flip_clip_y=*/false);
   ASSERT_TRUE(result.ok) << result.error;
   // Source is always sampler binding 0.
   ASSERT_FALSE(result.sampler_names.empty());
@@ -43,7 +43,7 @@ TEST(SlangTranslator, AssignsBindingsToAliasesAndLuts)
   auto shader = MakeShader(
       "layout(binding = 2) uniform sampler2D BLOOM_APPROX;\n"
       "layout(binding = 3) uniform sampler2D MASK;\n");
-  const auto result = TranslateSlangPass(shader, {"BLOOM_APPROX"}, {"MASK"});
+  const auto result = TranslateSlangPass(shader, {"BLOOM_APPROX"}, {"MASK"}, /*flip_clip_y=*/false);
   ASSERT_TRUE(result.ok) << result.error;
   // Source at 0, then referenced aliases/LUTs get subsequent binding indices.
   EXPECT_EQ(result.sampler_names[0], "Source");
@@ -73,7 +73,7 @@ TEST(SlangTranslator, DeduplicatesSamplersReusingBindingInBranches)
       "#endif\n"
       "layout(location = 0) out vec4 FragColor;\n"
       "void main() { FragColor = vec4(1); }\n";
-  const auto result = TranslateSlangPass(shader, {}, {});
+  const auto result = TranslateSlangPass(shader, {}, {}, /*flip_clip_y=*/false);
   // 4 distinct bindings (2,3,4,5) -> under the 8 limit despite 7 textual declarations.
   EXPECT_TRUE(result.ok) << result.error;
 }
@@ -89,7 +89,7 @@ TEST(SlangTranslator, IgnoresSampler2DFunctionParameters)
       "layout(binding = 2) uniform sampler2D Source;\n"
       "layout(location = 0) out vec4 FragColor;\n"
       "void main() { FragColor = helper(Source, vec2(0.5)); }\n";
-  const auto result = TranslateSlangPass(shader, {}, {});
+  const auto result = TranslateSlangPass(shader, {}, {}, /*flip_clip_y=*/false);
   ASSERT_TRUE(result.ok) << result.error;
   // Only "Source" -- the "tex" parameter is not a sampler binding.
   EXPECT_EQ(result.sampler_names.size(), 1u);
@@ -168,7 +168,7 @@ TEST(SlangTranslator, AcceptsNineSamplers)
 {
   // Full crt-royale's mask-apply pass needs 9 samplers (Source + 8). This is within the raised
   // 16-sampler ceiling (Dolphin utility descriptor set), so it must translate successfully.
-  const auto result = TranslateSlangPass(MakeShaderWithSamplers(8), {}, {});
+  const auto result = TranslateSlangPass(MakeShaderWithSamplers(8), {}, {}, /*flip_clip_y=*/false);
   EXPECT_TRUE(result.ok) << result.error;
   EXPECT_EQ(result.sampler_names.size(), 9u);
 }
@@ -176,7 +176,33 @@ TEST(SlangTranslator, AcceptsNineSamplers)
 TEST(SlangTranslator, RejectsMoreThanSixteenSamplers)
 {
   // Source + 16 = 17 distinct samplers -> over the 16 limit.
-  const auto result = TranslateSlangPass(MakeShaderWithSamplers(16), {}, {});
+  const auto result = TranslateSlangPass(MakeShaderWithSamplers(16), {}, {}, /*flip_clip_y=*/false);
   EXPECT_FALSE(result.ok);
   EXPECT_FALSE(result.error.empty());
+}
+
+TEST(SlangTranslator, ClipYFlipMatchesFramebufferShaderGen)
+{
+  // Same rule as FramebufferShaderGen::GenerateScreenQuadVertexShader.
+  EXPECT_TRUE(SlangNeedsClipYFlip(APIType::Vulkan));
+  EXPECT_TRUE(SlangNeedsClipYFlip(APIType::OpenGL));
+  EXPECT_FALSE(SlangNeedsClipYFlip(APIType::D3D));
+  EXPECT_FALSE(SlangNeedsClipYFlip(APIType::Metal));
+}
+
+TEST(SlangTranslator, EmitsClipYFlipWhenRequested)
+{
+  const auto result = TranslateSlangPass(MakeShader(""), {}, {}, /*flip_clip_y=*/true);
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_NE(result.vertex_glsl.find("Position.y = -Position.y;"), std::string::npos);
+  // The flip is now decided at translate time, not by a backend shader macro.
+  EXPECT_EQ(result.vertex_glsl.find("API_VULKAN"), std::string::npos);
+}
+
+TEST(SlangTranslator, OmitsClipYFlipWhenNotRequested)
+{
+  const auto result = TranslateSlangPass(MakeShader(""), {}, {}, /*flip_clip_y=*/false);
+  ASSERT_TRUE(result.ok) << result.error;
+  EXPECT_EQ(result.vertex_glsl.find("Position.y = -Position.y;"), std::string::npos);
+  EXPECT_EQ(result.vertex_glsl.find("API_VULKAN"), std::string::npos);
 }

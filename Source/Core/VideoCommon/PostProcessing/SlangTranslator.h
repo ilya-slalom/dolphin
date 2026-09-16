@@ -10,6 +10,7 @@
 
 #include "Common/CommonTypes.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
+#include "VideoCommon/VideoCommon.h"
 
 class AbstractShader;
 
@@ -46,10 +47,23 @@ struct TranslatedPass
   std::string error;  // set when ok == false (e.g. > 8 samplers)
 };
 
+// True when the injected fullscreen-triangle vertex shader must negate clip-space Y. NDC Y is
+// flipped in Vulkan; we also flip on OpenGL so that (0,0) is the lower-left. Mirrors
+// FramebufferShaderGen::GenerateScreenQuadVertexShader -- keep the two in sync.
+constexpr bool SlangNeedsClipYFlip(APIType api_type)
+{
+  return api_type == APIType::Vulkan || api_type == APIType::OpenGL;
+}
+static_assert(SlangNeedsClipYFlip(APIType::Vulkan));
+static_assert(SlangNeedsClipYFlip(APIType::OpenGL));
+static_assert(!SlangNeedsClipYFlip(APIType::D3D));
+static_assert(!SlangNeedsClipYFlip(APIType::Metal));
+
 // known_aliases: names produced by earlier passes; lut_names: declared LUTs.
+// flip_clip_y: see SlangNeedsClipYFlip. Callers pass SlangNeedsClipYFlip(g_backend_info.api_type).
 TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
                                   const std::vector<std::string>& known_aliases,
-                                  const std::vector<std::string>& lut_names);
+                                  const std::vector<std::string>& lut_names, bool flip_clip_y);
 
 // Packs a std140 uniform buffer matching `members` (in declaration order). For each member,
 // `resolver(name, out)` fills `out` with the member's component values (1..16 floats); if it

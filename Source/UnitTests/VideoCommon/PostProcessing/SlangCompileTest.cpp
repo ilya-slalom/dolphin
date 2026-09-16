@@ -118,7 +118,7 @@ TEST(SlangCompile, StockShaderCompilesOnVulkan)
   std::string error;
   const auto parsed = ParseSlangShader(text, &error);
   ASSERT_TRUE(parsed.has_value()) << error;
-  const auto translated = TranslateSlangPass(*parsed, {}, {});
+  const auto translated = TranslateSlangPass(*parsed, {}, {}, /*flip_clip_y=*/true);
   ASSERT_TRUE(translated.ok) << translated.error;
 
   std::string which;
@@ -151,7 +151,7 @@ TEST(SlangCompile, CompatMacrosCompileOnVulkan)
   std::string error;
   const auto parsed = ParseSlangShader(text, &error);
   ASSERT_TRUE(parsed.has_value()) << error;
-  const auto translated = TranslateSlangPass(*parsed, {}, {});
+  const auto translated = TranslateSlangPass(*parsed, {}, {}, /*flip_clip_y=*/true);
   ASSERT_TRUE(translated.ok) << translated.error;
 
   std::string which;
@@ -215,7 +215,7 @@ TEST(SlangCompile, RealPresetCompilesAllPasses)
     src = ExpandSlangIncludes(src, DirName(pass.shader_path), reader);
     const auto parsed = ParseSlangShader(src, &error);
     ASSERT_TRUE(parsed.has_value()) << "pass " << i << " parse: " << error;
-    const auto translated = TranslateSlangPass(*parsed, known_aliases, lut_names);
+    const auto translated = TranslateSlangPass(*parsed, known_aliases, lut_names, /*flip_clip_y=*/true);
     ASSERT_TRUE(translated.ok) << "pass " << i << " translate: " << translated.error;
 
     std::string which;
