@@ -140,6 +140,16 @@ private:
 
   // Used on backends where AbstractTexture::GenerateMipmaps() is a no-op.
   VideoCommon::MipChainBuilder m_mip_builder;
+
+  // One-shot diagnostic for pass pipeline / render-target creation failure (logged once per
+  // rebuild to avoid per-frame spam in the draw loop).
+  bool m_reported_pipeline_failure = false;
+
+  // Performs a passthrough copy of src_tex to the given framebuffer over dst, using the built-in
+  // passthrough pipeline (a plain linear-sampled blit). Used when no user preset is active, when
+  // a preset failed to load/compile, or when RecompilePipeline latches m_passthrough on failure.
+  void BlitPassthrough(const MathUtil::Rectangle<int>& dst, const AbstractTexture* src_tex,
+                       AbstractFramebuffer* framebuffer);
 };
 
 // Computes the preset identifier for a discovered .slangp path: the path relative to whichever

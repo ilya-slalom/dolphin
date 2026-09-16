@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "VideoCommon/BPMemory.h"
+#include "VideoCommon/Constants.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangSamplers.h"
 #include "VideoCommon/RenderState.h"
@@ -45,4 +46,12 @@ TEST(SlangSamplers, MirroredRepeatMapsToMirror)
 {
   const SamplerState s = MakeSlangSamplerState(SlangWrapMode::MirroredRepeat, true, false);
   EXPECT_EQ(s.tm0.wrap_u, WrapMode::Mirror);
+}
+
+TEST(SlangSamplers, TranslatorCeilingMatchesBackendSamplerLimit)
+{
+  // The translator's MAX_SAMPLERS ceiling and the backends' descriptor-range sizes are the same
+  // number by contract. D3D12's utility root signature declared 8 while the translator emitted up
+  // to 16, which silently blanked crt-royale (UAT finding 1).
+  EXPECT_EQ(VideoCommon::MAX_PIXEL_SHADER_SAMPLERS, 16u);
 }

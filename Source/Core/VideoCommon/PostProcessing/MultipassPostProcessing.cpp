@@ -152,6 +152,7 @@ void MultipassPostProcessing::ClearChain()
   m_history_textures.clear();
   m_max_history = 0;
   m_passthrough = true;
+  m_reported_pipeline_failure = false;
 }
 
 void MultipassPostProcessing::EnsureHistoryTextures(const AbstractTexture* original)
@@ -479,6 +480,24 @@ void MultipassPostProcessing::RecompilePipeline()
     pipeline_config.framebuffer_state = RenderState::GetColorFramebufferState(output_format);
     pipeline_config.usage = AbstractPipelineUsage::Utility;
     pass.pipeline = g_gfx->CreatePipeline(pipeline_config);
+
+    // A pass whose pipeline or render target (for non-final passes) failed to create cannot be
+    // skipped silently: if it is the final pass nothing reaches the backbuffer at all (a black
+    // screen). Report it once per rebuild and latch m_passthrough so BlitFromTexture falls back
+    // to the passthrough copy rather than presenting a chain with a hole in it.
+    if (!pass.pipeline || (!is_final && !pass.output_framebuffer))
+    {
+      if (!m_reported_pipeline_failure)
+      {
+        ERROR_LOG_FMT(VIDEO, "Post-processing: pass {} ('{}') has no {} ; chain disabled", i,
+                      pass.config.shader_path, !pass.pipeline ? "pipeline" : "render target");
+        m_reported_pipeline_failure = true;
+      }
+      m_passthrough = true;
+      if (restore_framebuffer != nullptr)
+        g_gfx->SetFramebuffer(restore_framebuffer);
+      return;
+    }
   }
 
   // Restore whatever framebuffer was bound before any feedback-buffer clears above.
@@ -536,6 +555,21 @@ void MultipassPostProcessing::BuildPassthroughPipeline()
   m_passthrough_format = format;
 }
 
+void MultipassPostProcessing::BlitPassthrough(const MathUtil::Rectangle<int>& dst,
+                                              const AbstractTexture* src_tex,
+                                              AbstractFramebuffer* framebuffer)
+{
+  BuildPassthroughPipeline();
+  if (!m_passthrough_pipeline)
+    return;
+
+  g_gfx->SetTexture(0, src_tex);
+  g_gfx->SetSamplerState(0, RenderState::GetLinearSamplerState());
+  g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));
+  g_gfx->SetPipeline(m_passthrough_pipeline.get());
+  g_gfx->Draw(0, 3);
+}
+
 void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& dst,
                                               const MathUtil::Rectangle<int>& src,
                                               const AbstractTexture* src_tex, int src_layer,
@@ -543,16 +577,7 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
 {
   if (m_passthrough || m_passes.empty())
   {
-    AbstractFramebuffer* const framebuffer = g_gfx->GetCurrentFramebuffer();
-    BuildPassthroughPipeline();
-    if (!m_passthrough_pipeline)
-      return;
-
-    g_gfx->SetTexture(0, src_tex);
-    g_gfx->SetSamplerState(0, RenderState::GetLinearSamplerState());
-    g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));
-    g_gfx->SetPipeline(m_passthrough_pipeline.get());
-    g_gfx->Draw(0, 3);
+    BlitPassthrough(dst, src_tex, g_gfx->GetCurrentFramebuffer());
     return;
   }
 
@@ -605,6 +630,14 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     RecompilePipeline();
   }
 
+  // If RecompilePipeline latched m_passthrough on pipeline/RT creation failure, fall back to the
+  // passthrough copy rather than executing the chain with null pipelines or framebuffers.
+  if (m_passthrough)
+  {
+    BlitPassthrough(dst, src_tex, g_gfx->GetCurrentFramebuffer());
+    return;
+  }
+
   ++m_frame_count;
 
   // Frame-history ring: keep copies of the Original frame for OriginalHistoryN (N>=1). No-op for
@@ -625,6 +658,8 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
   for (size_t i = 0; i < pass_count; ++i)
   {
     Pass& pass = m_passes[i];
+    // Defensive guard: the real detection happens in RecompilePipeline, which latches
+    // m_passthrough and returns early above. This cannot be reached with a failed chain.
     if (!pass.pipeline)
       continue;
 
