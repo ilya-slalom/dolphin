@@ -177,3 +177,57 @@ TEST(SlangPreset, MissingReferenceFails)
   EXPECT_FALSE(config.has_value());
   EXPECT_FALSE(error.empty());
 }
+
+TEST(SlangPreset, NormalizePathAcceptsWindowsSeparators)
+{
+  EXPECT_EQ(NormalizePath("E:\\work\\dolphin\\Sys\\Shaders"), "E:/work/dolphin/Sys/Shaders");
+  EXPECT_EQ(NormalizePath("crt\\shaders\\royale"), "crt/shaders/royale");
+}
+
+TEST(SlangPreset, NormalizePathCollapsesDotDotAcrossWindowsSeparators)
+{
+  EXPECT_EQ(NormalizePath("E:\\a\\b\\..\\c.slang"), "E:/a/c.slang");
+  EXPECT_EQ(NormalizePath("E:\\Sys\\Shaders\\crt/../misc/x.slang"), "E:/Sys/Shaders/misc/x.slang");
+}
+
+TEST(SlangPreset, NormalizePathKeepsWindowsDriveRoot)
+{
+  // ".." must never eat the drive designator.
+  EXPECT_EQ(NormalizePath("E:\\..\\..\\x"), "E:/x");
+  EXPECT_EQ(NormalizePath("E:/"), "E:/");
+}
+
+TEST(SlangPreset, NormalizePathKeepsUncRoot)
+{
+  EXPECT_EQ(NormalizePath("\\\\host\\share\\..\\a"), "//host/a");
+}
+
+TEST(SlangPreset, NormalizePathPreservesPosixBehavior)
+{
+  EXPECT_EQ(NormalizePath("/root/preset/../b.slang"), "/root/b.slang");
+  EXPECT_EQ(NormalizePath("/root/./a//b"), "/root/a/b");
+  EXPECT_EQ(NormalizePath("/../a"), "/a");
+  EXPECT_EQ(NormalizePath("a/../../b"), "../b");
+  EXPECT_EQ(NormalizePath(""), "");
+}
+
+TEST(SlangPreset, ResolvesPassPathsFromWindowsBaseDir)
+{
+  const std::string text = "shaders = \"1\"\n"
+                           "shader0 = \"../misc/x.slang\"\n";
+  std::string error;
+  const auto cfg = ParseSlangPreset(text, "E:\\Sys\\Shaders\\crt", &error);
+  ASSERT_TRUE(cfg.has_value()) << error;
+  ASSERT_EQ(cfg->passes.size(), 1u);
+  EXPECT_EQ(cfg->passes[0].shader_path, "E:/Sys/Shaders/misc/x.slang");
+}
+
+TEST(SlangPreset, ResolvesAbsoluteShaderPathIgnoringBaseDir)
+{
+  const std::string text = "shaders = \"1\"\n"
+                           "shader0 = \"/abs/x.slang\"\n";
+  std::string error;
+  const auto cfg = ParseSlangPreset(text, "/root/preset", &error);
+  ASSERT_TRUE(cfg.has_value()) << error;
+  EXPECT_EQ(cfg->passes[0].shader_path, "/abs/x.slang");
+}

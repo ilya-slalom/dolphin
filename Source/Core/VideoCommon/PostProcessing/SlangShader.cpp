@@ -7,6 +7,8 @@
 #include <sstream>
 #include <string_view>
 
+#include "VideoCommon/PostProcessing/SlangPreset.h"
+
 namespace VideoCommon
 {
 namespace
@@ -75,12 +77,12 @@ std::string JoinPath(const std::string& dir, const std::string& name)
 {
   if (dir.empty())
     return name;
-  return dir + "/" + name;
+  return NormalizePath(dir + "/" + name);
 }
 
 std::string DirectoryOf(const std::string& path)
 {
-  const auto slash = path.find_last_of('/');
+  const auto slash = path.find_last_of("/\\");
   return slash == std::string::npos ? std::string() : path.substr(0, slash);
 }
 
