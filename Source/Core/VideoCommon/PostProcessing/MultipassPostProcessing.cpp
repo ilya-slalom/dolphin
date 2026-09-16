@@ -489,7 +489,7 @@ void MultipassPostProcessing::RecompilePipeline()
     {
       if (!m_reported_pipeline_failure)
       {
-        ERROR_LOG_FMT(VIDEO, "Post-processing: pass {} ('{}') has no {} ; chain disabled", i,
+        ERROR_LOG_FMT(VIDEO, "Post-processing: pass {} ('{}') has no {}; chain disabled", i,
                       pass.config.shader_path, !pass.pipeline ? "pipeline" : "render target");
         m_reported_pipeline_failure = true;
       }
