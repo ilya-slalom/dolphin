@@ -16,6 +16,17 @@ TEST(ShaderChainSpec, SplitsAndIgnoresEmptyEntries)
   EXPECT_EQ(SplitChainSpec(";crt/a.slangp;;"), (std::vector<std::string>{"crt/a.slangp"}));
 }
 
+TEST(ShaderChainSpec, TrimsWhitespaceAroundEntries)
+{
+  // A hand-edited GFX.ini may be spaced out; MultipassPostProcessing::LoadPreset resolves the same
+  // names this returns, so the two must not disagree about whether " a " is "a".
+  EXPECT_EQ(SplitChainSpec("crt/a.slangp ; misc/b.slangp"),
+            (std::vector<std::string>{"crt/a.slangp", "misc/b.slangp"}));
+  EXPECT_EQ(SplitChainSpec("\tcrt/a.slangp\t"), (std::vector<std::string>{"crt/a.slangp"}));
+  // An entry that is only whitespace is empty, not a preset named " ".
+  EXPECT_EQ(SplitChainSpec("  ;  "), (std::vector<std::string>{}));
+}
+
 TEST(ShaderChainSpec, JoinsWithSemicolons)
 {
   EXPECT_EQ(JoinChainSpec({}), "");

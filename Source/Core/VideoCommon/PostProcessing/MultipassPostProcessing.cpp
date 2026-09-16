@@ -28,6 +28,7 @@
 #include "VideoCommon/PostProcessing/PassGraph.h"
 #include "VideoCommon/PostProcessing/PassSizing.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
+#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangSamplers.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
@@ -200,25 +201,9 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
 
   // The config value may be a single preset name or a ';'-separated chain of presets whose pass
   // graphs are concatenated (each preset's first pass samples the previous preset's output as
-  // "Source"). A plain name has no ';', so this is backwards compatible.
-  std::vector<std::string> names;
-  size_t start = 0;
-  while (start <= preset_spec.size())
-  {
-    const auto sep = preset_spec.find(';', start);
-    const auto end = sep == std::string::npos ? preset_spec.size() : sep;
-    std::string name = preset_spec.substr(start, end - start);
-    // Trim surrounding whitespace.
-    const auto first = name.find_first_not_of(" \t");
-    const auto last = name.find_last_not_of(" \t");
-    if (first != std::string::npos)
-      names.push_back(name.substr(first, last - first + 1));
-    if (sep == std::string::npos)
-      break;
-    start = end + 1;
-  }
-
-  for (const std::string& name : names)
+  // "Source"). A plain name has no ';', so this is backwards compatible. SplitChainSpec is the
+  // single splitter shared with the front ends, so a name means the same thing in both.
+  for (const std::string& name : SplitChainSpec(preset_spec))
     AppendPreset(name);
 
   AnalyzeRenderStages();

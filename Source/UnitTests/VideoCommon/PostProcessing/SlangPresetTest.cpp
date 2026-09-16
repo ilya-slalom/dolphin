@@ -199,7 +199,20 @@ TEST(SlangPreset, NormalizePathKeepsWindowsDriveRoot)
 
 TEST(SlangPreset, NormalizePathKeepsUncRoot)
 {
-  EXPECT_EQ(NormalizePath("\\\\host\\share\\..\\a"), "//host/a");
+  // "\\host\share" is the whole root on Windows -- the share is the drive-letter equivalent -- so
+  // ".." must not be able to eat either the share or the host.
+  EXPECT_EQ(NormalizePath("\\\\host\\share\\..\\a"), "//host/share/a");
+  EXPECT_EQ(NormalizePath("\\\\host\\share\\..\\..\\..\\a"), "//host/share/a");
+  EXPECT_EQ(NormalizePath("//host/share"), "//host/share");
+  EXPECT_EQ(NormalizePath("//host/share/"), "//host/share");
+  EXPECT_EQ(NormalizePath("//host/share/pack/../x.slangp"), "//host/share/x.slangp");
+  // A real preset reference out of a UNC-installed pack keeps host and share.
+  EXPECT_EQ(NormalizePath("//nas/dolphin/User/Load/Shaders/pack/../../shaders_slang/crt/x.slang"),
+            "//nas/dolphin/User/Load/shaders_slang/crt/x.slang");
+  // Degenerate forms still normalize without losing the leading "//".
+  EXPECT_EQ(NormalizePath("//host"), "//host");
+  EXPECT_EQ(NormalizePath("//"), "//");
+  EXPECT_EQ(NormalizePath("//../a"), "//a");
 }
 
 TEST(SlangPreset, NormalizePathPreservesPosixBehavior)

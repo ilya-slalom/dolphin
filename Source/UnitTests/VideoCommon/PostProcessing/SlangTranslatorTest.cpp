@@ -74,7 +74,7 @@ TEST(SlangTranslator, DeduplicatesSamplersReusingBindingInBranches)
       "layout(location = 0) out vec4 FragColor;\n"
       "void main() { FragColor = vec4(1); }\n";
   const auto result = TranslateSlangPass(shader, {}, {}, /*flip_clip_y=*/false);
-  // 4 distinct bindings (2,3,4,5) -> under the 8 limit despite 7 textual declarations.
+  // 4 distinct bindings (2,3,4,5) -> under the 16-sampler limit despite 7 textual declarations.
   EXPECT_TRUE(result.ok) << result.error;
 }
 

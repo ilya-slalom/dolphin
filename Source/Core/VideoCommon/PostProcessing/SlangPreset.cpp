@@ -25,17 +25,41 @@ constexpr bool IsSeparator(char c)
 struct PathRoot
 {
   size_t length = 0;  // bytes of the input consumed
-  std::string text;   // normalized rendering: "", "/", "//" or "X:/"
+  std::string text;   // normalized rendering: "", "/", "//", "X:/" or "//host/share"
   bool absolute = false;
 };
 
-// Recognizes a POSIX root ("/"), a UNC root ("//host" -> "//" + "host" segment) and a Windows
-// drive root ("X:" / "X:\"). A drive-relative path ("X:foo") is promoted to drive-absolute:
-// preset paths are always fully qualified, and promoting keeps ".." off the drive designator.
+// Recognizes a POSIX root ("/"), a UNC root ("//host/share") and a Windows drive root
+// ("X:" / "X:\"). A drive-relative path ("X:foo") is promoted to drive-absolute: preset paths are
+// always fully qualified, and promoting keeps ".." off the drive designator.
 PathRoot SplitRoot(std::string_view path)
 {
   if (path.size() >= 2 && IsSeparator(path[0]) && IsSeparator(path[1]))
-    return {2, "//", true};
+  {
+    // On Windows the whole "\\host\share" prefix is the root -- the share plays the role a drive
+    // letter plays elsewhere -- so ".." must not be able to consume the host or the share name.
+    size_t i = 2;
+    while (i < path.size() && IsSeparator(path[i]))
+      ++i;
+    const size_t host_start = i;
+    while (i < path.size() && !IsSeparator(path[i]))
+      ++i;
+    const std::string_view host = path.substr(host_start, i - host_start);
+    // "." and ".." are navigation segments, never a host or share name; leave them to the segment
+    // loop so "//../a" still collapses to "//a".
+    if (host.empty() || host == "." || host == "..")
+      return {2, "//", true};
+    const size_t host_end = i;
+    while (i < path.size() && IsSeparator(path[i]))
+      ++i;
+    const size_t share_start = i;
+    while (i < path.size() && !IsSeparator(path[i]))
+      ++i;
+    const std::string_view share = path.substr(share_start, i - share_start);
+    if (share.empty() || share == "." || share == "..")
+      return {host_end, "//" + std::string(host), true};
+    return {i, "//" + std::string(host) + '/' + std::string(share), true};
+  }
   if (path.size() >= 2 && path[1] == ':' &&
       ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')))
   {
@@ -85,12 +109,14 @@ std::string NormalizePath(const std::string& path)
     start = end + 1;
   }
 
+  // root.text either ends in '/' ("/", "//", "X:/") or is a component prefix that needs one
+  // ("//host", "//host/share"); an empty root means a relative path and takes no leading separator.
   std::string result = root.text;
-  for (size_t i = 0; i < parts.size(); ++i)
+  for (const std::string_view part : parts)
   {
-    if (i != 0)
+    if (!result.empty() && result.back() != '/')
       result += '/';
-    result += parts[i];
+    result += part;
   }
   return result;
 }

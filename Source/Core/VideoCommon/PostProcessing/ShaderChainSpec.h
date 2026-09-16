@@ -14,7 +14,9 @@ namespace VideoCommon
 // and Android front ends.
 constexpr char CHAIN_SEPARATOR = ';';
 
-// The chain's entries, in order, with empty entries dropped.
+// The chain's entries, in order, each trimmed of surrounding spaces/tabs, with empty entries
+// dropped. This is the only ';'-splitter in the codebase -- MultipassPostProcessing::LoadPreset
+// uses it too, so a hand-edited "a ; b" resolves to the same names everywhere.
 std::vector<std::string> SplitChainSpec(std::string_view spec);
 
 // Inverse of SplitChainSpec.

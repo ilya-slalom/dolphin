@@ -11,6 +11,16 @@ namespace VideoCommon
 namespace
 {
 constexpr std::string_view ARROW = " \xE2\x86\x92 ";  // U+2192 RIGHTWARDS ARROW
+
+// A hand-edited GFX.ini can contain "crt/a.slangp ; misc/b.slangp"; the surrounding spaces are not
+// part of a preset name.
+std::string_view Trim(std::string_view s)
+{
+  const auto first = s.find_first_not_of(" \t");
+  if (first == std::string_view::npos)
+    return {};
+  return s.substr(first, s.find_last_not_of(" \t") - first + 1);
+}
 }  // namespace
 
 std::vector<std::string> SplitChainSpec(std::string_view spec)
@@ -21,8 +31,9 @@ std::vector<std::string> SplitChainSpec(std::string_view spec)
   {
     const auto sep = spec.find(CHAIN_SEPARATOR, start);
     const auto end = sep == std::string_view::npos ? spec.size() : sep;
-    if (end > start)
-      presets.emplace_back(spec.substr(start, end - start));
+    const std::string_view entry = Trim(spec.substr(start, end - start));
+    if (!entry.empty())
+      presets.emplace_back(entry);
     if (sep == std::string_view::npos)
       break;
     start = end + 1;

@@ -44,7 +44,7 @@ struct TranslatedPass
   // executor packs the uniform buffer to match this std140 layout.
   std::vector<UboMember> ubo_members;
   bool ok = false;
-  std::string error;  // set when ok == false (e.g. > 8 samplers)
+  std::string error;  // set when ok == false (e.g. more samplers than MAX_SAMPLERS, which is 16)
 };
 
 // True when the injected fullscreen-triangle vertex shader must negate clip-space Y. NDC Y is
