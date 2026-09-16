@@ -10,6 +10,7 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/MathUtil.h"
+#include "VideoCommon/MipChainBuilder.h"
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
@@ -136,6 +137,9 @@ private:
   std::unique_ptr<AbstractShader> m_passthrough_pixel;
   std::unique_ptr<AbstractPipeline> m_passthrough_pipeline;
   AbstractTextureFormat m_passthrough_format = AbstractTextureFormat::Undefined;
+
+  // Used on backends where AbstractTexture::GenerateMipmaps() is a no-op.
+  VideoCommon::MipChainBuilder m_mip_builder;
 };
 
 // Computes the preset identifier for a discovered .slangp path: the path relative to whichever

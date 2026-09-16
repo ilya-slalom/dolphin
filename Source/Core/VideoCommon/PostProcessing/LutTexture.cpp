@@ -13,6 +13,7 @@
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/PostProcessing/MipGen.h"
+#include "VideoCommon/PostProcessing/SlangTranslator.h"
 #include "VideoCommon/TextureConfig.h"
 
 namespace VideoCommon
@@ -50,8 +51,11 @@ std::unique_ptr<AbstractTexture> LoadLutTexture(const SlangLutConfig& lut)
     mips.push_back(std::move(level0));
   }
 
+  // A LUT is one layer, but it must still be an array texture: translated slang passes declare
+  // every sampler as sampler2DArray (SLANG_INPUT_TEXTURE_TYPE), and a Texture_2D bound to one of
+  // those samplers is the same silent black render as the mismatch in the other direction.
   const TextureConfig config(width, height, static_cast<u32>(mips.size()), 1, 1,
-                             AbstractTextureFormat::RGBA8, 0, AbstractTextureType::Texture_2D);
+                             AbstractTextureFormat::RGBA8, 0, SLANG_INPUT_TEXTURE_TYPE);
   auto texture = g_gfx->CreateTexture(config, "slang LUT: " + lut.name);
   if (!texture)
   {

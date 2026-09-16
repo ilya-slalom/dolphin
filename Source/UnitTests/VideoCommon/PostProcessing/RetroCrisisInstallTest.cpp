@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -81,4 +82,28 @@ TEST(RetroCrisisInstall, HidesNonChosenProfilePresets)
   // Non-RetroCrisis preset is never hidden.
   EXPECT_FALSE(IsHiddenRetroCrisisPreset(
       "/u/Shaders/shaders_slang/crt/crt-royale.slangp", root, "1080p Flat"));
+}
+
+TEST(RetroCrisisInstall, ProfileListMatchesPackFolders)
+{
+  // These are the seven top-level folder names inside the Retro Crisis pack, and they are also the
+  // entries, in order, of the Android picker's post_processing_retrocrisis_profiles string-array
+  // (Source/Android/app/src/main/res/values/strings.xml). Spelled out here so that editing
+  // GetRetroCrisisProfiles() without updating the pack (or the picker) fails the build's tests
+  // instead of silently installing a profile whose folder does not exist.
+  EXPECT_EQ(GetRetroCrisisProfiles(),
+            (std::vector<std::string>{"1080p Flat", "1440p Flat", "4K Flat", "1080p Curved",
+                                      "1440p Curved", "4K Curved", "720p Steam Deck"}));
+
+  const auto& profiles = GetRetroCrisisProfiles();
+  const std::set<std::string> unique(profiles.begin(), profiles.end());
+  EXPECT_EQ(unique.size(), profiles.size()) << "duplicate profile name";
+
+  // Every profile must be a name RetroCrisisProfileOf can recover from a preset path, i.e. it must
+  // be a single path component. RetroCrisisProfileOf expects a pack-relative path.
+  for (const std::string& profile : profiles)
+  {
+    EXPECT_EQ(profile.find('/'), std::string::npos) << profile;
+    EXPECT_EQ(RetroCrisisProfileOf("retro crisis/" + profile + "/x.slangp"), profile);
+  }
 }

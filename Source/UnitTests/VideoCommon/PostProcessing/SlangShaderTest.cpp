@@ -149,3 +149,20 @@ TEST(SlangShader, ParameterOverrideBeatsDefault)
 
   EXPECT_FALSE(ResolveShaderParameter(overrides, params, "unknown", &out));
 }
+
+TEST(SlangShader, ExpandsIncludesFromWindowsDirectory)
+{
+  const std::map<std::string, std::string> files = {
+      {"E:/shaders/inc/common.h", "float common_value = 1.0;\n"},
+  };
+  const auto reader = [&files](const std::string& path, std::string* out) {
+    const auto it = files.find(path);
+    if (it == files.end())
+      return false;
+    *out = it->second;
+    return true;
+  };
+  const std::string expanded =
+      ExpandSlangIncludes("#include \"inc/common.h\"\n", "E:\\shaders", reader);
+  EXPECT_NE(expanded.find("common_value"), std::string::npos);
+}

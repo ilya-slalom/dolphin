@@ -188,6 +188,9 @@ struct BackendInfo
   bool bSupportsGLLayerInFS = true;
   bool bSupportsHDROutput = false;
   bool bSupportsUnrestrictedDepthRange = false;
+  // AbstractTexture::GenerateMipmaps() actually fills the chain on this backend. When false,
+  // VideoCommon falls back to MipChainBuilder's draw-based path.
+  bool bSupportsGPUMipGeneration = false;
 };
 
 extern BackendInfo g_backend_info;

@@ -831,7 +831,6 @@ It can efficiently compress both junk data and encrypted Wii data.
     <string name="stereoscopy_off">Off</string>
     <string name="stereoscopy_side_by_side">Side-by-Side</string>
     <string name="stereoscopy_top_and_bottom">Top-and-Bottom</string>
-    <string name="stereoscopy_anaglyph">Anaglyph</string>
 
     <!-- Aspect Ratio Preference -->
     <string name="aspect_ratio_auto">Auto</string>

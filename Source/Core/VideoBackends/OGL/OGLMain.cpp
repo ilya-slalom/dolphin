@@ -120,6 +120,7 @@ bool VideoBackend::FillBackendInfo(GLContext* context)
   g_backend_info.bSupportsComputeShaders = false;
   g_backend_info.bSupports3DVision = false;
   g_backend_info.bSupportsPostProcessing = true;
+  g_backend_info.bSupportsGPUMipGeneration = true;
   g_backend_info.bSupportsSSAA = true;
   g_backend_info.bSupportsReversedDepthRange = true;
   g_backend_info.bSupportsLogicOp = true;

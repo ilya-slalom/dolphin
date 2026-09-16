@@ -177,6 +177,15 @@ std::string ReadRetroCrisisProfile(const std::string& install_root)
   return std::string(StripSpaces(text));
 }
 
+const std::vector<std::string>& GetRetroCrisisProfiles()
+{
+  static const std::vector<std::string> profiles = {
+      "1080p Flat",   "1440p Flat",   "4K Flat",         "1080p Curved",
+      "1440p Curved", "4K Curved",    "720p Steam Deck",
+  };
+  return profiles;
+}
+
 bool IsHiddenRetroCrisisPreset(const std::string& preset_abs_path, const std::string& install_root,
                                const std::string& chosen_profile)
 {

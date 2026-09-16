@@ -14,18 +14,80 @@
 
 namespace VideoCommon
 {
-// Lexically normalizes a POSIX-style path, collapsing "." and ".." segments without
-// touching the filesystem. Preserves a leading "/".
+namespace
+{
+constexpr bool IsSeparator(char c)
+{
+  return c == '/' || c == '\\';
+}
+
+// The leading part of a path that ".." must never escape.
+struct PathRoot
+{
+  size_t length = 0;  // bytes of the input consumed
+  std::string text;   // normalized rendering: "", "/", "//", "X:/" or "//host/share"
+  bool absolute = false;
+};
+
+// Recognizes a POSIX root ("/"), a UNC root ("//host/share") and a Windows drive root
+// ("X:" / "X:\"). A drive-relative path ("X:foo") is promoted to drive-absolute: preset paths are
+// always fully qualified, and promoting keeps ".." off the drive designator.
+PathRoot SplitRoot(std::string_view path)
+{
+  if (path.size() >= 2 && IsSeparator(path[0]) && IsSeparator(path[1]))
+  {
+    // On Windows the whole "\\host\share" prefix is the root -- the share plays the role a drive
+    // letter plays elsewhere -- so ".." must not be able to consume the host or the share name.
+    size_t i = 2;
+    while (i < path.size() && IsSeparator(path[i]))
+      ++i;
+    const size_t host_start = i;
+    while (i < path.size() && !IsSeparator(path[i]))
+      ++i;
+    const std::string_view host = path.substr(host_start, i - host_start);
+    // "." and ".." are navigation segments, never a host or share name; leave them to the segment
+    // loop so "//../a" still collapses to "//a".
+    if (host.empty() || host == "." || host == "..")
+      return {2, "//", true};
+    const size_t host_end = i;
+    while (i < path.size() && IsSeparator(path[i]))
+      ++i;
+    const size_t share_start = i;
+    while (i < path.size() && !IsSeparator(path[i]))
+      ++i;
+    const std::string_view share = path.substr(share_start, i - share_start);
+    if (share.empty() || share == "." || share == "..")
+      return {host_end, "//" + std::string(host), true};
+    return {i, "//" + std::string(host) + '/' + std::string(share), true};
+  }
+  if (path.size() >= 2 && path[1] == ':' &&
+      ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')))
+  {
+    const size_t length = (path.size() >= 3 && IsSeparator(path[2])) ? 3 : 2;
+    return {length, std::string(path.substr(0, 2)) + '/', true};
+  }
+  if (!path.empty() && IsSeparator(path[0]))
+    return {1, "/", true};
+  return {};
+}
+}  // namespace
+
+// Lexically normalizes a path, collapsing "." and ".." segments without touching the filesystem.
+// Both '/' and '\' are accepted as separators and the result always uses '/', which every
+// platform's file APIs understand -- this is what makes Windows preset paths (backslashes, drive
+// letters) resolve correctly. A leading "/", "//" (UNC) or "X:/" (drive) is preserved, and ".."
+// can never escape it.
 std::string NormalizePath(const std::string& path)
 {
-  const bool absolute = !path.empty() && path.front() == '/';
+  const PathRoot root = SplitRoot(path);
+  const std::string_view view = std::string_view(path).substr(root.length);
   std::vector<std::string_view> parts;
-  std::string_view view = path;
   size_t start = 0;
   while (start <= view.size())
   {
-    const auto slash = view.find('/', start);
-    const auto end = slash == std::string_view::npos ? view.size() : slash;
+    size_t end = start;
+    while (end < view.size() && !IsSeparator(view[end]))
+      ++end;
     const std::string_view seg = view.substr(start, end - start);
     if (seg.empty() || seg == ".")
     {
@@ -35,24 +97,26 @@ std::string NormalizePath(const std::string& path)
     {
       if (!parts.empty() && parts.back() != "..")
         parts.pop_back();
-      else if (!absolute)
+      else if (!root.absolute)
         parts.push_back(seg);
     }
     else
     {
       parts.push_back(seg);
     }
-    if (slash == std::string_view::npos)
+    if (end == view.size())
       break;
     start = end + 1;
   }
 
-  std::string result = absolute ? "/" : "";
-  for (size_t i = 0; i < parts.size(); ++i)
+  // root.text either ends in '/' ("/", "//", "X:/") or is a component prefix that needs one
+  // ("//host", "//host/share"); an empty root means a relative path and takes no leading separator.
+  std::string result = root.text;
+  for (const std::string_view part : parts)
   {
-    if (i != 0)
+    if (!result.empty() && result.back() != '/')
       result += '/';
-    result += std::string(parts[i]);
+    result += part;
   }
   return result;
 }
@@ -89,6 +153,9 @@ bool SplitKeyValue(std::string_view line, std::string* key, std::string* value)
 
 std::string ResolvePath(const std::string& base_dir, const std::string& value)
 {
+  // An absolute shader/reference path stands on its own.
+  if (SplitRoot(value).absolute)
+    return NormalizePath(value);
   return NormalizePath(base_dir + "/" + value);
 }
 
@@ -158,7 +225,7 @@ std::vector<std::string> SplitList(const std::string& value, char delim)
 
 std::string DirectoryOf(const std::string& path)
 {
-  const auto slash = path.find_last_of('/');
+  const auto slash = path.find_last_of("/\\");
   return slash == std::string::npos ? std::string() : path.substr(0, slash);
 }
 

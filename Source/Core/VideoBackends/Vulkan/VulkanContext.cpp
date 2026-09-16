@@ -438,6 +438,7 @@ void VulkanContext::PopulateBackendInfo(BackendInfo* backend_info)
   backend_info->bSupportsPipelineCacheData = false;         // Handled via pipeline caches.
   backend_info->bSupportsDynamicSamplerIndexing = true;     // Assumed support.
   backend_info->bSupportsPostProcessing = true;             // Assumed support.
+  backend_info->bSupportsGPUMipGeneration = true;  // VKTexture::GenerateMipmaps blits the chain.
   backend_info->bSupportsBackgroundCompiling = true;        // Assumed support.
   backend_info->bSupportsCopyToVram = true;                 // Assumed support.
   backend_info->bSupportsReversedDepthRange = true;         // Assumed support.

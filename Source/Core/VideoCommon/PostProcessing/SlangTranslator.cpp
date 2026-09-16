@@ -34,17 +34,27 @@ std::string_view Trim(std::string_view s)
   return s.substr(first, last - first + 1);
 }
 
-// Extracts the sampler name from a line declaring `... uniform sampler2D <Name>;`.
-// Returns empty if the line does not declare a uniform sampler2D (e.g. a `sampler2D` function
+// Extracts the sampler name from a line declaring `... uniform sampler2D[Array] <Name>;`.
+// Returns empty if the line does not declare a uniform sampler (e.g. a `sampler2D` function
 // parameter or a helper typedef is ignored -- only uniform declarations count).
+// The array spelling is tested first: "sampler2D" is a prefix of "sampler2DArray", so the other
+// order would report the name of an already-array declaration as "Array".
 std::string ExtractSamplerName(std::string_view line)
 {
   if (line.find("uniform") == std::string_view::npos)
     return {};
-  const auto kw = line.find("sampler2D");
+  constexpr std::string_view ARRAY_KW = "sampler2DArray";
+  constexpr std::string_view PLAIN_KW = "sampler2D";
+  auto kw = line.find(ARRAY_KW);
+  size_t kw_size = ARRAY_KW.size();
+  if (kw == std::string_view::npos)
+  {
+    kw = line.find(PLAIN_KW);
+    kw_size = PLAIN_KW.size();
+  }
   if (kw == std::string_view::npos)
     return {};
-  std::string_view rest = Trim(line.substr(kw + std::string_view("sampler2D").size()));
+  std::string_view rest = Trim(line.substr(kw + kw_size));
   // Name runs until ';' or whitespace.
   size_t end = 0;
   while (end < rest.size() && (std::isalnum(static_cast<unsigned char>(rest[end])) != 0 ||
@@ -80,14 +90,314 @@ int ExtractSamplerBinding(std::string_view line)
   return any ? value : -1;
 }
 
-// Replaces every whole-word occurrence of `from` with `to` in `text`.
-std::string ReplaceWord(const std::string& text, const std::string& from, const std::string& to)
+static_assert(SLANG_INPUT_TEXTURE_TYPE == AbstractTextureType::Texture_2DArray,
+              "the layer-0 shim helpers below are written for the array sampler type");
+
+// Slang shaders sample with 2-component coordinates, but Dolphin binds 2D-array textures, so the
+// declarations are sampler2DArray (see SLANG_INPUT_TEXTURE_TYPE). Rewriting call-site argument
+// lists is not an option: the real libretro pack has over 8000 of them, most behind macros, and
+// crt-royale hands samplers to user functions (`vec4 tex2D_linearize(sampler2D tex, vec2 coords)`)
+// whose bodies name no sampler at all. So the built-ins are shimmed instead.
+//
+// Every shim is a *renamed helper*: the built-in's name becomes dolphin_<builtin> wherever it
+// is used as a function name (see IsFunctionNameUse), and the block below defines that helper to
+// supply the layer-0 third coordinate and forward to the real built-in. Renaming rather than
+// overloading the built-in is what makes the GLES path work at all: ESSL 3.00 and up forbid
+// overloading a built-in outright -- glslang's own comment is "ES 300 does not allow redefining or
+// overloading of built-in functions" (ParseHelper.cpp:1173-1174, enforced by the
+// requireProfile(loc, ~EEsProfile, ...) just after it) -- while overloading a *user* function is
+// legal on every target, and dolphin_texture is a user function. That path is reachable:
+// OGLConfig.cpp selects GlslEs300/310/320, and arrays.xml:204 offers OGL as an Android backend.
+//
+// The helpers come in two shapes, because GLSL constrains their arguments differently:
+//
+// 1. Functions, for built-ins whose arguments are ordinary values. Two helpers may share one name
+//    (dolphin_texture has a bias form, dolphin_textureGather a 2- and a 3-argument form); they
+//    overload each other rather than a built-in, which is why ES accepts them.
+// 2. Function-like macros, for the *Offset built-ins. Their `offset` must be a compile-time
+//    constant expression and a function parameter never is -- glslang rejects the function form
+//    outright ("'texel offset' : argument must be compile-time constant"). A macro forwards the
+//    token verbatim, so a literal stays literal. Renaming also retires the old self-named macros,
+//    which worked only because the preprocessor does not re-expand a macro inside its own
+//    expansion.
+//
+// textureGather's `comp` must likewise be constant, but the pack calls it with both 2 and 3
+// arguments and a macro cannot be overloaded on arity, so the 3-argument helper is a function that
+// dispatches to four constant `comp` values.
+//
+// A sampling built-in not covered here fails to compile -- loudly, unlike the silent black frame a
+// dimension mismatch produces. Known gaps, none of which the libretro pack uses: the bias form of
+// textureOffset, textureGatherOffset, and textureProj (which has no array form in GLSL at all).
+// Renaming adds one gap overloading did not have: a call on a sampler that really is not an array
+// (usampler2D, sampler3D) no longer falls through to the built-in. No preset reaches it, because
+// the translator emits the sampler declarations itself and always as SLANG_INPUT_TEXTURE_TYPE --
+// test/decode-format.slang's `usampler2D Source` is already sampler2DArray by this point -- and if
+// one ever does, that too is a loud compile error.
+constexpr std::string_view SHIM_PREFIX = "dolphin_";
+
+std::string ShimHelperName(std::string_view builtin)
+{
+  return std::string(SHIM_PREFIX) + std::string(builtin);
+}
+
+struct SamplerShim
+{
+  // Call sites of this built-in are renamed to SHIM_PREFIX + builtin. Entries may share a built-in;
+  // the rename runs once per built-in, and each entry's helper is emitted on its own.
+  std::string_view builtin;
+  std::string_view glsl;  // prepended when the stage names the helper
+  bool fragment_only = false;
+  // When set, glsl is wrapped in `#if <version_guard>` / `#endif`, so a stage that carries the
+  // helper without calling it compiles on a target the helper's own body could not.
+  std::string_view version_guard = {};
+};
+
+// `textureGather` is core in GLSL 400 and in GLSL ES 310 -- ES 3.00 has no form of it at all -- and
+// because a shim *calls* the built-in it wraps, declaring one unconditionally made every translated
+// pass depend on GLSL 400. OGL's GetGLSLVersionString() can emit 130, 140, 150, 330, 300 es or
+// 310 es and AbstractGfx::CreatePostProcessor() applies no version gate, so that broke every pass
+// on a GL 3.3-class context, gathering or not. Measured against glslang's GLSL front end: the
+// unguarded block at `#version 330` and at `#version 300 es` gives "'textureGather(...)' : not
+// supported for this version or the enabled extensions"; at `310 es`, `320 es` and `410` it is
+// clean, for the 2- and the 3-argument form alike.
+//
+// Two mechanisms keep a stage from paying for that, because one of them cannot be made sufficient:
+//
+// 1. The gate (below, where the shims are emitted): a shim is emitted only when the renamed stage
+//    source names its helper as a whole word, in a copy with comments stripped. That is as precise
+//    as it can get, because there is no preprocessor here: `textureGather` also survives inside a
+//    never-taken `#if` branch and inside a macro body nothing expands -- the nnedi3
+//    `-predict-h-rgb` family is exactly that, `#define NNEDI3_USE_GATHER 0` with the text left in
+//    NNEDI3_DEF_GATHER -- and the gate then believes the stage gathers. So the gate is a size
+//    optimization, not a correctness mechanism. It was first written as the latter, and 7 stages
+//    across 5 presets of the libretro pack failed at `#version 300 es` for precisely that reason.
+//    Measured over that pack (2987 presets, 23515 stages): the helper was emitted into 177 stages
+//    before comments were stripped and 72 after -- the 105 that went away are all fsr-pass0 and
+//    fsr-pass1, whose only mention of the built-in is the commented-out FsrEasu*H bodies in
+//    ffx_fsr1.h -- and 7 of the surviving 72 are the nnedi3 macro bodies, which no textual gate can
+//    rule out. Those 7 are the ones the guard rescues.
+// 2. The guard (version_guard): the one helper whose availability depends on the version says so
+//    itself, so an over-firing gate costs bytes and nothing else. A stage that carries the helper
+//    without calling it compiles anywhere; a stage that really calls it where the built-in does not
+//    exist fails loudly on an undeclared `dolphin_textureGather`, which is the same class of
+//    failure, at the same point, as calling the built-in directly would have been.
+//
+// The guard tests versions only. `defined(GL_ARB_gpu_shader5)` deliberately does not appear in it:
+// an extension macro is defined when the compiler *knows* the extension, not when the shader has
+// enabled it, and a shader's initial state is `#extension all : disable`. Verified against glslang,
+// which predefines GL_ARB_gpu_shader5 and GL_ARB_texture_gather at `#version 330` -- the helper
+// body still fails to compile there unless the source also carries
+// `#extension GL_ARB_gpu_shader5 : enable`. Admitting the helper on the macro alone would re-break
+// every non-gathering pass on any driver that advertises the extension the shader has not enabled.
+// What that costs: on a GL 3.3 context whose header did enable ARB_gpu_shader5 (ProgramShaderCache
+// does, when v < Glsl400 && bSupportsGSInstancing) a genuinely gathering pass is refused although
+// the driver could have run it. Closing that gap means the header telling the shader what it
+// enabled -- a macro of Dolphin's own beside the `#extension` line -- which is not the translator's
+// to decide, and which no preset in the pack needs today.
+//
+// The other built-ins need no guard: `texture`, `textureLod`, `textureGrad`, `texelFetch` and
+// `textureSize` are core in their array forms since GLSL 130 / ES 300, and the three *Offset shims
+// are macros, which cost nothing until expanded. Verified by parsing the whole block with every
+// helper called at 300 es, 310 es, 320 es, 330 and 410. A future entry that does have a floor must
+// carry its own guard -- the gate will not save it.
+constexpr std::string_view TEXTURE_GATHER_GUARD =
+    "__VERSION__ >= 400 || (defined(GL_ES) && __VERSION__ >= 310)";
+
+constexpr SamplerShim SAMPLER_SHIMS[] = {
+    {"texture",
+     "vec4 dolphin_texture(sampler2DArray s, vec2 c) { return texture(s, vec3(c, 0.0)); }\n"},
+    // The optional `bias` argument of the implicit-LOD built-ins is accepted only in fragment
+    // shaders, so this helper must not be declared in the vertex stage.
+    {"texture",
+     "vec4 dolphin_texture(sampler2DArray s, vec2 c, float bias)\n"
+     "{\n"
+     "  return texture(s, vec3(c, 0.0), bias);\n"
+     "}\n",
+     /*fragment_only=*/true},
+    {"textureLod",
+     "vec4 dolphin_textureLod(sampler2DArray s, vec2 c, float l)\n"
+     "{\n"
+     "  return textureLod(s, vec3(c, 0.0), l);\n"
+     "}\n"},
+    {"textureGrad",
+     "vec4 dolphin_textureGrad(sampler2DArray s, vec2 c, vec2 dx, vec2 dy)\n"
+     "{\n"
+     "  return textureGrad(s, vec3(c, 0.0), dx, dy);\n"
+     "}\n"},
+    {"texelFetch",
+     "vec4 dolphin_texelFetch(sampler2DArray s, ivec2 c, int l)\n"
+     "{\n"
+     "  return texelFetch(s, ivec3(c, 0), l);\n"
+     "}\n"},
+    {"textureGather",
+     "vec4 dolphin_textureGather(sampler2DArray s, vec2 c)\n"
+     "{\n"
+     "  return textureGather(s, vec3(c, 0.0));\n"
+     "}\n"
+     "vec4 dolphin_textureGather(sampler2DArray s, vec2 c, int comp)\n"
+     "{\n"
+     "  vec3 p = vec3(c, 0.0);\n"
+     "  if (comp == 1) return textureGather(s, p, 1);\n"
+     "  if (comp == 2) return textureGather(s, p, 2);\n"
+     "  if (comp == 3) return textureGather(s, p, 3);\n"
+     "  return textureGather(s, p, 0);\n"
+     "}\n",
+     /*fragment_only=*/false, TEXTURE_GATHER_GUARD},
+    // textureSize is the built-in that could never have been an overload -- the array form differs
+    // from the 2D form only in return type (ivec3 vs ivec2), and GLSL forbids overloading on return
+    // type. It needed the rename first; now every entry is written the same way.
+    {"textureSize",
+     "ivec2 dolphin_textureSize(sampler2DArray s, int l) { return textureSize(s, l).xy; }\n"},
+    {"textureOffset",
+     "#define dolphin_textureOffset(s, c, o) textureOffset(s, vec3((c), 0.0), o)\n"},
+    {"textureLodOffset",
+     "#define dolphin_textureLodOffset(s, c, l, o) textureLodOffset(s, vec3((c), 0.0), l, o)\n"},
+    {"texelFetchOffset",
+     "#define dolphin_texelFetchOffset(s, c, l, o) texelFetchOffset(s, ivec3((c), 0), l, o)\n"},
+};
+
+// The one thing about the table above that the compiler cannot check: an entry whose glsl does
+// not define the helper its built-in is renamed to would drop every one of that built-in's call
+// sites into a function that does not exist.
+constexpr bool EveryShimDefinesItsHelper()
+{
+  for (const SamplerShim& shim : SAMPLER_SHIMS)
+  {
+    bool defined = false;
+    for (size_t pos = shim.glsl.find(shim.builtin); pos != std::string_view::npos;
+         pos = shim.glsl.find(shim.builtin, pos + 1))
+    {
+      if (pos >= SHIM_PREFIX.size() &&
+          shim.glsl.substr(pos - SHIM_PREFIX.size(), SHIM_PREFIX.size()) == SHIM_PREFIX)
+      {
+        defined = true;
+      }
+    }
+    if (!defined)
+      return false;
+  }
+  return true;
+}
+static_assert(EveryShimDefinesItsHelper(),
+              "every shim must define the dolphin_-prefixed helper that its built-in's call sites "
+              "are renamed to");
+
+bool StartsWith(std::string_view s, std::string_view prefix)
+{
+  return s.substr(0, prefix.size()) == prefix;
+}
+
+bool IsWordChar(char c)
+{
+  return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+// A copy of `text` with every `//` and `/* */` comment replaced by one space, for searches that are
+// meant to answer "does the compiler see this?" rather than "does the file contain it?". Each
+// comment becomes a space rather than nothing so that deleting it cannot fuse the identifiers on
+// either side into a third one. GLSL has no string literals, so nothing here can be quoted.
+//
+// One knowingly unhandled corner: C99 splices a `\`-continued line before it removes comments, so a
+// `//` comment ending in a backslash swallows the next line too. Five shaders in the libretro pack
+// do it (grade.slang, grade-no-LUT.slang, grade_orig.slang, pre-shaders-afterglow-grade.slang,
+// dave_hoskins-ray-q-bert.slang), so this is a corner the corpus actually reaches -- but treating
+// that next line as code is the safe direction: it can only make a search say yes where the
+// compiler says no, never the reverse, and a false yes costs an unused helper the version guard
+// already makes harmless. The dangerous direction is the other one, and it is closed: the only way
+// this function can drop real code is an unterminated `/*`, which is a hard glslang error before
+// any of this matters.
+std::string StripComments(std::string_view text)
 {
   std::string out;
   out.reserve(text.size());
-  const auto is_word_char = [](char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-  };
+  size_t pos = 0;
+  while (pos < text.size())
+  {
+    const bool two_left = pos + 1 < text.size();
+    if (text[pos] == '/' && two_left && text[pos + 1] == '/')
+    {
+      out += ' ';
+      const auto end = text.find('\n', pos + 2);
+      if (end == std::string_view::npos)
+        break;
+      pos = end;  // the newline is not part of the comment, and it terminates a directive
+    }
+    else if (text[pos] == '/' && two_left && text[pos + 1] == '*')
+    {
+      out += ' ';
+      const auto end = text.find("*/", pos + 2);
+      if (end == std::string_view::npos)
+        break;
+      pos = end + 2;
+    }
+    else
+    {
+      out += text[pos];
+      ++pos;
+    }
+  }
+  return out;
+}
+
+// True when `word` occurs in `text` as a whole identifier rather than inside a longer one, so
+// `texture` does not match `textureLod` and `texelFetch` does not match `texelFetchOffset`.
+bool ContainsWord(std::string_view text, std::string_view word)
+{
+  for (size_t pos = text.find(word); pos != std::string_view::npos; pos = text.find(word, pos + 1))
+  {
+    const size_t after = pos + word.size();
+    if ((pos == 0 || !IsWordChar(text[pos - 1])) &&
+        (after >= text.size() || !IsWordChar(text[after])))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True when the whole-word occurrence spanning [begin, after) is used as the name of a function:
+// either it is applied to an argument list right there, or it is the replacement list of an
+// object-like macro, which is only ever called (`#define COMPAT_TEXTURE texture`, from
+// crt/shaders/hyllian/crt-hyllian-fast.slang -- the only such alias in the pack, and its call sites
+// all read COMPAT_TEXTURE(...)).
+//
+// Occurrences that are neither are deliberately left alone, because they name an object rather than
+// a function: crt-royale's bloom-functions.h declares
+// `tex2DblurNfast(const sampler2D texture, ...)` and passes that parameter on by name ten times, so
+// a blanket rename would hide the helper behind a parameter of the same name inside those
+// functions, and collide with it at the declaration.
+bool IsFunctionNameUse(std::string_view text, size_t begin, size_t after)
+{
+  size_t pos = after;
+  while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t'))
+    ++pos;
+  if (pos < text.size() && text[pos] == '(')
+    return true;
+
+  // The rest of the line has to be empty for this to be a macro's replacement list; a `\`
+  // continuation or a trailing `//` comment still counts as empty.
+  while (pos < text.size() && text[pos] != '\n')
+  {
+    if (text[pos] == '\\' || (text[pos] == '/' && pos + 1 < text.size() && text[pos + 1] == '/'))
+      break;
+    if (text[pos] != ' ' && text[pos] != '\t' && text[pos] != '\r')
+      return false;
+    ++pos;
+  }
+  const size_t line_start = text.rfind('\n', begin);
+  const std::string_view line =
+      text.substr(line_start == std::string_view::npos ? 0 : line_start + 1);
+  return StartsWith(Trim(line), "#define");
+}
+
+// Replaces every whole-word occurrence of `from` with `to` in `text`. When `function_names_only`,
+// only the occurrences IsFunctionNameUse accepts are replaced.
+std::string ReplaceWord(const std::string& text, const std::string& from, const std::string& to,
+                        bool function_names_only = false)
+{
+  std::string out;
+  out.reserve(text.size());
+  const auto is_word_char = [](char c) { return IsWordChar(c); };
   size_t pos = 0;
   while (pos < text.size())
   {
@@ -101,7 +411,7 @@ std::string ReplaceWord(const std::string& text, const std::string& from, const 
     const size_t after = found + from.size();
     const bool right_ok = after >= text.size() || !is_word_char(text[after]);
     out.append(text, pos, found - pos);
-    if (left_ok && right_ok)
+    if (left_ok && right_ok && (!function_names_only || IsFunctionNameUse(text, found, after)))
     {
       out += to;
     }
@@ -112,11 +422,6 @@ std::string ReplaceWord(const std::string& text, const std::string& from, const 
     pos = after;
   }
   return out;
-}
-
-bool StartsWith(std::string_view s, std::string_view prefix)
-{
-  return s.substr(0, prefix.size()) == prefix;
 }
 
 // Strips a trailing `// ...` line comment (RetroArch shaders annotate varyings with comments
@@ -258,7 +563,7 @@ std::string ExtractUniformBlocks(const std::string& source, std::vector<std::str
 
 TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
                                   const std::vector<std::string>& known_aliases,
-                                  const std::vector<std::string>& lut_names)
+                                  const std::vector<std::string>& lut_names, bool flip_clip_y)
 {
   TranslatedPass result;
 
@@ -379,8 +684,8 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       if (!sampler.empty())
       {
         const int binding = binding_of(sampler);
-        out += "SAMPLER_BINDING(" + std::to_string(binding) + ") uniform sampler2D " + sampler +
-               ";\n";
+        out += "SAMPLER_BINDING(" + std::to_string(binding) + ") uniform " +
+               std::string(SlangSamplerGlslType(SLANG_INPUT_TEXTURE_TYPE)) + " " + sampler + ";\n";
         continue;
       }
 
@@ -429,13 +734,12 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       // TexCoord spans [0,1]. On Vulkan the clip-space Y is inverted (matching Dolphin's
       // fixed post-process vertex shader and pass-through pipeline); since MVP is identity we
       // bake the flip into Position.y.
+      const std::string flip = flip_clip_y ? "  Position.y = -Position.y;\n" : "";
       const std::string inject =
           "  vec2 dolphin_fsq = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
           "  vec4 Position = vec4(dolphin_fsq * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);\n"
-          "  vec2 TexCoord = dolphin_fsq;\n"
-          "#ifdef API_VULKAN\n"
-          "  Position.y = -Position.y;\n"
-          "#endif\n";
+          "  vec2 TexCoord = dolphin_fsq;\n" +
+          flip;
       const auto main_pos = out.find("void main");
       if (main_pos != std::string::npos)
       {
@@ -445,8 +749,57 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       }
     }
 
-    // Replace FragColor references with ocol0 in the body.
-    return ReplaceWord(out, "FragColor", "ocol0");
+    // Body rewrites, applied before the shims are prepended so that the shims' own calls to the
+    // real built-ins are not renamed into recursive calls to themselves.
+    out = ReplaceWord(out, "FragColor", "ocol0");
+    // Sampler function parameters -- the declarations above are already emitted as the array type.
+    // Whole-word matching leaves `sampler2DArray`, `isampler2D` and `usampler2D` alone.
+    const std::string sampler_type(SlangSamplerGlslType(SLANG_INPUT_TEXTURE_TYPE));
+    out = ReplaceWord(out, "sampler2D", sampler_type);
+
+    // Rename each shimmed built-in's call sites onto its helper. Order between built-ins does not
+    // matter and cannot be made to matter: the match is whole-word and the prefix ends in `_`, a
+    // word character, so `dolphin_texture` can never be re-matched as `texture`, and
+    // `textureLod` was never a match for `texture` to begin with.
+    std::string_view renamed;
+    for (const SamplerShim& shim : SAMPLER_SHIMS)
+    {
+      if (shim.builtin == renamed)
+        continue;  // two helpers of one built-in; the rename is per built-in
+      renamed = shim.builtin;
+      out = ReplaceWord(out, std::string(shim.builtin), ShimHelperName(shim.builtin),
+                        /*function_names_only=*/true);
+    }
+
+    // Emit only the shims this stage reaches for -- see the note on SAMPLER_SHIMS, including why
+    // this gate is a size optimization and not the thing that makes low GLSL versions work. The
+    // trigger is the helper name in the renamed source, with comments stripped: the rename fires
+    // inside comments too (IsFunctionNameUse reads no context), and a commented-out call is the
+    // whole of `textureGather` in the fsr tree.
+    const std::string gate_source = StripComments(out);
+    std::string shims;
+    for (const SamplerShim& shim : SAMPLER_SHIMS)
+    {
+      if (is_vertex && shim.fragment_only)
+        continue;
+      if (!ContainsWord(gate_source, ShimHelperName(shim.builtin)))
+        continue;
+      if (shim.version_guard.empty())
+      {
+        shims += shim.glsl;
+      }
+      else
+      {
+        shims += "#if ";
+        shims += shim.version_guard;
+        shims += '\n';
+        shims += shim.glsl;
+        shims += "#endif\n";
+      }
+    }
+    if (!shims.empty())
+      shims = "\n" + shims;
+    return shims + out;
   };
 
   // Assemble: merged UBO block + #undef of compat macros, then the stage body.

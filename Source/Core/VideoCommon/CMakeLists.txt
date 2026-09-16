@@ -116,6 +116,8 @@ add_library(videocommon
   LightingShaderGen.cpp
   LightingShaderGen.h
   LookUpTables.h
+  MipChainBuilder.cpp
+  MipChainBuilder.h
   NativeVertexFormat.h
   NetPlayChatUI.cpp
   NetPlayChatUI.h
@@ -142,6 +144,8 @@ add_library(videocommon
   PixelShaderGen.h
   PixelShaderManager.cpp
   PixelShaderManager.h
+  PostProcessing/LibrashaderLibrary.cpp
+  PostProcessing/LibrashaderLibrary.h
   PostProcessing/LutTexture.cpp
   PostProcessing/LutTexture.h
   PostProcessing/IPostProcessor.h
@@ -157,6 +161,8 @@ add_library(videocommon
   PostProcessing/PresetArchive.h
   PostProcessing/RetroCrisisInstall.cpp
   PostProcessing/RetroCrisisInstall.h
+  PostProcessing/ShaderChainSpec.cpp
+  PostProcessing/ShaderChainSpec.h
   PostProcessing/ShaderPackDownload.cpp
   PostProcessing/ShaderPackDownload.h
   PostProcessing/ShaderPackSource.cpp

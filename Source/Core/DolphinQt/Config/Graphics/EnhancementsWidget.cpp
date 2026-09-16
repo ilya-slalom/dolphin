@@ -3,6 +3,8 @@
 
 #include "DolphinQt/Config/Graphics/EnhancementsWidget.h"
 
+#include <atomic>
+#include <memory>
 #include <utility>
 
 #include <QApplication>
@@ -10,10 +12,14 @@
 #include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QInputDialog>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
 
@@ -26,13 +32,16 @@
 #include "DolphinQt/Config/ConfigControls/ConfigChoice.h"
 #include "DolphinQt/Config/ConfigControls/ConfigFloatSlider.h"
 #include "DolphinQt/Config/GameConfigWidget.h"
-#include "DolphinQt/Config/Graphics/ColorCorrectionConfigWindow.h"
 #include "DolphinQt/Config/Graphics/GraphicsPane.h"
+#include "DolphinQt/Config/Graphics/PostProcessingChainDialog.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 
 #include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
+#include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
+#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/ShaderPackDownload.h"
+#include "VideoCommon/PostProcessing/ShaderPackSource.h"
 #include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
@@ -40,6 +49,7 @@
 EnhancementsWidget::EnhancementsWidget(GraphicsPane* gfx_pane)
     : m_game_layer{gfx_pane->GetConfigLayer()}
 {
+  MigrateRemovedStereoModes();
   CreateWidgets();
   LoadPostProcessingShaders();
   ConnectWidgets();
@@ -63,6 +73,42 @@ constexpr int ANISO_16X = std::to_underlying(AnisotropicFilteringMode::Force16x)
 constexpr int FILTERING_DEFAULT = std::to_underlying(TextureFilteringMode::Default);
 constexpr int FILTERING_NEAREST = std::to_underlying(TextureFilteringMode::Nearest);
 constexpr int FILTERING_LINEAR = std::to_underlying(TextureFilteringMode::Linear);
+
+void EnhancementsWidget::MigrateRemovedStereoModes()
+{
+  // Anaglyph and Passive are no longer offered (see the stereo combo below), but their enumerators
+  // still parse out of an existing GFX.ini. ConfigChoiceMap has no entry for them, so it would
+  // setCurrentIndex(-1) and leave the combo blank -- the user could not tell which mode they were
+  // in, and VideoConfig::VerifyValidity() is meanwhile rendering them as Off. Rewrite the stored
+  // value once so the control always shows a real mode.
+  //
+  // The value to test is the one the combo will display, and that is not always this pane's layer.
+  // ConfigChoice reads through ConfigControl::ReadValue, which falls back to Config::GetBase when
+  // the game INI has no key; Config::Get(const Layer*, ...) has no base fallback and hands back the
+  // default instead. Reading the game layer alone would therefore see Off and return early on a
+  // per-game pane whose combo is about to display an inherited Anaglyph -- exactly the blank combo
+  // this function exists to prevent. Mirror ReadValue's resolution order instead.
+  const bool has_game_value =
+      m_game_layer != nullptr && m_game_layer->Exists(Config::GFX_STEREO_MODE.GetLocation());
+  const StereoMode mode = has_game_value ? m_game_layer->Get(Config::GFX_STEREO_MODE) :
+                          m_game_layer != nullptr ? Config::GetBase(Config::GFX_STEREO_MODE) :
+                                                    Config::Get(Config::GFX_STEREO_MODE);
+  if (mode != StereoMode::Anaglyph && mode != StereoMode::Passive)
+    return;
+
+  // Rewrite whichever layer the displayed value came from. A value inherited from base must not be
+  // written into the game layer: that would invent a per-game override the user never asked for,
+  // and the stale value is a base-layer one that every other pane reading it needs normalized too.
+  if (has_game_value)
+  {
+    m_game_layer->Set(Config::GFX_STEREO_MODE, StereoMode::Off);
+    Config::OnConfigChanged();
+  }
+  else
+  {
+    Config::SetBaseOrCurrent(Config::GFX_STEREO_MODE, StereoMode::Off);
+  }
+}
 
 void EnhancementsWidget::CreateWidgets()
 {
@@ -138,12 +184,11 @@ void EnhancementsWidget::CreateWidgets()
   m_texture_filtering_combo->Refresh();
   m_texture_filtering_combo->setEnabled(Get(m_game_layer, Config::GFX_HACK_FAST_TEXTURE_SAMPLING));
 
-  m_output_resampling_combo = new ConfigChoice(
-      {tr("Default"), tr("Bilinear"), tr("Bicubic: B-Spline"), tr("Bicubic: Mitchell-Netravali"),
-       tr("Bicubic: Catmull-Rom"), tr("Sharp Bilinear"), tr("Area Sampling")},
-      Config::GFX_ENHANCE_OUTPUT_RESAMPLING, m_game_layer);
 
-  m_configure_color_correction = new ToolTipPushButton(tr("Configure"));
+  m_post_process_renderer = new ConfigChoiceMap<PostProcessRenderer>(
+      {{tr("Builtin"), PostProcessRenderer::Builtin},
+       {tr("librashader"), PostProcessRenderer::Librashader}},
+      Config::GFX_ENHANCE_POST_PROCESS_RENDERER, m_game_layer);
 
   // The post-processing effect "(off)" has the config value "", so we need to use the constructor
   // that sets ConfigStringChoice's m_text_is_data to false. m_post_processing_effect is cleared in
@@ -151,6 +196,7 @@ void EnhancementsWidget::CreateWidgets()
   const std::vector<std::pair<QString, QString>> separate_data_and_text;
   m_post_processing_effect =
       new ConfigStringChoice(separate_data_and_text, Config::GFX_ENHANCE_POST_SHADER, m_game_layer);
+  m_configure_post_chain = new NonDefaultQPushButton(tr("Chain…"));
   m_download_shader_pack = new NonDefaultQPushButton(tr("Download…"));
 
   m_scaled_efb_copy =
@@ -183,17 +229,14 @@ void EnhancementsWidget::CreateWidgets()
   enhancements_layout->addWidget(m_texture_filtering_combo, row, 1, 1, -1);
   ++row;
 
-  enhancements_layout->addWidget(new QLabel(tr("Output Resampling:")), row, 0);
-  enhancements_layout->addWidget(m_output_resampling_combo, row, 1, 1, -1);
-  ++row;
-
-  enhancements_layout->addWidget(new QLabel(tr("Color Correction:")), row, 0);
-  enhancements_layout->addWidget(m_configure_color_correction, row, 1, 1, -1);
+  enhancements_layout->addWidget(new QLabel(tr("Post-Processing Renderer:")), row, 0);
+  enhancements_layout->addWidget(m_post_process_renderer, row, 1, 1, -1);
   ++row;
 
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
   enhancements_layout->addWidget(m_post_processing_effect, row, 1);
-  enhancements_layout->addWidget(m_download_shader_pack, row, 2);
+  enhancements_layout->addWidget(m_configure_post_chain, row, 2);
+  enhancements_layout->addWidget(m_download_shader_pack, row, 3);
   ++row;
 
   enhancements_layout->addWidget(m_scaled_efb_copy, row, 0);
@@ -217,9 +260,15 @@ void EnhancementsWidget::CreateWidgets()
   auto* stereoscopy_layout = new QGridLayout();
   stereoscopy_box->setLayout(stereoscopy_layout);
 
-  m_3d_mode = new ConfigChoice({tr("Off"), tr("Side-by-Side"), tr("Top-and-Bottom"), tr("Anaglyph"),
-                                tr("HDMI 3D"), tr("Passive")},
-                               Config::GFX_STEREO_MODE, m_game_layer);
+  // Anaglyph and Passive were implemented by the old post-processing shader, which no longer
+  // exists; selecting them renders a second layer for no visible effect. ConfigChoiceMap stores
+  // explicit values, so the remaining entries keep their StereoMode meanings. Stored Anaglyph /
+  // Passive values are rewritten to Off by MigrateRemovedStereoModes() before we get here.
+  m_3d_mode = new ConfigChoiceMap<StereoMode>({{tr("Off"), StereoMode::Off},
+                                               {tr("Side-by-Side"), StereoMode::SideBySide},
+                                               {tr("Top-and-Bottom"), StereoMode::TopAndBottom},
+                                               {tr("HDMI 3D"), StereoMode::QuadBuffer}},
+                                              Config::GFX_STEREO_MODE, m_game_layer);
   m_3d_depth = new ConfigFloatSlider(0, Config::GFX_STEREO_DEPTH_MAXIMUM, Config::GFX_STEREO_DEPTH,
                                      1.0f, m_game_layer);
   m_3d_convergence = new ConfigFloatSlider(0, Config::GFX_STEREO_CONVERGENCE_MAXIMUM,
@@ -280,10 +329,34 @@ void EnhancementsWidget::ConnectWidgets()
   connect(m_post_processing_effect, &QComboBox::currentIndexChanged, this,
           &EnhancementsWidget::ShaderChanged);
 
-  connect(m_configure_color_correction, &QPushButton::clicked, this,
-          &EnhancementsWidget::ConfigureColorCorrection);
-  connect(m_download_shader_pack, &QPushButton::clicked, this,
-          &EnhancementsWidget::DownloadShaderPack);
+  connect(m_configure_post_chain, &QPushButton::clicked, this,
+          &EnhancementsWidget::ConfigurePostProcessingChain);
+
+  // Convert download button to menu
+  auto* const menu = new QMenu(this);
+  for (const VideoCommon::ShaderPackSource& source : VideoCommon::GetShaderPackSources())
+  {
+    const std::string id = source.id;
+    QAction* const action = menu->addAction(QString::fromStdString(source.display_name));
+    if (id == "retrocrisis")
+    {
+      connect(action, &QAction::triggered, this, [this, id] {
+        QStringList profiles;
+        for (const std::string& profile : VideoCommon::GetRetroCrisisProfiles())
+          profiles << QString::fromStdString(profile);
+        bool ok = false;
+        const QString profile = QInputDialog::getItem(this, tr("Choose a display profile"),
+                                                      tr("Profile:"), profiles, 0, false, &ok);
+        if (ok)
+          DownloadShaderPack(id, profile.toStdString());
+      });
+    }
+    else
+    {
+      connect(action, &QAction::triggered, this, [this, id] { DownloadShaderPack(id, ""); });
+    }
+  }
+  m_download_shader_pack->setMenu(menu);
 
   connect(m_3d_depth, &ConfigFloatSlider::valueChanged, this,
           [this] { m_3d_depth_value->setText(QString::asprintf("%.0f", m_3d_depth->GetValue())); });
@@ -319,14 +392,20 @@ void EnhancementsWidget::LoadPostProcessingShaders()
   if (!found)
     m_post_processing_effect->setCurrentIndex(0);  // "(off)"
 
+  // A chain is not one of the listed presets; add it so the combo shows the current value.
+  if (selected_shader.find(VideoCommon::CHAIN_SEPARATOR) != std::string::npos)
+  {
+    m_post_processing_effect->addItem(
+        QString::fromStdString(VideoCommon::DescribeChainSpec(selected_shader)),
+        QString::fromStdString(selected_shader));
+  }
+
   m_post_processing_effect->Load();
   ShaderChanged();
 }
 
 void EnhancementsWidget::OnBackendChanged()
 {
-  m_output_resampling_combo->setEnabled(g_backend_info.bSupportsPostProcessing);
-  m_configure_color_correction->setEnabled(g_backend_info.bSupportsPostProcessing);
   m_hdr->setEnabled(g_backend_info.bSupportsHDROutput);
 
   // Stereoscopy
@@ -351,6 +430,11 @@ void EnhancementsWidget::OnBackendChanged()
     LoadPostProcessingShaders();
   }
 
+  // librashader is loaded through the Vulkan backend only.
+  const bool librashader_possible = g_backend_info.api_type == APIType::Vulkan;
+  m_post_process_renderer->setEnabled(g_backend_info.bSupportsPostProcessing &&
+                                      librashader_possible);
+
   UpdateAntialiasingOptions();
 }
 
@@ -369,6 +453,26 @@ void EnhancementsWidget::ShaderChanged()
     else
       Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, shader);
   }
+}
+
+void EnhancementsWidget::ConfigurePostProcessingChain()
+{
+  PostProcessingChainDialog dialog(
+      this, QString::fromStdString(Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER)));
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+
+  const std::string chain = dialog.ChainSpec().toStdString();
+  if (m_game_layer != nullptr)
+  {
+    m_game_layer->Set(Config::GFX_ENHANCE_POST_SHADER.GetLocation(), chain);
+    Config::OnConfigChanged();
+  }
+  else
+  {
+    Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, chain);
+  }
+  LoadPostProcessingShaders();
 }
 
 void EnhancementsWidget::UpdateAntialiasingOptions()
@@ -427,40 +531,11 @@ void EnhancementsWidget::AddDescriptions()
       "of the game's textures and might cause issues in a small number of games.<br><br>This "
       "setting is disabled when Manual Texture Sampling is enabled.<br><br>"
       "<dolphin_emphasis>If unsure, select 'Default'.</dolphin_emphasis>");
-  static const char TR_OUTPUT_RESAMPLING_DESCRIPTION[] =
-      QT_TR_NOOP("Affects how the game output is scaled to the window resolution."
-                 "<br>The performance mostly depends on the number of samples each method uses."
-                 "<br>Compared to SSAA, resampling is useful in case the output window"
-                 "<br>resolution isn't a multiplier of the native emulation resolution."
-
-                 "<br><br><b>Default</b> - [fastest]"
-                 "<br>Internal GPU bilinear sampler which is not gamma corrected."
-                 "<br>This setting might be ignored if gamma correction is forced on."
-
-                 "<br><br><b>Bilinear</b> - [4 samples]"
-                 "<br>Gamma corrected linear interpolation between pixels."
-
-                 "<br><br><b>Bicubic</b> - [16 samples]"
-                 "<br>Gamma corrected cubic interpolation between pixels."
-                 "<br>Good when rescaling between close resolutions, e.g. 1080p and 1440p."
-                 "<br>Comes in various flavors:"
-                 "<br><b>B-Spline</b>: Blurry, but avoids all lobing artifacts"
-                 "<br><b>Mitchell-Netravali</b>: Good middle ground between blurry and lobing"
-                 "<br><b>Catmull-Rom</b>: Sharper, but can cause lobing artifacts"
-
-                 "<br><br><b>Sharp Bilinear</b> - [1-4 samples]"
-                 "<br>Similar to \"Nearest Neighbor\", it maintains a sharp look,"
-                 "<br>but also does some blending to avoid shimmering."
-                 "<br>Works best with 2D games at low resolutions."
-
-                 "<br><br><b>Area Sampling</b> - [up to 324 samples]"
-                 "<br>Weighs pixels by the percentage of area they occupy. Gamma corrected."
-                 "<br>Best for downscaling by more than 2x."
-
-                 "<br><br><dolphin_emphasis>If unsure, select 'Default'.</dolphin_emphasis>");
-  static const char TR_COLOR_CORRECTION_DESCRIPTION[] =
-      QT_TR_NOOP("A group of features to make the colors more accurate, matching the color space "
-                 "Wii and GC games were meant for.");
+  static const char TR_POST_PROCESS_RENDERER_DESCRIPTION[] = QT_TR_NOOP(
+      "Selects which engine runs slang post-processing presets."
+      "<br><br><b>Builtin</b>: Dolphin's own multipass renderer, available on every backend."
+      "<br><b>librashader</b>: the upstream RetroArch shader runtime; Vulkan only."
+      "<br><br><dolphin_emphasis>If unsure, select Builtin.</dolphin_emphasis>");
   static const char TR_POSTPROCESSING_DESCRIPTION[] =
       QT_TR_NOOP("Applies a post-processing effect after rendering a frame.<br><br "
                  "/><dolphin_emphasis>If unsure, select (off).</dolphin_emphasis>");
@@ -490,9 +565,8 @@ void EnhancementsWidget::AddDescriptions()
       "Selects the stereoscopic 3D mode. Stereoscopy allows a better feeling "
       "of depth if the necessary hardware is present. Heavily decreases "
       "emulation speed and sometimes causes issues.<br><br>Side-by-Side and Top-and-Bottom are "
-      "used by most 3D TVs.<br>Anaglyph is used for Red-Cyan colored glasses.<br>HDMI 3D is "
-      "used when the monitor supports 3D display resolutions.<br>Passive is another type of 3D "
-      "used by some TVs.<br><br><dolphin_emphasis>If unsure, select Off.</dolphin_emphasis>");
+      "used by most 3D TVs.<br>HDMI 3D is "
+      "used when the monitor supports 3D display resolutions.<br><br><dolphin_emphasis>If unsure, select Off.</dolphin_emphasis>");
   static const char TR_3D_DEPTH_DESCRIPTION[] = QT_TR_NOOP(
       "Controls the separation distance between the virtual cameras.<br><br>A higher "
       "value creates a stronger feeling of depth while a lower value is more comfortable.");
@@ -543,11 +617,8 @@ void EnhancementsWidget::AddDescriptions()
   m_texture_filtering_combo->SetTitle(tr("Texture Filtering"));
   m_texture_filtering_combo->SetDescription(tr(TR_FORCE_TEXTURE_FILTERING_DESCRIPTION));
 
-  m_output_resampling_combo->SetTitle(tr("Output Resampling"));
-  m_output_resampling_combo->SetDescription(tr(TR_OUTPUT_RESAMPLING_DESCRIPTION));
-
-  m_configure_color_correction->SetTitle(tr("Color Correction"));
-  m_configure_color_correction->SetDescription(tr(TR_COLOR_CORRECTION_DESCRIPTION));
+  m_post_process_renderer->SetTitle(tr("Post-Processing Renderer"));
+  m_post_process_renderer->SetDescription(tr(TR_POST_PROCESS_RENDERER_DESCRIPTION));
 
   m_post_processing_effect->SetTitle(tr("Post-Processing Effect"));
   m_post_processing_effect->SetDescription(tr(TR_POSTPROCESSING_DESCRIPTION));
@@ -582,39 +653,102 @@ void EnhancementsWidget::AddDescriptions()
   m_3d_swap_eyes->SetDescription(tr(TR_3D_SWAP_EYES_DESCRIPTION));
 }
 
-void EnhancementsWidget::ConfigureColorCorrection()
+void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const std::string& profile)
 {
-  ColorCorrectionConfigWindow dialog(this);
-  dialog.exec();
-}
+  // Parented to `this` for window modality, and heap-allocated because of that parenting: ~QObject
+  // deletes its children, so a stack-allocated child would be `delete`d at a stack address if this
+  // widget were destroyed while the nested event loop below is spinning.
+  auto* const progress =
+      new QProgressDialog(tr("Downloading slang shader pack…"), tr("Cancel"), 0, 100, this);
+  progress->setWindowModality(Qt::WindowModal);
+  progress->setMinimumDuration(0);
+  progress->setValue(0);
 
-void EnhancementsWidget::DownloadShaderPack()
-{
-  QProgressDialog progress(tr("Downloading slang shader pack…"), tr("Cancel"), 0, 100, this);
-  progress.setWindowModality(Qt::WindowModal);
-  progress.setMinimumDuration(0);
-  progress.setValue(0);
+  // Both directions of worker traffic go through this shared, refcounted state -- percent out,
+  // cancellation in -- so the worker holds no pointer into this stack frame and none to a QObject.
+  // QWidget state may only be touched on the GUI thread anyway, and the dialog is a child of
+  // `this`, which can be destroyed while the worker is still running.
+  struct DownloadState
+  {
+    std::atomic<int> percent{0};
+    std::atomic<bool> canceled{false};
+  };
+  const auto state = std::make_shared<DownloadState>();
 
-  // The DownloadProgress callback runs on the worker thread; marshal percent onto the UI thread.
-  const auto on_progress = [&progress](s64 downloaded, s64 total) -> bool {
-    const int percent = total > 0 ? static_cast<int>((downloaded * 100) / total) : 0;
-    QMetaObject::invokeMethod(
-        &progress, [&progress, percent] { progress.setValue(percent); }, Qt::QueuedConnection);
-    return !progress.wasCanceled();
+  connect(progress, &QProgressDialog::canceled, progress, [state] { state->canceled = true; });
+
+  // Progress is polled on the GUI thread rather than pushed from the worker, because pushing
+  // needs a pointer to the dialog on the worker side. The re-entrancy guard is the QTBUG-10561
+  // one: a modal QProgressDialog::setValue() spins the event loop, which can dispatch the next
+  // timeout inside it.
+  //
+  // QtUtils/ParallelProgressDialog::SetValueSlot has that same guard under that same bug number and
+  // seven other DolphinQt sites use it, so this near-duplicate is a decision, not an oversight: that
+  // class holds its QProgressDialog *by value* while handing the caller's widget to it as a parent,
+  // so ~QWidget would `delete` a member address. Heap-allocating the dialog is precisely what makes
+  // this function survive `this` being destroyed mid-download, and adopting the wrapper would trade
+  // that away to save the five lines below.
+  //
+  // `progress` is captured raw here while the post-loop code goes through a QPointer, deliberately:
+  // the connection's context object is `progress` itself, so this lambda cannot be invoked after the
+  // dialog is gone, and the one hazard a null test could not answer anyway -- `this` being destroyed
+  // inside setValue()'s nested dispatch, which deletes `progress` as one of its children -- is not
+  // visible to a check made before the call. The post-loop code needs the QPointer because nothing
+  // scopes it to the dialog's lifetime.
+  auto* const poll = new QTimer(progress);
+  connect(poll, &QTimer::timeout, progress, [progress, state, setting = false]() mutable {
+    if (setting)
+      return;
+    setting = true;
+    progress->setValue(state->percent);
+    setting = false;
+  });
+  poll->start(100);
+
+  const auto on_progress = [state](s64 downloaded, s64 total) -> bool {
+    state->percent = total > 0 ? static_cast<int>((downloaded * 100) / total) : 0;
+    return !state->canceled;
   };
 
   const std::string dest_root = File::GetUserPath(D_SHADERS_IDX);
   QFutureWatcher<VideoCommon::ShaderPackDownloadResult> watcher;
   QEventLoop loop;
   connect(&watcher, &QFutureWatcherBase::finished, &loop, &QEventLoop::quit);
-  watcher.setFuture(QtConcurrent::run([dest_root, on_progress] {
-    return VideoCommon::DownloadAndInstallShaderPack(VideoCommon::SLANG_SHADER_PACK_URL, dest_root,
-                                                     on_progress);
+  // A nested event loop can outlive the object that started it. Stop dispatching events through a
+  // destroyed widget, and re-check below before touching `this` or its children again.
+  const QPointer<EnhancementsWidget> self(this);
+  connect(this, &QObject::destroyed, &loop, &QEventLoop::quit);
+  watcher.setFuture(QtConcurrent::run([pack_id, dest_root, on_progress, profile] {
+    return VideoCommon::DownloadShaderPackById(pack_id, dest_root, on_progress, profile);
   }));
   loop.exec();
-  progress.close();
+
+  // `watcher` and `loop` are locals, so the future has to be finished before this returns, and
+  // watcher.result() is the only thing that guarantees it. loop.exec() returning does not:
+  // QCoreApplication::exit() sets quitNow, which unwinds every loop in the thread's stack of them,
+  // nested ones included, and the destroyed() connection above exits this one deliberately.
+  // result() blocks until the future completes on all three paths -- so if nothing is left to show
+  // the answer to, ask the worker to stop rather than making teardown wait out a whole download.
+  if (self)
+  {
+    // stop() before close(): closing a dialog does not stop a timer that happens to be its child,
+    // and the deleteLater() below is posted at *this* loop level, so it is not dispatched inside the
+    // nested loop of the QMessageBox that follows. Without this the poll would keep firing
+    // setValue() on the hidden dialog for as long as that message box is up.
+    poll->stop();
+    progress->close();
+  }
+  else
+  {
+    state->canceled = true;
+  }
 
   const VideoCommon::ShaderPackDownloadResult result = watcher.result();
+  if (!self)
+    return;
+
+  progress->deleteLater();
+
   if (result.ok)
   {
     QMessageBox::information(

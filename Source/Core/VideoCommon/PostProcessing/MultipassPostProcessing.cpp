@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "Common/Assert.h"
 #include "Common/CommonPaths.h"
 #include "Common/FileSearch.h"
 #include "Common/FileUtil.h"
@@ -24,9 +25,11 @@
 #include "VideoCommon/AbstractShader.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/PostProcessing/LutTexture.h"
+#include "VideoCommon/PostProcessing/MipGen.h"
 #include "VideoCommon/PostProcessing/PassGraph.h"
 #include "VideoCommon/PostProcessing/PassSizing.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
+#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangSamplers.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
@@ -162,6 +165,14 @@ void MultipassPostProcessing::EnsureHistoryTextures(const AbstractTexture* origi
   if (matches)
     return;
 
+  // The clone below inherits src.type, so this is the one place that can tell whether the frame the
+  // chain was handed still matches what the passes declare. See SLANG_INPUT_TEXTURE_TYPE for why
+  // the type is checked here rather than written at the allocation sites. Rebuilds only on a size
+  // or format change, so this is not a per-frame check.
+  ASSERT_MSG(VIDEO, src.type == SLANG_INPUT_TEXTURE_TYPE,
+             "slang history source is {}, but the passes sample {}", src.type,
+             SLANG_INPUT_TEXTURE_TYPE);
+
   m_history_textures.clear();
   m_history_textures.resize(m_max_history);
   for (u32 k = 0; k < m_max_history; ++k)
@@ -199,25 +210,9 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
 
   // The config value may be a single preset name or a ';'-separated chain of presets whose pass
   // graphs are concatenated (each preset's first pass samples the previous preset's output as
-  // "Source"). A plain name has no ';', so this is backwards compatible.
-  std::vector<std::string> names;
-  size_t start = 0;
-  while (start <= preset_spec.size())
-  {
-    const auto sep = preset_spec.find(';', start);
-    const auto end = sep == std::string::npos ? preset_spec.size() : sep;
-    std::string name = preset_spec.substr(start, end - start);
-    // Trim surrounding whitespace.
-    const auto first = name.find_first_not_of(" \t");
-    const auto last = name.find_last_not_of(" \t");
-    if (first != std::string::npos)
-      names.push_back(name.substr(first, last - first + 1));
-    if (sep == std::string::npos)
-      break;
-    start = end + 1;
-  }
-
-  for (const std::string& name : names)
+  // "Source"). A plain name has no ';', so this is backwards compatible. SplitChainSpec is the
+  // single splitter shared with the front ends, so a name means the same thing in both.
+  for (const std::string& name : SplitChainSpec(preset_spec))
     AppendPreset(name);
 
   AnalyzeRenderStages();
@@ -339,7 +334,8 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
       return;
     }
 
-    TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names);
+    TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names,
+                                                   SlangNeedsClipYFlip(g_backend_info.api_type));
     if (!translated.ok)
     {
       ERROR_LOG_FMT(VIDEO, "Post-processing: cannot translate {}: {}; skipping preset {}",
@@ -409,10 +405,9 @@ void MultipassPostProcessing::RecompilePipeline()
   const std::vector<PassSize> physical_sizes = ComputePassChainSizes(
       configs, scaled_source_width, scaled_source_height, viewport_width, viewport_height);
 
-  // GPU mip generation is currently implemented only on the Vulkan backend; on other backends
-  // AbstractTexture::GenerateMipmaps() is a no-op, so keep those passes single-level (today's
-  // behavior) rather than allocating a mip chain we can't fill.
-  const bool mips_supported = g_backend_info.api_type == APIType::Vulkan;
+  // Passes sampled with mipmapping always get a real chain: backends that can generate one on the
+  // GPU do it in AbstractTexture::GenerateMipmaps(), the rest go through MipChainBuilder.
+  constexpr bool mips_supported = true;
 
   const size_t pass_count = m_passes.size();
   for (size_t i = 0; i < pass_count; ++i)
@@ -433,16 +428,12 @@ void MultipassPostProcessing::RecompilePipeline()
       const u32 out_h = std::max(physical_sizes[i].height, logical_sizes[i].height);
 
       // A later pass sampling this output with mipmap_input=true needs a full mip chain here.
-      u32 levels = 1;
-      if (pass.generate_mips && mips_supported)
-      {
-        for (u32 dim = std::max(out_w, out_h); dim > 1; dim >>= 1)
-          ++levels;
-      }
+      const u32 levels =
+          (pass.generate_mips && mips_supported) ? VideoCommon::MipLevelCount(out_w, out_h) : 1;
 
       const TextureConfig texture_config(out_w, out_h, levels, 1, 1, INTERMEDIATE_FORMAT,
                                          AbstractTextureFlag_RenderTarget,
-                                         AbstractTextureType::Texture_2DArray);
+                                         SLANG_INPUT_TEXTURE_TYPE);
       pass.output_texture =
           g_gfx->CreateTexture(texture_config, "slang pass " + std::to_string(i));
       pass.output_framebuffer =
@@ -507,8 +498,7 @@ void MultipassPostProcessing::BuildPassthroughPipeline()
   // Fullscreen-triangle vertex shader + a plain textured copy. Uses Dolphin's per-backend
   // shader macros (defined by the backend header CreateShaderFromSource prepends), so it works
   // for any backbuffer format -- unlike ScaleTexture, which only supports RGBA8 targets.
-  // Vulkan needs Y inverted (matching the old post-processor's vertex shader).
-  const std::string flip_y = g_backend_info.api_type == APIType::Vulkan ?
+  const std::string flip_y = SlangNeedsClipYFlip(g_backend_info.api_type) ?
                                  "  gl_Position.y = -gl_Position.y;\n" :
                                  "";
   const std::string vertex_source =
@@ -566,6 +556,16 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     return;
   }
 
+  // The incoming frame has to be the type the translated passes declare their samplers as -- see
+  // SLANG_INPUT_TEXTURE_TYPE for why that is checked here instead of written where the frame is
+  // allocated. The passthrough path above needs the same thing (its pixel shader spells out
+  // sampler2DArray) but returns before this point, so this covers the translated chain only.
+  // Per-frame, hence debug-only. It exists for the one case the release-live check in the rebuild
+  // branch below cannot see: a source type that changes while every size and format stays put.
+  DEBUG_ASSERT_MSG(VIDEO, src_tex->GetConfig().type == SLANG_INPUT_TEXTURE_TYPE,
+                   "slang chain source is {}, but the passes sample {}", src_tex->GetConfig().type,
+                   SLANG_INPUT_TEXTURE_TYPE);
+
   // Two source sizes drive the chain:
   //  - native (m_source_*): reported to the shader as SourceSize so CRT scanline/mask geometry
   //    is identical at any internal resolution.
@@ -585,6 +585,16 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
       source_height != m_source_height || scaled_source_width != m_scaled_source_width ||
       scaled_source_height != m_scaled_source_height)
   {
+    // Release-live counterpart of the debug assert above, placed where the sampler declarations are
+    // about to be fixed: RecompilePipeline() re-translates every pass, emitting the sampler type
+    // from SLANG_INPUT_TEXTURE_TYPE. Every preset that has a translated chain reaches this on its
+    // first frame -- the passthrough path returns before both asserts, so neither covers it -- and
+    // that is what makes this the check that actually covers the chain: the one in
+    // EnsureHistoryTextures is skipped entirely by presets that never ask for OriginalHistoryN.
+    ASSERT_MSG(VIDEO, src_tex->GetConfig().type == SLANG_INPUT_TEXTURE_TYPE,
+               "slang chain source is {}, but the passes sample {}", src_tex->GetConfig().type,
+               SLANG_INPUT_TEXTURE_TYPE);
+
     m_framebuffer_format = current_format;
     m_target_width = target_width;
     m_target_height = target_height;
@@ -848,9 +858,14 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     if (!is_final)
     {
       // A later pass samples this output with mipmapping: build its mip chain now, from the level-0
-      // content just rendered. (No-op on backends without GPU mip generation.)
+      // content just rendered.
       if (pass.generate_mips && pass.output_texture)
-        pass.output_texture->GenerateMipmaps();
+      {
+        if (g_backend_info.bSupportsGPUMipGeneration)
+          pass.output_texture->GenerateMipmaps();
+        else
+          m_mip_builder.Generate(pass.output_texture.get());
+      }
 
       prev_output = pass.output_texture.get();
       // Advance the logical "Source" size to this pass's logical output (native-derived), so the

@@ -105,10 +105,10 @@ add_executable(dolphin-emu
   Config/Graphics/GeneralWidget.h
   Config/Graphics/GraphicsPane.cpp
   Config/Graphics/GraphicsPane.h
+  Config/Graphics/PostProcessingChainDialog.cpp
+  Config/Graphics/PostProcessingChainDialog.h
   Config/Graphics/HacksWidget.cpp
   Config/Graphics/HacksWidget.h
-  Config/Graphics/ColorCorrectionConfigWindow.cpp
-  Config/Graphics/ColorCorrectionConfigWindow.h
   Config/GraphicsModListWidget.cpp
   Config/GraphicsModListWidget.h
   Config/GraphicsModWarningWidget.cpp
@@ -684,6 +684,19 @@ if(APPLE)
       endif()
       target_sources(dolphin-emu PRIVATE ${MOLTENVK_DYLIB})
       set_source_files_properties(${MOLTENVK_DYLIB} PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    endif()
+  endif()
+
+  # Copy librashader into the bundle, next to MoltenVK (see LibrashaderLibraryPath).
+  # Note: macOS dolphin-nogui cannot load librashader because it has no .app bundle for
+  # File::GetBundleDirectory() to resolve against. This is a known, accepted limitation.
+  if(ENABLE_VULKAN)
+    set(LIBRASHADER_DYLIB "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/macos-arm64/librashader.dylib")
+    if(EXISTS "${LIBRASHADER_DYLIB}")
+      target_sources(dolphin-emu PRIVATE "${LIBRASHADER_DYLIB}")
+      set_source_files_properties("${LIBRASHADER_DYLIB}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    else()
+      message(STATUS "librashader.dylib not found; the librashader post-processing renderer will be unavailable.")
     endif()
   endif()
 
