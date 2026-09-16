@@ -6,6 +6,7 @@
 // backend uses). This catches ABI mismatches (uniform blocks, vertex attributes, macro
 // collisions) that a text-only test cannot.
 
+#include <array>
 #include <sstream>
 #include <string>
 
@@ -351,7 +352,7 @@ TEST(SlangCompile, RealPresetCompilesAllPasses)
   for (const auto& lut : preset->luts)
     lut_names.push_back(lut.name);
 
-  int ok = 0;
+  std::array<int, std::size(BACKEND_HEADERS)> ok{};
   std::vector<std::string> known_aliases;
   for (size_t i = 0; i < preset->passes.size(); ++i)
   {
@@ -362,8 +363,9 @@ TEST(SlangCompile, RealPresetCompilesAllPasses)
     const auto parsed = ParseSlangShader(src, &error);
     ASSERT_TRUE(parsed.has_value()) << "pass " << i << " parse: " << error;
 
-    for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+    for (size_t b = 0; b < std::size(BACKEND_HEADERS); ++b)
     {
+      const BackendShaderHeader& backend = BACKEND_HEADERS[b];
       SCOPED_TRACE(backend.name);
       const auto translated =
           TranslateSlangPass(*parsed, known_aliases, lut_names, SlangNeedsClipYFlip(backend.api_type));
@@ -374,10 +376,14 @@ TEST(SlangCompile, RealPresetCompilesAllPasses)
       EXPECT_TRUE(compiled) << "pass " << i << " (" << pass.shader_path << ") " << which
                             << " stage failed to compile";
       if (compiled)
-        ++ok;
+        ++ok[b];
     }
     if (!pass.alias.empty())
       known_aliases.push_back(pass.alias);
   }
-  std::printf("RealPreset: %d/%zu passes compiled\n", ok, preset->passes.size());
+  for (size_t b = 0; b < std::size(BACKEND_HEADERS); ++b)
+  {
+    std::printf("RealPreset[%s]: %d/%zu passes compiled\n", BACKEND_HEADERS[b].name, ok[b],
+                preset->passes.size());
+  }
 }
