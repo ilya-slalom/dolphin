@@ -10,7 +10,9 @@
 #include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QInputDialog>
 #include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -27,11 +29,15 @@
 #include "DolphinQt/Config/ConfigControls/ConfigFloatSlider.h"
 #include "DolphinQt/Config/GameConfigWidget.h"
 #include "DolphinQt/Config/Graphics/GraphicsPane.h"
+#include "DolphinQt/Config/Graphics/PostProcessingChainDialog.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 
 #include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
+#include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
+#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/ShaderPackDownload.h"
+#include "VideoCommon/PostProcessing/ShaderPackSource.h"
 #include "VideoCommon/VideoBackendBase.h"
 #include "VideoCommon/VideoCommon.h"
 #include "VideoCommon/VideoConfig.h"
@@ -138,12 +144,18 @@ void EnhancementsWidget::CreateWidgets()
   m_texture_filtering_combo->setEnabled(Get(m_game_layer, Config::GFX_HACK_FAST_TEXTURE_SAMPLING));
 
 
+  m_post_process_renderer = new ConfigChoiceMap<PostProcessRenderer>(
+      {{tr("Builtin"), PostProcessRenderer::Builtin},
+       {tr("librashader"), PostProcessRenderer::Librashader}},
+      Config::GFX_ENHANCE_POST_PROCESS_RENDERER, m_game_layer);
+
   // The post-processing effect "(off)" has the config value "", so we need to use the constructor
   // that sets ConfigStringChoice's m_text_is_data to false. m_post_processing_effect is cleared in
   // LoadPostProcessingShaders so it's pointless to fill it with real data here.
   const std::vector<std::pair<QString, QString>> separate_data_and_text;
   m_post_processing_effect =
       new ConfigStringChoice(separate_data_and_text, Config::GFX_ENHANCE_POST_SHADER, m_game_layer);
+  m_configure_post_chain = new NonDefaultQPushButton(tr("Chain…"));
   m_download_shader_pack = new NonDefaultQPushButton(tr("Download…"));
 
   m_scaled_efb_copy =
@@ -176,9 +188,14 @@ void EnhancementsWidget::CreateWidgets()
   enhancements_layout->addWidget(m_texture_filtering_combo, row, 1, 1, -1);
   ++row;
 
+  enhancements_layout->addWidget(new QLabel(tr("Post-Processing Renderer:")), row, 0);
+  enhancements_layout->addWidget(m_post_process_renderer, row, 1, 1, -1);
+  ++row;
+
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
   enhancements_layout->addWidget(m_post_processing_effect, row, 1);
-  enhancements_layout->addWidget(m_download_shader_pack, row, 2);
+  enhancements_layout->addWidget(m_configure_post_chain, row, 2);
+  enhancements_layout->addWidget(m_download_shader_pack, row, 3);
   ++row;
 
   enhancements_layout->addWidget(m_scaled_efb_copy, row, 0);
@@ -270,8 +287,34 @@ void EnhancementsWidget::ConnectWidgets()
   connect(m_post_processing_effect, &QComboBox::currentIndexChanged, this,
           &EnhancementsWidget::ShaderChanged);
 
-  connect(m_download_shader_pack, &QPushButton::clicked, this,
-          &EnhancementsWidget::DownloadShaderPack);
+  connect(m_configure_post_chain, &QPushButton::clicked, this,
+          &EnhancementsWidget::ConfigurePostProcessingChain);
+
+  // Convert download button to menu
+  auto* const menu = new QMenu(this);
+  for (const VideoCommon::ShaderPackSource& source : VideoCommon::GetShaderPackSources())
+  {
+    const std::string id = source.id;
+    QAction* const action = menu->addAction(QString::fromStdString(source.display_name));
+    if (id == "retrocrisis")
+    {
+      connect(action, &QAction::triggered, this, [this, id] {
+        QStringList profiles;
+        for (const std::string& profile : VideoCommon::GetRetroCrisisProfiles())
+          profiles << QString::fromStdString(profile);
+        bool ok = false;
+        const QString profile = QInputDialog::getItem(this, tr("Choose a display profile"),
+                                                      tr("Profile:"), profiles, 0, false, &ok);
+        if (ok)
+          DownloadShaderPack(id, profile.toStdString());
+      });
+    }
+    else
+    {
+      connect(action, &QAction::triggered, this, [this, id] { DownloadShaderPack(id, ""); });
+    }
+  }
+  m_download_shader_pack->setMenu(menu);
 
   connect(m_3d_depth, &ConfigFloatSlider::valueChanged, this,
           [this] { m_3d_depth_value->setText(QString::asprintf("%.0f", m_3d_depth->GetValue())); });
@@ -307,6 +350,14 @@ void EnhancementsWidget::LoadPostProcessingShaders()
   if (!found)
     m_post_processing_effect->setCurrentIndex(0);  // "(off)"
 
+  // A chain is not one of the listed presets; add it so the combo shows the current value.
+  if (selected_shader.find(VideoCommon::CHAIN_SEPARATOR) != std::string::npos)
+  {
+    m_post_processing_effect->addItem(
+        QString::fromStdString(VideoCommon::DescribeChainSpec(selected_shader)),
+        QString::fromStdString(selected_shader));
+  }
+
   m_post_processing_effect->Load();
   ShaderChanged();
 }
@@ -337,6 +388,11 @@ void EnhancementsWidget::OnBackendChanged()
     LoadPostProcessingShaders();
   }
 
+  // librashader is loaded through the Vulkan backend only.
+  const bool librashader_possible = g_backend_info.api_type == APIType::Vulkan;
+  m_post_process_renderer->setEnabled(g_backend_info.bSupportsPostProcessing &&
+                                      librashader_possible);
+
   UpdateAntialiasingOptions();
 }
 
@@ -355,6 +411,26 @@ void EnhancementsWidget::ShaderChanged()
     else
       Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, shader);
   }
+}
+
+void EnhancementsWidget::ConfigurePostProcessingChain()
+{
+  PostProcessingChainDialog dialog(
+      this, QString::fromStdString(Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER)));
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+
+  const std::string chain = dialog.ChainSpec().toStdString();
+  if (m_game_layer != nullptr)
+  {
+    m_game_layer->Set(Config::GFX_ENHANCE_POST_SHADER.GetLocation(), chain);
+    Config::OnConfigChanged();
+  }
+  else
+  {
+    Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, chain);
+  }
+  LoadPostProcessingShaders();
 }
 
 void EnhancementsWidget::UpdateAntialiasingOptions()
@@ -413,6 +489,11 @@ void EnhancementsWidget::AddDescriptions()
       "of the game's textures and might cause issues in a small number of games.<br><br>This "
       "setting is disabled when Manual Texture Sampling is enabled.<br><br>"
       "<dolphin_emphasis>If unsure, select 'Default'.</dolphin_emphasis>");
+  static const char TR_POST_PROCESS_RENDERER_DESCRIPTION[] = QT_TR_NOOP(
+      "Selects which engine runs slang post-processing presets."
+      "<br><br><b>Builtin</b>: Dolphin's own multipass renderer, available on every backend."
+      "<br><b>librashader</b>: the upstream RetroArch shader runtime; Vulkan only."
+      "<br><br><dolphin_emphasis>If unsure, select Builtin.</dolphin_emphasis>");
   static const char TR_POSTPROCESSING_DESCRIPTION[] =
       QT_TR_NOOP("Applies a post-processing effect after rendering a frame.<br><br "
                  "/><dolphin_emphasis>If unsure, select (off).</dolphin_emphasis>");
@@ -494,6 +575,9 @@ void EnhancementsWidget::AddDescriptions()
   m_texture_filtering_combo->SetTitle(tr("Texture Filtering"));
   m_texture_filtering_combo->SetDescription(tr(TR_FORCE_TEXTURE_FILTERING_DESCRIPTION));
 
+  m_post_process_renderer->SetTitle(tr("Post-Processing Renderer"));
+  m_post_process_renderer->SetDescription(tr(TR_POST_PROCESS_RENDERER_DESCRIPTION));
+
   m_post_processing_effect->SetTitle(tr("Post-Processing Effect"));
   m_post_processing_effect->SetDescription(tr(TR_POSTPROCESSING_DESCRIPTION));
 
@@ -527,7 +611,7 @@ void EnhancementsWidget::AddDescriptions()
   m_3d_swap_eyes->SetDescription(tr(TR_3D_SWAP_EYES_DESCRIPTION));
 }
 
-void EnhancementsWidget::DownloadShaderPack()
+void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const std::string& profile)
 {
   QProgressDialog progress(tr("Downloading slang shader pack…"), tr("Cancel"), 0, 100, this);
   progress.setWindowModality(Qt::WindowModal);
@@ -546,9 +630,8 @@ void EnhancementsWidget::DownloadShaderPack()
   QFutureWatcher<VideoCommon::ShaderPackDownloadResult> watcher;
   QEventLoop loop;
   connect(&watcher, &QFutureWatcherBase::finished, &loop, &QEventLoop::quit);
-  watcher.setFuture(QtConcurrent::run([dest_root, on_progress] {
-    return VideoCommon::DownloadAndInstallShaderPack(VideoCommon::SLANG_SHADER_PACK_URL, dest_root,
-                                                     on_progress);
+  watcher.setFuture(QtConcurrent::run([pack_id, dest_root, on_progress, profile] {
+    return VideoCommon::DownloadShaderPackById(pack_id, dest_root, on_progress, profile);
   }));
   loop.exec();
   progress.close();
