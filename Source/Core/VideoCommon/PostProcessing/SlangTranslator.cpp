@@ -91,46 +91,61 @@ int ExtractSamplerBinding(std::string_view line)
 }
 
 static_assert(SLANG_INPUT_TEXTURE_TYPE == AbstractTextureType::Texture_2DArray,
-              "the layer-0 shim overloads below are written for the array sampler type");
+              "the layer-0 shim helpers below are written for the array sampler type");
 
 // Slang shaders sample with 2-component coordinates, but Dolphin binds 2D-array textures, so the
-// declarations are sampler2DArray (see SLANG_INPUT_TEXTURE_TYPE). Rewriting the call sites is not
-// an option: the real libretro pack has ~5000 of them, most behind macros, and crt-royale hands
-// samplers to user functions (`vec4 tex2D_linearize(sampler2D tex, vec2 coords)`) whose bodies name
-// no sampler at all. So the built-ins are shimmed instead, by three different mechanisms, because
-// GLSL constrains them differently:
+// declarations are sampler2DArray (see SLANG_INPUT_TEXTURE_TYPE). Rewriting call-site argument
+// lists is not an option: the real libretro pack has over 8000 of them, most behind macros, and
+// crt-royale hands samplers to user functions (`vec4 tex2D_linearize(sampler2D tex, vec2 coords)`)
+// whose bodies name no sampler at all. So the built-ins are shimmed instead.
 //
-// 1. Overloads, for built-ins whose arguments are ordinary values. The built-in array signatures
-//    take vec3/ivec3, so a vec2/ivec2 overload does not collide and the inner call still resolves
-//    to the built-in.
-// 2. Self-named function-like macros, for the *Offset built-ins. Their `offset` must be a
-//    compile-time constant, and a function parameter never is -- glslang rejects an overload
+// Every shim is a *renamed helper*: the built-in's name becomes dolphin_<builtin> wherever it
+// is used as a function name (see IsFunctionNameUse), and the block below defines that helper to
+// supply the layer-0 third coordinate and forward to the real built-in. Renaming rather than
+// overloading the built-in is what makes the GLES path work at all: ESSL 3.00 and up forbid
+// overloading a built-in outright -- glslang's own comment is "ES 300 does not allow redefining or
+// overloading of built-in functions" (ParseHelper.cpp:1173-1174, enforced by the
+// requireProfile(loc, ~EEsProfile, ...) just after it) -- while overloading a *user* function is
+// legal on every target, and dolphin_texture is a user function. That path is reachable:
+// OGLConfig.cpp selects GlslEs300/310/320, and arrays.xml:204 offers OGL as an Android backend.
+//
+// The helpers come in two shapes, because GLSL constrains their arguments differently:
+//
+// 1. Functions, for built-ins whose arguments are ordinary values. Two helpers may share one name
+//    (dolphin_texture has a bias form, dolphin_textureGather a 2- and a 3-argument form); they
+//    overload each other rather than a built-in, which is why ES accepts them.
+// 2. Function-like macros, for the *Offset built-ins. Their `offset` must be a compile-time
+//    constant expression and a function parameter never is -- glslang rejects the function form
 //    outright ("'texel offset' : argument must be compile-time constant"). A macro forwards the
-//    token verbatim, so a literal stays literal; the recursive use is safe because the
-//    preprocessor does not re-expand a macro inside its own expansion. This is also how the pack
-//    itself writes them (`#define PACK(x, y) textureOffset(Source, vTexCoord, ivec2(x, y))`).
-// 3. A renamed helper plus a name-token swap, for textureSize -- see TEXTURE_SIZE_HELPER.
+//    token verbatim, so a literal stays literal. Renaming also retires the old self-named macros,
+//    which worked only because the preprocessor does not re-expand a macro inside its own
+//    expansion.
 //
-// textureGather's `comp` is likewise required to be constant, but the pack calls textureGather with
-// both 2 and 3 arguments and a macro cannot be overloaded on arity, so the 3-argument form is an
-// overload that dispatches to four constant `comp` values.
+// textureGather's `comp` must likewise be constant, but the pack calls it with both 2 and 3
+// arguments and a macro cannot be overloaded on arity, so the 3-argument helper is a function that
+// dispatches to four constant `comp` values.
 //
 // A sampling built-in not covered here fails to compile -- loudly, unlike the silent black frame a
 // dimension mismatch produces. Known gaps, none of which the libretro pack uses: the bias form of
 // textureOffset, textureGatherOffset, and textureProj (which has no array form in GLSL at all).
-//
-// textureSize cannot be shimmed by overloading at all: the array form differs from the 2D form only
-// in return type (ivec3 vs ivec2), and GLSL forbids overloading on return type. TEXTURE_SIZE_HELPER
-// supplies the ivec2 form under a new name and the function-name token is swapped -- a name swap,
-// not an argument rewrite, so macro-hidden uses are covered too.
-constexpr std::string_view TEXTURE_SIZE_HELPER = "dolphin_textureSize";
+// Renaming adds one gap overloading did not have: a call on a sampler that really is not an array
+// (usampler2D, sampler3D) no longer falls through to the built-in. No preset reaches it, because
+// the translator emits the sampler declarations itself and always as SLANG_INPUT_TEXTURE_TYPE --
+// test/decode-format.slang's `usampler2D Source` is already sampler2DArray by this point -- and if
+// one ever does, that too is a loud compile error.
+constexpr std::string_view SHIM_PREFIX = "dolphin_";
+
+std::string ShimHelperName(std::string_view builtin)
+{
+  return std::string(SHIM_PREFIX) + std::string(builtin);
+}
 
 struct SamplerShim
 {
-  // Whole-word trigger, searched in the *transformed* stage source. Nothing is emitted unless the
-  // stage actually names this identifier, so no shim's body may call another shim.
+  // Call sites of this built-in are renamed to SHIM_PREFIX + builtin. Entries may share a built-in;
+  // the rename runs once per built-in, and each entry's helper is emitted on its own.
   std::string_view builtin;
-  std::string_view glsl;  // prepended verbatim when the trigger is present
+  std::string_view glsl;  // prepended verbatim when the stage names the helper
   bool fragment_only = false;
 };
 
@@ -149,33 +164,37 @@ struct SamplerShim
 // textureSize) are core since GLSL 130 / ES 300, and an unexpanded macro costs nothing -- they are
 // gated anyway, so the next built-in added to this table cannot re-set the same trap.
 constexpr SamplerShim SAMPLER_SHIMS[] = {
-    {"texture", "vec4 texture(sampler2DArray s, vec2 c) { return texture(s, vec3(c, 0.0)); }\n"},
-    // The optional `bias` argument of the implicit-LOD built-ins is accepted only in fragment
-    // shaders, so this overload must not be declared in the vertex stage.
     {"texture",
-     "vec4 texture(sampler2DArray s, vec2 c, float bias)\n"
+     "vec4 dolphin_texture(sampler2DArray s, vec2 c) { return texture(s, vec3(c, 0.0)); }\n"},
+    // The optional `bias` argument of the implicit-LOD built-ins is accepted only in fragment
+    // shaders, so this helper must not be declared in the vertex stage.
+    {"texture",
+     "vec4 dolphin_texture(sampler2DArray s, vec2 c, float bias)\n"
      "{\n"
      "  return texture(s, vec3(c, 0.0), bias);\n"
      "}\n",
      /*fragment_only=*/true},
     {"textureLod",
-     "vec4 textureLod(sampler2DArray s, vec2 c, float l)\n"
+     "vec4 dolphin_textureLod(sampler2DArray s, vec2 c, float l)\n"
      "{\n"
      "  return textureLod(s, vec3(c, 0.0), l);\n"
      "}\n"},
     {"textureGrad",
-     "vec4 textureGrad(sampler2DArray s, vec2 c, vec2 dx, vec2 dy)\n"
+     "vec4 dolphin_textureGrad(sampler2DArray s, vec2 c, vec2 dx, vec2 dy)\n"
      "{\n"
      "  return textureGrad(s, vec3(c, 0.0), dx, dy);\n"
      "}\n"},
     {"texelFetch",
-     "vec4 texelFetch(sampler2DArray s, ivec2 c, int l)\n"
+     "vec4 dolphin_texelFetch(sampler2DArray s, ivec2 c, int l)\n"
      "{\n"
      "  return texelFetch(s, ivec3(c, 0), l);\n"
      "}\n"},
     {"textureGather",
-     "vec4 textureGather(sampler2DArray s, vec2 c) { return textureGather(s, vec3(c, 0.0)); }\n"
-     "vec4 textureGather(sampler2DArray s, vec2 c, int comp)\n"
+     "vec4 dolphin_textureGather(sampler2DArray s, vec2 c)\n"
+     "{\n"
+     "  return textureGather(s, vec3(c, 0.0));\n"
+     "}\n"
+     "vec4 dolphin_textureGather(sampler2DArray s, vec2 c, int comp)\n"
      "{\n"
      "  vec3 p = vec3(c, 0.0);\n"
      "  if (comp == 1) return textureGather(s, p, 1);\n"
@@ -183,15 +202,49 @@ constexpr SamplerShim SAMPLER_SHIMS[] = {
      "  if (comp == 3) return textureGather(s, p, 3);\n"
      "  return textureGather(s, p, 0);\n"
      "}\n"},
-    // Triggered by the swapped-in helper name, because the name swap has already run by then.
-    {TEXTURE_SIZE_HELPER,
+    // textureSize is the built-in that could never have been an overload -- the array form differs
+    // from the 2D form only in return type (ivec3 vs ivec2), and GLSL forbids overloading on return
+    // type. It needed the rename first; now every entry is written the same way.
+    {"textureSize",
      "ivec2 dolphin_textureSize(sampler2DArray s, int l) { return textureSize(s, l).xy; }\n"},
-    {"textureOffset", "#define textureOffset(s, c, o) textureOffset(s, vec3((c), 0.0), o)\n"},
+    {"textureOffset",
+     "#define dolphin_textureOffset(s, c, o) textureOffset(s, vec3((c), 0.0), o)\n"},
     {"textureLodOffset",
-     "#define textureLodOffset(s, c, l, o) textureLodOffset(s, vec3((c), 0.0), l, o)\n"},
+     "#define dolphin_textureLodOffset(s, c, l, o) textureLodOffset(s, vec3((c), 0.0), l, o)\n"},
     {"texelFetchOffset",
-     "#define texelFetchOffset(s, c, l, o) texelFetchOffset(s, ivec3((c), 0), l, o)\n"},
+     "#define dolphin_texelFetchOffset(s, c, l, o) texelFetchOffset(s, ivec3((c), 0), l, o)\n"},
 };
+
+// The one thing about the table above that the compiler cannot check: an entry whose glsl does
+// not define the helper its built-in is renamed to would drop every one of that built-in's call
+// sites into a function that does not exist.
+constexpr bool EveryShimDefinesItsHelper()
+{
+  for (const SamplerShim& shim : SAMPLER_SHIMS)
+  {
+    bool defined = false;
+    for (size_t pos = shim.glsl.find(shim.builtin); pos != std::string_view::npos;
+         pos = shim.glsl.find(shim.builtin, pos + 1))
+    {
+      if (pos >= SHIM_PREFIX.size() &&
+          shim.glsl.substr(pos - SHIM_PREFIX.size(), SHIM_PREFIX.size()) == SHIM_PREFIX)
+      {
+        defined = true;
+      }
+    }
+    if (!defined)
+      return false;
+  }
+  return true;
+}
+static_assert(EveryShimDefinesItsHelper(),
+              "every shim must define the dolphin_-prefixed helper that its built-in's call sites "
+              "are renamed to");
+
+bool StartsWith(std::string_view s, std::string_view prefix)
+{
+  return s.substr(0, prefix.size()) == prefix;
+}
 
 bool IsWordChar(char c)
 {
@@ -214,8 +267,45 @@ bool ContainsWord(std::string_view text, std::string_view word)
   return false;
 }
 
-// Replaces every whole-word occurrence of `from` with `to` in `text`.
-std::string ReplaceWord(const std::string& text, const std::string& from, const std::string& to)
+// True when the whole-word occurrence spanning [begin, after) is used as the name of a function:
+// either it is applied to an argument list right there, or it is the replacement list of an
+// object-like macro, which is only ever called (`#define COMPAT_TEXTURE texture`, from
+// crt/shaders/hyllian/crt-hyllian-fast.slang -- the only such alias in the pack, and its call sites
+// all read COMPAT_TEXTURE(...)).
+//
+// Occurrences that are neither are deliberately left alone, because they name an object rather than
+// a function: crt-royale's bloom-functions.h declares
+// `tex2DblurNfast(const sampler2D texture, ...)` and passes that parameter on by name ten times, so
+// a blanket rename would hide the helper behind a parameter of the same name inside those
+// functions, and collide with it at the declaration.
+bool IsFunctionNameUse(std::string_view text, size_t begin, size_t after)
+{
+  size_t pos = after;
+  while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t'))
+    ++pos;
+  if (pos < text.size() && text[pos] == '(')
+    return true;
+
+  // The rest of the line has to be empty for this to be a macro's replacement list; a `\`
+  // continuation or a trailing `//` comment still counts as empty.
+  while (pos < text.size() && text[pos] != '\n')
+  {
+    if (text[pos] == '\\' || (text[pos] == '/' && pos + 1 < text.size() && text[pos + 1] == '/'))
+      break;
+    if (text[pos] != ' ' && text[pos] != '\t' && text[pos] != '\r')
+      return false;
+    ++pos;
+  }
+  const size_t line_start = text.rfind('\n', begin);
+  const std::string_view line =
+      text.substr(line_start == std::string_view::npos ? 0 : line_start + 1);
+  return StartsWith(Trim(line), "#define");
+}
+
+// Replaces every whole-word occurrence of `from` with `to` in `text`. When `function_names_only`,
+// only the occurrences IsFunctionNameUse accepts are replaced.
+std::string ReplaceWord(const std::string& text, const std::string& from, const std::string& to,
+                        bool function_names_only = false)
 {
   std::string out;
   out.reserve(text.size());
@@ -233,7 +323,7 @@ std::string ReplaceWord(const std::string& text, const std::string& from, const 
     const size_t after = found + from.size();
     const bool right_ok = after >= text.size() || !is_word_char(text[after]);
     out.append(text, pos, found - pos);
-    if (left_ok && right_ok)
+    if (left_ok && right_ok && (!function_names_only || IsFunctionNameUse(text, found, after)))
     {
       out += to;
     }
@@ -244,11 +334,6 @@ std::string ReplaceWord(const std::string& text, const std::string& from, const 
     pos = after;
   }
   return out;
-}
-
-bool StartsWith(std::string_view s, std::string_view prefix)
-{
-  return s.substr(0, prefix.size()) == prefix;
 }
 
 // Strips a trailing `// ...` line comment (RetroArch shaders annotate varyings with comments
@@ -576,24 +661,37 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
       }
     }
 
-    // Body rewrites, applied before the shims are prepended so the shims' own `textureSize` call
-    // is not renamed into a recursive call to itself.
+    // Body rewrites, applied before the shims are prepended so that the shims' own calls to the
+    // real built-ins are not renamed into recursive calls to themselves.
     out = ReplaceWord(out, "FragColor", "ocol0");
     // Sampler function parameters -- the declarations above are already emitted as the array type.
     // Whole-word matching leaves `sampler2DArray`, `isampler2D` and `usampler2D` alone.
     const std::string sampler_type(SlangSamplerGlslType(SLANG_INPUT_TEXTURE_TYPE));
     out = ReplaceWord(out, "sampler2D", sampler_type);
-    out = ReplaceWord(out, "textureSize", std::string(TEXTURE_SIZE_HELPER));
+
+    // Rename each shimmed built-in's call sites onto its helper. Order between built-ins does not
+    // matter and cannot be made to matter: the match is whole-word and the prefix ends in `_`, a
+    // word character, so `dolphin_texture` can never be re-matched as `texture`, and
+    // `textureLod` was never a match for `texture` to begin with.
+    std::string_view renamed;
+    for (const SamplerShim& shim : SAMPLER_SHIMS)
+    {
+      if (shim.builtin == renamed)
+        continue;  // two helpers of one built-in; the rename is per built-in
+      renamed = shim.builtin;
+      out = ReplaceWord(out, std::string(shim.builtin), ShimHelperName(shim.builtin),
+                        /*function_names_only=*/true);
+    }
 
     // Emit only the shims this stage actually reaches for -- see the note on SAMPLER_SHIMS. The
-    // triggers are matched against the transformed source, which is why the textureSize entry is
-    // keyed on the already-swapped helper name.
+    // trigger is the helper name in the renamed source, so a stage gets a helper exactly when the
+    // rename above gave it a call to make.
     std::string shims;
     for (const SamplerShim& shim : SAMPLER_SHIMS)
     {
       if (is_vertex && shim.fragment_only)
         continue;
-      if (ContainsWord(out, shim.builtin))
+      if (ContainsWord(out, ShimHelperName(shim.builtin)))
         shims += shim.glsl;
     }
     if (!shims.empty())

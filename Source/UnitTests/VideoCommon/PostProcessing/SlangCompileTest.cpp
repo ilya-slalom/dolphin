@@ -549,7 +549,9 @@ const LowVersionTarget DESKTOP_TARGETS[] = {
     {"410", "#version 410 core\n", 410, ECoreProfile},
 };
 
-// The same three ES versions GetGLSLVersionString() and OGLConfig.cpp can select.
+// The same three ES versions GetGLSLVersionString() and OGLConfig.cpp can select. ESSL 3.00 and up
+// forbid overloading a built-in outright, which is why the shims are renamed helpers rather than
+// overloads; these rows are what proves the rename actually buys the ES path.
 const LowVersionTarget GLES_TARGETS[] = {
     {"300 es",
      "#version 300 es\nprecision highp float;\nprecision highp int;\n"
@@ -631,21 +633,19 @@ TEST(SlangCompile, GatheringShadersStillGetTheGatherShim)
       << translated.fragment_glsl;
 }
 
-// GLES 3.x cannot use the overload half of the shim mechanism at all, and -- unlike R1 -- this is
-// not a version floor that gating fixes. ESSL 3.00 forbids overloading a built-in outright:
+// The GLES path, which the shims used to break outright. ESSL 3.00 forbids overloading a built-in:
 // glslang enforces it in TParseContext::handleFunctionDeclarator, whose own comment reads "ES 300
-// does not allow redefining or overloading of built-in functions" (ParseHelper.cpp:1174), and the
-// symbol insert then fails with "function name is redeclaration of existing name". It bites on the
-// plain `texture` shim, which essentially every pack shader triggers, so on the GLES path every
-// translated pass fails to compile no matter how tightly the shims are gated. Measured identically
-// at 300 es, 310 es and 320 es.
+// does not allow redefining or overloading of built-in functions" (ParseHelper.cpp:1173-1174), and
+// the symbol insert then fails with "'texture' : function name is redeclaration of existing name".
+// That bit the plain `texture` shim, which essentially every pack shader triggers, so before the
+// shims became renamed helpers every translated pass failed to compile on 300/310/320 es no matter
+// how tightly they were gated. A helper named dolphin_texture is a user function, and user
+// functions may be overloaded on every target, so all three versions now accept the block.
 //
-// This test pins the failure to that one cause; it is not an endorsement. Before c12639873f a
-// translated pass compiled on GLES and sampled the wrong texture silently; now it fails loudly. The
-// fix is to move the overload shims onto the renamed-helper mechanism TEXTURE_SIZE_HELPER already
-// uses, which is legal on ES because the name is new. When that lands, fold these rows into
-// ShimsDoNotRaiseTheGlslVersionFloor and assert success instead.
-TEST(SlangCompile, ShimOverloadsAreRejectedByGlesThreePointX)
+// Reachable in the field: OGLConfig.cpp assigns GlslEs300/GlslEs310/GlslEs320,
+// CreatePostProcessor() (AbstractGfx.cpp) applies no gate, and arrays.xml:204 lists OGL as a
+// selectable Android backend.
+TEST(SlangCompile, ShimsCompileOnGlesThreePointX)
 {
   const auto translated = TranslateForBackend(PLAIN_TEXTURE_SHADER, BackendNamed("OpenGL"));
   ASSERT_TRUE(translated.ok) << translated.error;
@@ -654,14 +654,79 @@ TEST(SlangCompile, ShimOverloadsAreRejectedByGlesThreePointX)
   {
     SCOPED_TRACE(target.name);
     std::string log;
-    EXPECT_FALSE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
-                                     translated.fragment_glsl,
-                                 EShLangFragment, target.version, target.profile, &log))
-        << "GLES now accepts the shim overloads -- see the comment above and flip this test";
-    EXPECT_NE(log.find("'texture' : function name is redeclaration of existing name"),
-              std::string::npos)
-        << "GLES fails for a different reason than the built-in overload prohibition:\n"
-        << log;
+    EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                    translated.vertex_glsl,
+                                EShLangVertex, target.version, target.profile, &log))
+        << "vertex: " << log << "\n"
+        << translated.vertex_glsl;
+    EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                    translated.fragment_glsl,
+                                EShLangFragment, target.version, target.profile, &log))
+        << "fragment: " << log << "\n"
+        << translated.fragment_glsl;
+  }
+}
+
+namespace
+{
+// Both shapes the rename has to tell apart, in one pass. `COMPAT_TEXTURE` is the alias
+// crt/shaders/hyllian/crt-hyllian-fast.slang defines (its call sites never spell `texture` at all),
+// and the parameter named `texture` is crt-royale's bloom-functions.h, which declares
+// `tex2DblurNfast(const sampler2D texture, ...)` and passes it on by name ten times.
+constexpr const char* ALIASED_AND_SHADOWED_SHADER = R"(#version 450
+layout(push_constant) uniform Push { vec4 SourceSize; } params;
+layout(std140, set = 0, binding = 0) uniform UBO { mat4 MVP; } global;
+#pragma stage vertex
+layout(location = 0) in vec4 Position;
+void main() { gl_Position = global.MVP * Position; }
+#pragma stage fragment
+#define COMPAT_TEXTURE texture
+layout(location = 0) out vec4 FragColor;
+layout(set = 0, binding = 2) uniform sampler2D Source;
+vec4 blur(sampler2D texture, vec2 co)
+{
+  return COMPAT_TEXTURE(texture, co) + float(textureSize(texture, 0).x) * 0.0;
+}
+void main() { FragColor = blur(Source, vec2(0.5)); }
+)";
+}  // namespace
+
+// The rename keys on the built-in being *used as a function*, and both halves of that rule are load
+// bearing on real presets: rename too little and the alias expands to the built-in with a
+// 2-component coordinate; rename too much and the sampler parameter named `texture` turns into a
+// local that shadows the helper it is passed to.
+TEST(SlangCompile, RenamesFunctionUsesOfBuiltinsAndLeavesObjectsAlone)
+{
+  const auto translated = TranslateForBackend(ALIASED_AND_SHADOWED_SHADER, BackendNamed("OpenGL"));
+  ASSERT_TRUE(translated.ok) << translated.error;
+  EXPECT_NE(translated.fragment_glsl.find("#define COMPAT_TEXTURE dolphin_texture"),
+            std::string::npos)
+      << "an object-like macro whose whole body is the built-in is a call by another name\n"
+      << translated.fragment_glsl;
+  EXPECT_NE(translated.fragment_glsl.find("vec4 blur(sampler2DArray texture, vec2 co)"),
+            std::string::npos)
+      << "a parameter named after the built-in is an object, not a call\n"
+      << translated.fragment_glsl;
+
+  for (const LowVersionTarget& target : GLES_TARGETS)
+  {
+    SCOPED_TRACE(target.name);
+    std::string log;
+    EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                    translated.fragment_glsl,
+                                EShLangFragment, target.version, target.profile, &log))
+        << log << "\n"
+        << translated.fragment_glsl;
+  }
+  for (const LowVersionTarget& target : DESKTOP_TARGETS)
+  {
+    SCOPED_TRACE(target.name);
+    std::string log;
+    EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                    translated.fragment_glsl,
+                                EShLangFragment, target.version, target.profile, &log))
+        << log << "\n"
+        << translated.fragment_glsl;
   }
 }
 
