@@ -14,9 +14,16 @@ add_dolphin_test(PresetNameTest PostProcessing/PresetNameTest.cpp)
 add_dolphin_test(SlangCompileTest PostProcessing/SlangCompileTest.cpp)
 # SlangCompileTest cross-compiles its SPIR-V to HLSL/MSL, so it needs what the D3D and Metal
 # backends need. glslang alone cannot see a sampler-dimension mismatch: `sampler2D` is valid GLSL.
+# Only link it where it exists: the top-level CMakeLists adds Externals/spirv_cross under
+# `if(WIN32 OR APPLE)`, and naming a target that was never defined makes CMake fall back to a raw
+# `-lspirv_cross`, which fails at link time on Android and Linux. The test guards the matching code
+# on DOLPHIN_TEST_HAS_SPIRV_CROSS; keep the two conditions in step.
+if(WIN32 OR APPLE)
+  target_link_libraries(SlangCompileTest PRIVATE spirv_cross)
+endif()
 # glslang-default-resource-limits is for the low-GLSL-version rows, which drive glslang's front end
 # directly instead of going through SPIRV::Compile* (that path cannot target below 310 es).
-target_link_libraries(SlangCompileTest PRIVATE spirv_cross glslang-default-resource-limits)
+target_link_libraries(SlangCompileTest PRIVATE glslang-default-resource-limits)
 add_dolphin_test(RetroCrisisInstallTest PostProcessing/RetroCrisisInstallTest.cpp)
 add_dolphin_test(ShaderChainSpecTest PostProcessing/ShaderChainSpecTest.cpp)
 add_dolphin_test(SlangSourceDownscaleTest PostProcessing/SlangSourceDownscaleTest.cpp)

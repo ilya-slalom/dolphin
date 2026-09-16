@@ -18,8 +18,16 @@
 #include <cstdlib>
 #include <fstream>
 
+// SPIRV-Cross is only built where a video backend needs it: CMakeLists.txt adds
+// Externals/spirv_cross under `if(WIN32 OR APPLE)`, for D3D11/D3D12 and Metal. On Android and
+// Linux the target does not exist at all, so the HLSL/MSL half of the oracle has to compile out
+// rather than break the build. Everything else here runs through glslang, which is available
+// everywhere, so all four backend rows keep their coverage on every platform.
+#if defined(_WIN32) || defined(__APPLE__)
+#define DOLPHIN_TEST_HAS_SPIRV_CROSS
 #include <spirv_hlsl.hpp>
 #include <spirv_msl.hpp>
+#endif
 
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
@@ -218,6 +226,7 @@ bool CompilesOnBackend(const TranslatedPass& pass, const BackendShaderHeader& ba
   return true;
 }
 
+#ifdef DOLPHIN_TEST_HAS_SPIRV_CROSS
 // Cross-compiles fragment SPIR-V exactly the way D3DCommon/Shader.cpp GetHLSLFromSPIRV does for
 // feature level 11 (shader_model = 50).
 std::string HlslFromSpirv(const SPIRV::CodeVector& spv)
@@ -240,6 +249,7 @@ std::string MslFromSpirv(const SPIRV::CodeVector& spv)
   compiler.set_msl_options(options);
   return compiler.compile();
 }
+#endif  // DOLPHIN_TEST_HAS_SPIRV_CROSS
 
 const BackendShaderHeader& BackendNamed(const char* name)
 {
@@ -416,6 +426,11 @@ TEST(SlangCompile, SamplersAreDeclaredAsArrays)
 // The real oracle: assert what reaches the driver, not what the translator wrote. This is the
 // assertion the previous oracle was missing -- it stopped at SPIRV::Compile*, and `sampler2D` is
 // valid GLSL, so all four rows passed a chain that rendered black.
+//
+// Needs SPIRV-Cross, so this one test is Windows/macOS-only (see the include guard above). That
+// costs nothing in practice: it asserts what the D3D and Metal backends generate, and those
+// backends only exist on the platforms where the dependency is built.
+#ifdef DOLPHIN_TEST_HAS_SPIRV_CROSS
 TEST(SlangCompile, CrossCompiledSamplersAreArrayTextures)
 {
   {
@@ -443,6 +458,7 @@ TEST(SlangCompile, CrossCompiledSamplersAreArrayTextures)
     EXPECT_EQ(msl.find("texture2d<float> Source"), std::string::npos) << msl;
   }
 }
+#endif  // DOLPHIN_TEST_HAS_SPIRV_CROSS
 
 // The array declaration is only useful if the 2-coordinate call sites still compile. They are
 // reached through a macro and through a user function's sampler parameter, so the shim overloads
