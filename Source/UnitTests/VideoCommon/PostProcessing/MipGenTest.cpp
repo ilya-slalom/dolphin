@@ -40,3 +40,22 @@ TEST(MipGen, NonSquareChain)
   EXPECT_EQ(mips[1].height, 1u);
   EXPECT_EQ(mips[2].width, 1u);
 }
+
+TEST(MipGen, MipLevelCountCountsDownToOneByOne)
+{
+  EXPECT_EQ(MipLevelCount(1, 1), 1u);
+  EXPECT_EQ(MipLevelCount(2, 1), 2u);
+  EXPECT_EQ(MipLevelCount(256, 256), 9u);
+  EXPECT_EQ(MipLevelCount(640, 480), 10u);
+  // Degenerate sizes still describe a single level.
+  EXPECT_EQ(MipLevelCount(0, 0), 1u);
+}
+
+TEST(MipGen, MipLevelSizeHalvesAndClampsToOne)
+{
+  EXPECT_EQ(MipLevelSize(640, 0), 640u);
+  EXPECT_EQ(MipLevelSize(640, 1), 320u);
+  EXPECT_EQ(MipLevelSize(480, 1), 240u);
+  EXPECT_EQ(MipLevelSize(640, 10), 1u);
+  EXPECT_EQ(MipLevelSize(1, 5), 1u);
+}

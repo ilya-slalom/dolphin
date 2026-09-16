@@ -24,6 +24,7 @@
 #include "VideoCommon/AbstractShader.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/PostProcessing/LutTexture.h"
+#include "VideoCommon/PostProcessing/MipGen.h"
 #include "VideoCommon/PostProcessing/PassGraph.h"
 #include "VideoCommon/PostProcessing/PassSizing.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
@@ -410,10 +411,10 @@ void MultipassPostProcessing::RecompilePipeline()
   const std::vector<PassSize> physical_sizes = ComputePassChainSizes(
       configs, scaled_source_width, scaled_source_height, viewport_width, viewport_height);
 
-  // GPU mip generation is currently implemented only on the Vulkan backend; on other backends
-  // AbstractTexture::GenerateMipmaps() is a no-op, so keep those passes single-level (today's
-  // behavior) rather than allocating a mip chain we can't fill.
-  const bool mips_supported = g_backend_info.api_type == APIType::Vulkan;
+  // Passes that a later pass samples with mipmapping need a real mip chain. Backends that can
+  // generate one on the GPU do so in AbstractTexture::GenerateMipmaps(); the rest go through
+  // MipChainBuilder (see the mip generation call site below).
+  const bool mips_supported = g_backend_info.bSupportsGPUMipGeneration;
 
   const size_t pass_count = m_passes.size();
   for (size_t i = 0; i < pass_count; ++i)
@@ -434,12 +435,8 @@ void MultipassPostProcessing::RecompilePipeline()
       const u32 out_h = std::max(physical_sizes[i].height, logical_sizes[i].height);
 
       // A later pass sampling this output with mipmap_input=true needs a full mip chain here.
-      u32 levels = 1;
-      if (pass.generate_mips && mips_supported)
-      {
-        for (u32 dim = std::max(out_w, out_h); dim > 1; dim >>= 1)
-          ++levels;
-      }
+      const u32 levels =
+          (pass.generate_mips && mips_supported) ? VideoCommon::MipLevelCount(out_w, out_h) : 1;
 
       const TextureConfig texture_config(out_w, out_h, levels, 1, 1, INTERMEDIATE_FORMAT,
                                          AbstractTextureFlag_RenderTarget,
