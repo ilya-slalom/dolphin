@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "Common/Assert.h"
 #include "Common/CommonPaths.h"
 #include "Common/FileSearch.h"
 #include "Common/FileUtil.h"
@@ -163,6 +164,14 @@ void MultipassPostProcessing::EnsureHistoryTextures(const AbstractTexture* origi
                          m_history_textures[0]->GetFormat() == src.format));
   if (matches)
     return;
+
+  // The clone below inherits src.type, so this is the one place that can tell whether the frame the
+  // chain was handed still matches what the passes declare. See SLANG_INPUT_TEXTURE_TYPE for why
+  // the type is checked here rather than written at the allocation sites. Rebuilds only on a size
+  // or format change, so this is not a per-frame check.
+  ASSERT_MSG(VIDEO, src.type == SLANG_INPUT_TEXTURE_TYPE,
+             "slang history source is {}, but the passes sample {}", src.type,
+             SLANG_INPUT_TEXTURE_TYPE);
 
   m_history_textures.clear();
   m_history_textures.resize(m_max_history);
@@ -546,6 +555,15 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     g_gfx->Draw(0, 3);
     return;
   }
+
+  // The incoming frame has to be the type the translated passes declare their samplers as -- see
+  // SLANG_INPUT_TEXTURE_TYPE for why that is checked here instead of written where the frame is
+  // allocated. The passthrough path above needs the same thing (its pixel shader spells out
+  // sampler2DArray) but returns before this point, so this covers the translated chain only.
+  // Per-frame, hence debug-only; the compile-time half of the pairing is the header static_assert.
+  DEBUG_ASSERT_MSG(VIDEO, src_tex->GetConfig().type == SLANG_INPUT_TEXTURE_TYPE,
+                   "slang chain source is {}, but the passes sample {}", src_tex->GetConfig().type,
+                   SLANG_INPUT_TEXTURE_TYPE);
 
   // Two source sizes drive the chain:
   //  - native (m_source_*): reported to the shader as SourceSize so CRT scanline/mask geometry

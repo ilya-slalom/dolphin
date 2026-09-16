@@ -24,8 +24,20 @@ namespace VideoCommon
 // LUTs (LutTexture). Backends derive the view/target from TextureConfig::type alone, never from the
 // layer count, so a pass must declare its samplers to match or the binding is silently wrong: on
 // desktop OpenGL a sampler2D reads the texture unit's GL_TEXTURE_2D binding, which nothing sets for
-// an array texture, and returns black with GL_NO_ERROR. Change these two together or not at all.
+// an array texture, and returns black with GL_NO_ERROR.
+//
+// Only three of those five sites can name this constant. The XFB's own type is not ours to pick --
+// it is an array because stereo renders one eye per layer, a decision that predates and outranks
+// post-processing -- and the history textures must copy the XFB's config verbatim, because
+// ShiftHistory moves frames with CopyRectangleFromTexture. Writing SLANG_INPUT_TEXTURE_TYPE into
+// either would invert the dependency and read as though the chain dictated the frame format. So the
+// direction is kept honest by checking instead of imposing: the static_assert below pins this to
+// the TextureConfig default that both XFB allocations spell out and the history clone inherits, and
+// MultipassPostProcessing asserts the actual incoming type in BlitFromTexture and the cloned one in
+// EnsureHistoryTextures. Change any of them and one of those three fires.
 constexpr AbstractTextureType SLANG_INPUT_TEXTURE_TYPE = AbstractTextureType::Texture_2DArray;
+static_assert(TextureConfig{}.type == SLANG_INPUT_TEXTURE_TYPE,
+              "the frame handed to the chain is allocated from a default-typed TextureConfig");
 
 // The GLSL sampler type that matches an AbstractTextureType binding.
 constexpr std::string_view SlangSamplerGlslType(AbstractTextureType type)
