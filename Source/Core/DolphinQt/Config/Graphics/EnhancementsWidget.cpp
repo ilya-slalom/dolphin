@@ -681,6 +681,20 @@ void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const st
   // needs a pointer to the dialog on the worker side. The re-entrancy guard is the QTBUG-10561
   // one: a modal QProgressDialog::setValue() spins the event loop, which can dispatch the next
   // timeout inside it.
+  //
+  // QtUtils/ParallelProgressDialog::SetValueSlot has that same guard under that same bug number and
+  // seven other DolphinQt sites use it, so this near-duplicate is a decision, not an oversight: that
+  // class holds its QProgressDialog *by value* while handing the caller's widget to it as a parent,
+  // so ~QWidget would `delete` a member address. Heap-allocating the dialog is precisely what makes
+  // this function survive `this` being destroyed mid-download, and adopting the wrapper would trade
+  // that away to save the five lines below.
+  //
+  // `progress` is captured raw here while the post-loop code goes through a QPointer, deliberately:
+  // the connection's context object is `progress` itself, so this lambda cannot be invoked after the
+  // dialog is gone, and the one hazard a null test could not answer anyway -- `this` being destroyed
+  // inside setValue()'s nested dispatch, which deletes `progress` as one of its children -- is not
+  // visible to a check made before the call. The post-loop code needs the QPointer because nothing
+  // scopes it to the dialog's lifetime.
   auto* const poll = new QTimer(progress);
   connect(poll, &QTimer::timeout, progress, [progress, state, setting = false]() mutable {
     if (setting)
@@ -716,9 +730,18 @@ void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const st
   // result() blocks until the future completes on all three paths -- so if nothing is left to show
   // the answer to, ask the worker to stop rather than making teardown wait out a whole download.
   if (self)
+  {
+    // stop() before close(): closing a dialog does not stop a timer that happens to be its child,
+    // and the deleteLater() below is posted at *this* loop level, so it is not dispatched inside the
+    // nested loop of the QMessageBox that follows. Without this the poll would keep firing
+    // setValue() on the hidden dialog for as long as that message box is up.
+    poll->stop();
     progress->close();
+  }
   else
+  {
     state->canceled = true;
+  }
 
   const VideoCommon::ShaderPackDownloadResult result = watcher.result();
   if (!self)
