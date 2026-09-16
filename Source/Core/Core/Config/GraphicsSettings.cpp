@@ -140,6 +140,12 @@ const Info<std::string> GFX_DRIVER_PACKAGE{{System::GFX, "Settings", "DriverPack
 const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING{
     {System::GFX, "Settings", "LibrashaderDynamicRendering"}, true};
 
+// Debug aid for the "crt-royale renders dark" investigation: dumps the images entering and
+// leaving the librashader chain, once, so their means can be compared against a reference
+// render. Deliberately not exposed in the UI.
+const Info<bool> GFX_LIBRASHADER_DUMP_CHAIN_IMAGES{
+    {System::GFX, "Settings", "LibrashaderDumpChainImages"}, false};
+
 const Info<VertexLoaderType> GFX_VERTEX_LOADER_TYPE{{System::GFX, "Settings", "VertexLoaderType"},
                                                     VertexLoaderType::Native};
 

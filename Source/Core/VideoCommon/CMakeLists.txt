@@ -144,6 +144,8 @@ add_library(videocommon
   PixelShaderGen.h
   PixelShaderManager.cpp
   PixelShaderManager.h
+  PostProcessing/ChainDebugDump.cpp
+  PostProcessing/ChainDebugDump.h
   PostProcessing/LibrashaderLibrary.cpp
   PostProcessing/LibrashaderLibrary.h
   PostProcessing/LutTexture.cpp

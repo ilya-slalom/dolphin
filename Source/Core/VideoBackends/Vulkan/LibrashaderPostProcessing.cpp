@@ -25,6 +25,7 @@
 #include "VideoCommon/AbstractPipeline.h"
 #include "VideoCommon/AbstractShader.h"
 #include "VideoCommon/AbstractTexture.h"
+#include "VideoCommon/PostProcessing/ChainDebugDump.h"
 #include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
 #include "VideoCommon/PostProcessing/LibrashaderLibrary.h"
 #include "VideoCommon/RenderState.h"
@@ -436,6 +437,11 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     libra_image_vk_t in{source->GetImage(), source->GetVkFormat(), source->GetWidth(),
                         source->GetHeight()};
 
+    // UAT instrument for finding 3: dump chain input and output from one frame, once per run.
+    const bool dump_images = VideoCommon::ShouldDumpChainImages();
+    if (dump_images)
+      VideoCommon::DumpChainImage(source, "chain-input");
+
     // librashader derives OutputSize, FinalViewportSize, and every scale_type=viewport framebuffer
     // size from the OUTPUT IMAGE's dimensions, then merely scissors rendering to the viewport rect.
     // Handing it the full backbuffer plus a pillarboxed sub-rect would size the whole chain
@@ -478,7 +484,17 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
       // redundant.
       StateTracker::GetInstance()->DiscardPendingClear();
       if (run_chain(out_tex))
+      {
+        if (dump_images)
+        {
+          // UAT instrument: the output is the backbuffer, which cannot be read back reliably. A
+          // windowed run (where ShouldRenderChainDirectly returns false) produces both images.
+          INFO_LOG_FMT(VIDEO, "Librashader: chain-output dump skipped (direct-to-backbuffer path); "
+                              "run windowed to force the intermediate texture path");
+          VideoCommon::NoteChainImagesDumped();
+        }
         return;
+      }
       // On error, fall through to the passthrough copy; it covers the full rect, so the discarded
       // clear is not missed.
     }
@@ -489,6 +505,13 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
                              static_cast<u32>(dst.GetHeight()), out_tex->GetFormat());
       if (chain_output != nullptr && run_chain(static_cast<VKTexture*>(chain_output)))
       {
+        if (dump_images)
+        {
+          // UAT instrument: dump the chain output before presenting it to the backbuffer.
+          VideoCommon::DumpChainImage(chain_output, "chain-output");
+          VideoCommon::NoteChainImagesDumped();
+        }
+
         // Present the chain output 1:1 into the backbuffer draw rect. Point sampling keeps the copy
         // exact (target and rect are equal size).
         BuildPassthroughPipeline();

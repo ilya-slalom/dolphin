@@ -28,3 +28,4 @@ add_dolphin_test(RetroCrisisInstallTest PostProcessing/RetroCrisisInstallTest.cp
 add_dolphin_test(ShaderChainSpecTest PostProcessing/ShaderChainSpecTest.cpp)
 add_dolphin_test(SlangSourceDownscaleTest PostProcessing/SlangSourceDownscaleTest.cpp)
 add_dolphin_test(ChainOutputPolicyTest PostProcessing/ChainOutputPolicyTest.cpp)
+add_dolphin_test(ChainDebugDumpTest PostProcessing/ChainDebugDumpTest.cpp)
