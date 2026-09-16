@@ -12,6 +12,7 @@
 
 #include <cstdio>
 
+#include <glslang/Public/ResourceLimits.h>
 #include <gtest/gtest.h>
 
 #include <cstdlib>
@@ -458,6 +459,209 @@ TEST(SlangCompile, TwoCoordinateCallSitesCompileOnAllBackends)
         << which << " stage failed:\nVS:\n"
         << translated.vertex_glsl << "\nFS:\n"
         << translated.fragment_glsl;
+  }
+}
+
+namespace
+{
+// Parses GLSL with glslang's front end only -- no SPIR-V target, no Vulkan rules. That is what the
+// OpenGL/GLES backend actually does (it hands GLSL straight to the driver and never calls
+// SPIRV::Compile* anywhere under VideoBackends/OGL/), and unlike SPIRV::Compile* it can be pointed
+// below `#version 310 es`: glslang rejects an ES version under 310 outright when the target is
+// SPIR-V, so the ES row below is only reachable this way.
+bool ParsesAtVersion(const std::string& source, EShLanguage stage, int version, EProfile profile,
+                     std::string* log)
+{
+  static const bool initialized = glslang::InitializeProcess();
+  EXPECT_TRUE(initialized);
+  glslang::TShader shader(stage);
+  const char* str = source.c_str();
+  shader.setStrings(&str, 1);
+  glslang::TShader::ForbidIncluder includer;
+  const bool ok = shader.parse(GetDefaultResources(), version, profile,
+                               /*forceDefaultVersionAndProfile=*/false, /*forwardCompatible=*/false,
+                               EShMsgDefault, includer);
+  log->assign(shader.getInfoLog());
+  return ok;
+}
+
+// The OpenGL backend's binding macros for a context with neither explicit binding layout nor
+// ARB_shading_language_420pack -- the last `binding_layout` branch in ProgramShaderCache.cpp, where
+// every binding macro expands to nothing. Everything after it mirrors that header's "silly
+// differences" block.
+constexpr const char* LOW_VERSION_MACROS = R"(
+#define ATTRIBUTE_LOCATION(x)
+#define FRAGMENT_OUTPUT_LOCATION(x)
+#define FRAGMENT_OUTPUT_LOCATION_INDEXED(x, y)
+#define UBO_BINDING(packing, x) layout(packing)
+#define SAMPLER_BINDING(x)
+#define TEXEL_BUFFER_BINDING(x)
+#define SSBO_BINDING(x) layout(std430)
+#define IMAGE_BINDING(format, x) layout(format)
+#define VARYING_LOCATION(x)
+#define API_OPENGL 1
+#define float2 vec2
+#define float3 vec3
+#define float4 vec4
+#define uint2 uvec2
+#define uint3 uvec3
+#define uint4 uvec4
+#define int2 ivec2
+#define int3 ivec3
+#define int4 ivec4
+#define frac fract
+#define lerp mix
+)";
+
+struct LowVersionTarget
+{
+  const char* name;
+  const char* preamble;
+  int version;
+  EProfile profile;
+};
+
+// Whole-word search, so `textureGather` is not found inside `textureGatherOffset` and, more to the
+// point here, is not reported present merely because `texture` is.
+bool ContainsWordInSource(const std::string& text, const std::string& word)
+{
+  const auto is_word_char = [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+  };
+  for (size_t pos = text.find(word); pos != std::string::npos; pos = text.find(word, pos + 1))
+  {
+    const size_t after = pos + word.size();
+    if ((pos == 0 || !is_word_char(text[pos - 1])) &&
+        (after >= text.size() || !is_word_char(text[after])))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+// GetGLSLVersionString() (ProgramShaderCache.cpp) can return 130, 140, 150 or 330 on desktop, and
+// CreatePostProcessor() (AbstractGfx.cpp) applies no GLSL-version or capability gate, so a
+// translated slang pass has to compile at 330. 410 is the control: it is above the textureGather
+// floor, so it passes whether or not the shims are gated.
+const LowVersionTarget DESKTOP_TARGETS[] = {
+    {"330", "#version 330\n", 330, ECoreProfile},
+    {"410", "#version 410 core\n", 410, ECoreProfile},
+};
+
+// The same three ES versions GetGLSLVersionString() and OGLConfig.cpp can select.
+const LowVersionTarget GLES_TARGETS[] = {
+    {"300 es",
+     "#version 300 es\nprecision highp float;\nprecision highp int;\n"
+     "precision highp sampler2DArray;\n",
+     300, EEsProfile},
+    {"310 es",
+     "#version 310 es\nprecision highp float;\nprecision highp int;\n"
+     "precision highp sampler2DArray;\n",
+     310, EEsProfile},
+    {"320 es",
+     "#version 320 es\nprecision highp float;\nprecision highp int;\n"
+     "precision highp sampler2DArray;\n",
+     320, EEsProfile},
+};
+
+// A pass that samples with `texture` and nothing else -- the overwhelming majority of the real
+// libretro pack, and the shape that must not be made to pay for a builtin it never calls.
+constexpr const char* PLAIN_TEXTURE_SHADER = R"(#version 450
+layout(push_constant) uniform Push { vec4 SourceSize; } params;
+layout(std140, set = 0, binding = 0) uniform UBO { mat4 MVP; } global;
+#pragma stage vertex
+layout(location = 0) in vec4 Position;
+void main() { gl_Position = global.MVP * Position; }
+#pragma stage fragment
+layout(location = 0) out vec4 FragColor;
+layout(set = 0, binding = 2) uniform sampler2D Source;
+void main()
+{
+  FragColor = texture(Source, vec2(0.5)) + vec4(vec2(textureSize(Source, 0)), 0.0, 0.0);
+}
+)";
+}  // namespace
+
+// R1 regression guard. `textureGather` is core only in GLSL 400 / GLES 320; below that it needs
+// ARB_texture_gather plus ARB_gpu_shader5 (or EXT_gpu_shader5), and ES 3.0 has no form of it at
+// all. Because a shim *calls* the builtin, emitting the shim unconditionally makes every translated
+// pass depend on GLSL 400 -- including passes that never gather. Measured on a real driver (M2 Pro,
+// GL 4.1): the unconditional shim block at `#version 330` gives five "No matching function for call
+// to textureGather" errors and fails to compile, while the same source at `#version 410` is fine.
+// The four BACKEND_HEADERS are all `#version 450`, so no other test in this file can see this.
+TEST(SlangCompile, ShimsDoNotRaiseTheGlslVersionFloor)
+{
+  const auto translated = TranslateForBackend(PLAIN_TEXTURE_SHADER, BackendNamed("OpenGL"));
+  ASSERT_TRUE(translated.ok) << translated.error;
+  // The point of the gate: a shader that never gathers must not carry the gather shim.
+  EXPECT_FALSE(ContainsWordInSource(translated.fragment_glsl, "textureGather"))
+      << translated.fragment_glsl;
+
+  for (const LowVersionTarget& target : DESKTOP_TARGETS)
+  {
+    SCOPED_TRACE(target.name);
+    std::string log;
+    EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                    translated.vertex_glsl,
+                                EShLangVertex, target.version, target.profile, &log))
+        << "vertex: " << log << "\n"
+        << translated.vertex_glsl;
+    EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                    translated.fragment_glsl,
+                                EShLangFragment, target.version, target.profile, &log))
+        << "fragment: " << log << "\n"
+        << translated.fragment_glsl;
+  }
+}
+
+// A shader that *does* gather still gets the shim, and still compiles wherever the built-in it
+// wraps is available. Gating must not be mistaken for dropping the feature.
+TEST(SlangCompile, GatheringShadersStillGetTheGatherShim)
+{
+  const auto translated = TranslateForBackend(SAMPLER_SHADER, BackendNamed("OpenGL"));
+  ASSERT_TRUE(translated.ok) << translated.error;
+  EXPECT_TRUE(ContainsWordInSource(translated.fragment_glsl, "textureGather"))
+      << translated.fragment_glsl;
+  std::string log;
+  EXPECT_TRUE(ParsesAtVersion("#version 410 core\n" + std::string(LOW_VERSION_MACROS) + "\n" +
+                                  translated.fragment_glsl,
+                              EShLangFragment, 410, ECoreProfile, &log))
+      << log << "\n"
+      << translated.fragment_glsl;
+}
+
+// GLES 3.x cannot use the overload half of the shim mechanism at all, and -- unlike R1 -- this is
+// not a version floor that gating fixes. ESSL 3.00 forbids overloading a built-in outright:
+// glslang enforces it in TParseContext::handleFunctionDeclarator, whose own comment reads "ES 300
+// does not allow redefining or overloading of built-in functions" (ParseHelper.cpp:1174), and the
+// symbol insert then fails with "function name is redeclaration of existing name". It bites on the
+// plain `texture` shim, which essentially every pack shader triggers, so on the GLES path every
+// translated pass fails to compile no matter how tightly the shims are gated. Measured identically
+// at 300 es, 310 es and 320 es.
+//
+// This test pins the failure to that one cause; it is not an endorsement. Before c12639873f a
+// translated pass compiled on GLES and sampled the wrong texture silently; now it fails loudly. The
+// fix is to move the overload shims onto the renamed-helper mechanism TEXTURE_SIZE_HELPER already
+// uses, which is legal on ES because the name is new. When that lands, fold these rows into
+// ShimsDoNotRaiseTheGlslVersionFloor and assert success instead.
+TEST(SlangCompile, ShimOverloadsAreRejectedByGlesThreePointX)
+{
+  const auto translated = TranslateForBackend(PLAIN_TEXTURE_SHADER, BackendNamed("OpenGL"));
+  ASSERT_TRUE(translated.ok) << translated.error;
+
+  for (const LowVersionTarget& target : GLES_TARGETS)
+  {
+    SCOPED_TRACE(target.name);
+    std::string log;
+    EXPECT_FALSE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                     translated.fragment_glsl,
+                                 EShLangFragment, target.version, target.profile, &log))
+        << "GLES now accepts the shim overloads -- see the comment above and flip this test";
+    EXPECT_NE(log.find("'texture' : function name is redeclaration of existing name"),
+              std::string::npos)
+        << "GLES fails for a different reason than the built-in overload prohibition:\n"
+        << log;
   }
 }
 

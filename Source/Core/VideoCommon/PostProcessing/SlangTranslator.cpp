@@ -118,49 +118,108 @@ static_assert(SLANG_INPUT_TEXTURE_TYPE == AbstractTextureType::Texture_2DArray,
 // A sampling built-in not covered here fails to compile -- loudly, unlike the silent black frame a
 // dimension mismatch produces. Known gaps, none of which the libretro pack uses: the bias form of
 // textureOffset, textureGatherOffset, and textureProj (which has no array form in GLSL at all).
-constexpr std::string_view SAMPLER_SHIMS = R"(
-vec4 texture(sampler2DArray s, vec2 c) { return texture(s, vec3(c, 0.0)); }
-vec4 textureLod(sampler2DArray s, vec2 c, float l) { return textureLod(s, vec3(c, 0.0), l); }
-vec4 textureGrad(sampler2DArray s, vec2 c, vec2 dx, vec2 dy)
-{
-  return textureGrad(s, vec3(c, 0.0), dx, dy);
-}
-vec4 texelFetch(sampler2DArray s, ivec2 c, int l) { return texelFetch(s, ivec3(c, 0), l); }
-vec4 textureGather(sampler2DArray s, vec2 c) { return textureGather(s, vec3(c, 0.0)); }
-vec4 textureGather(sampler2DArray s, vec2 c, int comp)
-{
-  vec3 p = vec3(c, 0.0);
-  if (comp == 1) return textureGather(s, p, 1);
-  if (comp == 2) return textureGather(s, p, 2);
-  if (comp == 3) return textureGather(s, p, 3);
-  return textureGather(s, p, 0);
-}
-ivec2 dolphin_textureSize(sampler2DArray s, int l) { return textureSize(s, l).xy; }
-#define textureOffset(s, c, o) textureOffset(s, vec3((c), 0.0), o)
-#define textureLodOffset(s, c, l, o) textureLodOffset(s, vec3((c), 0.0), l, o)
-#define texelFetchOffset(s, c, l, o) texelFetchOffset(s, ivec3((c), 0), l, o)
-)";
-
-// The optional `bias` argument of the implicit-LOD built-ins is accepted only in fragment shaders,
-// so this overload must not be declared in the vertex stage.
-constexpr std::string_view SAMPLER_SHIMS_FRAGMENT_ONLY = R"(
-vec4 texture(sampler2DArray s, vec2 c, float bias) { return texture(s, vec3(c, 0.0), bias); }
-)";
-
-// textureSize cannot be shimmed by overloading: the array form differs from the 2D form only in
-// return type (ivec3 vs ivec2), and GLSL forbids overloading on return type. The helper above
-// supplies the ivec2 form under a new name, and the function-name token is swapped -- a name swap,
+//
+// textureSize cannot be shimmed by overloading at all: the array form differs from the 2D form only
+// in return type (ivec3 vs ivec2), and GLSL forbids overloading on return type. TEXTURE_SIZE_HELPER
+// supplies the ivec2 form under a new name and the function-name token is swapped -- a name swap,
 // not an argument rewrite, so macro-hidden uses are covered too.
 constexpr std::string_view TEXTURE_SIZE_HELPER = "dolphin_textureSize";
+
+struct SamplerShim
+{
+  // Whole-word trigger, searched in the *transformed* stage source. Nothing is emitted unless the
+  // stage actually names this identifier, so no shim's body may call another shim.
+  std::string_view builtin;
+  std::string_view glsl;  // prepended verbatim when the trigger is present
+  bool fragment_only = false;
+};
+
+// Emitting a shim the stage does not use is not merely dead code, it can be a hard regression:
+// `textureGather` is core only in GLSL 400 / GLES 320, and below that needs ARB_texture_gather plus
+// ARB_gpu_shader5 (or EXT_gpu_shader5). Because a shim *calls* the built-in, defining it
+// unconditionally makes every translated pass depend on GLSL 400 -- and OGL's
+// GetGLSLVersionString() can emit 130, 140, 150, 330, 300 es or 310 es while
+// AbstractGfx::CreatePostProcessor() applies no version gate, so on a GL 3.3-class context every
+// pass would fail to compile, gathering or not. Measured: the ungated block at `#version 330` gives
+// five "no matching function for call to textureGather" errors, on glslang and on Apple's GL front
+// end alike; at `#version 410` it is clean.
+//
+// Gating on use restores the pre-fix reachability exactly: a shader that calls textureGather
+// already required GLSL 400 by calling it. The rest (texture, textureLod, textureGrad, texelFetch,
+// textureSize) are core since GLSL 130 / ES 300, and an unexpanded macro costs nothing -- they are
+// gated anyway, so the next built-in added to this table cannot re-set the same trap.
+constexpr SamplerShim SAMPLER_SHIMS[] = {
+    {"texture", "vec4 texture(sampler2DArray s, vec2 c) { return texture(s, vec3(c, 0.0)); }\n"},
+    // The optional `bias` argument of the implicit-LOD built-ins is accepted only in fragment
+    // shaders, so this overload must not be declared in the vertex stage.
+    {"texture",
+     "vec4 texture(sampler2DArray s, vec2 c, float bias)\n"
+     "{\n"
+     "  return texture(s, vec3(c, 0.0), bias);\n"
+     "}\n",
+     /*fragment_only=*/true},
+    {"textureLod",
+     "vec4 textureLod(sampler2DArray s, vec2 c, float l)\n"
+     "{\n"
+     "  return textureLod(s, vec3(c, 0.0), l);\n"
+     "}\n"},
+    {"textureGrad",
+     "vec4 textureGrad(sampler2DArray s, vec2 c, vec2 dx, vec2 dy)\n"
+     "{\n"
+     "  return textureGrad(s, vec3(c, 0.0), dx, dy);\n"
+     "}\n"},
+    {"texelFetch",
+     "vec4 texelFetch(sampler2DArray s, ivec2 c, int l)\n"
+     "{\n"
+     "  return texelFetch(s, ivec3(c, 0), l);\n"
+     "}\n"},
+    {"textureGather",
+     "vec4 textureGather(sampler2DArray s, vec2 c) { return textureGather(s, vec3(c, 0.0)); }\n"
+     "vec4 textureGather(sampler2DArray s, vec2 c, int comp)\n"
+     "{\n"
+     "  vec3 p = vec3(c, 0.0);\n"
+     "  if (comp == 1) return textureGather(s, p, 1);\n"
+     "  if (comp == 2) return textureGather(s, p, 2);\n"
+     "  if (comp == 3) return textureGather(s, p, 3);\n"
+     "  return textureGather(s, p, 0);\n"
+     "}\n"},
+    // Triggered by the swapped-in helper name, because the name swap has already run by then.
+    {TEXTURE_SIZE_HELPER,
+     "ivec2 dolphin_textureSize(sampler2DArray s, int l) { return textureSize(s, l).xy; }\n"},
+    {"textureOffset", "#define textureOffset(s, c, o) textureOffset(s, vec3((c), 0.0), o)\n"},
+    {"textureLodOffset",
+     "#define textureLodOffset(s, c, l, o) textureLodOffset(s, vec3((c), 0.0), l, o)\n"},
+    {"texelFetchOffset",
+     "#define texelFetchOffset(s, c, l, o) texelFetchOffset(s, ivec3((c), 0), l, o)\n"},
+};
+
+bool IsWordChar(char c)
+{
+  return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+// True when `word` occurs in `text` as a whole identifier rather than inside a longer one, so
+// `texture` does not match `textureLod` and `texelFetch` does not match `texelFetchOffset`.
+bool ContainsWord(std::string_view text, std::string_view word)
+{
+  for (size_t pos = text.find(word); pos != std::string_view::npos; pos = text.find(word, pos + 1))
+  {
+    const size_t after = pos + word.size();
+    if ((pos == 0 || !IsWordChar(text[pos - 1])) &&
+        (after >= text.size() || !IsWordChar(text[after])))
+    {
+      return true;
+    }
+  }
+  return false;
+}
 
 // Replaces every whole-word occurrence of `from` with `to` in `text`.
 std::string ReplaceWord(const std::string& text, const std::string& from, const std::string& to)
 {
   std::string out;
   out.reserve(text.size());
-  const auto is_word_char = [](char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
-  };
+  const auto is_word_char = [](char c) { return IsWordChar(c); };
   size_t pos = 0;
   while (pos < text.size())
   {
@@ -526,9 +585,19 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
     out = ReplaceWord(out, "sampler2D", sampler_type);
     out = ReplaceWord(out, "textureSize", std::string(TEXTURE_SIZE_HELPER));
 
-    std::string shims(SAMPLER_SHIMS);
-    if (!is_vertex)
-      shims += SAMPLER_SHIMS_FRAGMENT_ONLY;
+    // Emit only the shims this stage actually reaches for -- see the note on SAMPLER_SHIMS. The
+    // triggers are matched against the transformed source, which is why the textureSize entry is
+    // keyed on the already-swapped helper name.
+    std::string shims;
+    for (const SamplerShim& shim : SAMPLER_SHIMS)
+    {
+      if (is_vertex && shim.fragment_only)
+        continue;
+      if (ContainsWord(out, shim.builtin))
+        shims += shim.glsl;
+    }
+    if (!shims.empty())
+      shims = "\n" + shims;
     return shims + out;
   };
 
