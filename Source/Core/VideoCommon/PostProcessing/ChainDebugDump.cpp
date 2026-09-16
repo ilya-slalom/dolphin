@@ -42,6 +42,22 @@ bool DumpChainImage(const AbstractTexture* texture, std::string_view label)
   if (texture == nullptr)
     return false;
 
+  // AbstractTexture::Save asserts on both of these rather than returning false, so check here:
+  // an instrument for a one-shot UAT capture must explain itself, not abort the emulator. The
+  // float case is reachable in normal use -- the Vulkan swapchain becomes RGBA16F under HDR
+  // (VKSwapChain.cpp), and the chain's output target inherits the backbuffer's format -- and even
+  // if Save tolerated it, an RGBA8 PNG of an scRGB float image would not be comparable with an
+  // SDR reference render, which is the whole point of the dump.
+  const AbstractTextureFormat format = texture->GetFormat();
+  if (format == AbstractTextureFormat::RGBA16F || AbstractTexture::IsCompressedFormat(format))
+  {
+    ERROR_LOG_FMT(VIDEO,
+                  "Librashader: cannot dump chain image '{}': format {} is not readable as PNG. "
+                  "Disable HDR output and capture again.",
+                  label, static_cast<int>(format));
+    return false;
+  }
+
   const std::string path =
       fmt::format("{}librashader-{}.png", File::GetUserPath(D_DUMPTEXTURES_IDX), label);
   if (!texture->Save(path, 0))
