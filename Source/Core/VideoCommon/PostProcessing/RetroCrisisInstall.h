@@ -28,6 +28,11 @@ u32 InstallRetroCrisisProfile(const std::string& extract_root, const std::string
 
 std::string ReadRetroCrisisProfile(const std::string& install_root);
 
+// The display profiles the RetroCrisis pack ships, in menu order. These are literal folder names
+// inside the pack, so they must match InstallRetroCrisisProfile's expectations exactly. Android's
+// R.array.post_processing_retrocrisis_profiles mirrors this list.
+const std::vector<std::string>& GetRetroCrisisProfiles();
+
 // True if a discovered preset path should be hidden from the picker because it lives in a
 // RetroCrisis profile folder other than the manifest's chosen profile. install_root is
 // <Shaders>/RetroCrisis. Presets outside the RetroCrisis tree are never hidden.

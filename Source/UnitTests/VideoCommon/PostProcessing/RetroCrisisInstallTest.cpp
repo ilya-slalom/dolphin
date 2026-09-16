@@ -82,3 +82,15 @@ TEST(RetroCrisisInstall, HidesNonChosenProfilePresets)
   EXPECT_FALSE(IsHiddenRetroCrisisPreset(
       "/u/Shaders/shaders_slang/crt/crt-royale.slangp", root, "1080p Flat"));
 }
+
+TEST(RetroCrisisInstall, ProfileListMatchesPackFolders)
+{
+  const auto& profiles = GetRetroCrisisProfiles();
+  ASSERT_EQ(profiles.size(), 7u);
+  EXPECT_EQ(profiles.front(), "1080p Flat");
+  EXPECT_EQ(profiles.back(), "720p Steam Deck");
+  // Every profile must be a name RetroCrisisProfileOf can recover from a preset path.
+  // RetroCrisisProfileOf expects a pack-relative path, i.e. rooted at "retro crisis/".
+  for (const std::string& profile : profiles)
+    EXPECT_EQ(RetroCrisisProfileOf("retro crisis/" + profile + "/x.slangp"), profile);
+}
