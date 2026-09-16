@@ -145,24 +145,64 @@ struct SamplerShim
   // Call sites of this built-in are renamed to SHIM_PREFIX + builtin. Entries may share a built-in;
   // the rename runs once per built-in, and each entry's helper is emitted on its own.
   std::string_view builtin;
-  std::string_view glsl;  // prepended verbatim when the stage names the helper
+  std::string_view glsl;  // prepended when the stage names the helper
   bool fragment_only = false;
+  // When set, glsl is wrapped in `#if <version_guard>` / `#endif`, so a stage that carries the
+  // helper without calling it compiles on a target the helper's own body could not.
+  std::string_view version_guard = {};
 };
 
-// Emitting a shim the stage does not use is not merely dead code, it can be a hard regression:
-// `textureGather` is core only in GLSL 400 / GLES 320, and below that needs ARB_texture_gather plus
-// ARB_gpu_shader5 (or EXT_gpu_shader5). Because a shim *calls* the built-in, defining it
-// unconditionally makes every translated pass depend on GLSL 400 -- and OGL's
-// GetGLSLVersionString() can emit 130, 140, 150, 330, 300 es or 310 es while
-// AbstractGfx::CreatePostProcessor() applies no version gate, so on a GL 3.3-class context every
-// pass would fail to compile, gathering or not. Measured: the ungated block at `#version 330` gives
-// five "no matching function for call to textureGather" errors, on glslang and on Apple's GL front
-// end alike; at `#version 410` it is clean.
+// `textureGather` is core in GLSL 400 and in GLSL ES 310 -- ES 3.00 has no form of it at all -- and
+// because a shim *calls* the built-in it wraps, declaring one unconditionally made every translated
+// pass depend on GLSL 400. OGL's GetGLSLVersionString() can emit 130, 140, 150, 330, 300 es or
+// 310 es and AbstractGfx::CreatePostProcessor() applies no version gate, so that broke every pass
+// on a GL 3.3-class context, gathering or not. Measured against glslang's GLSL front end: the
+// unguarded block at `#version 330` and at `#version 300 es` gives "'textureGather(...)' : not
+// supported for this version or the enabled extensions"; at `310 es`, `320 es` and `410` it is
+// clean, for the 2- and the 3-argument form alike.
 //
-// Gating on use restores the pre-fix reachability exactly: a shader that calls textureGather
-// already required GLSL 400 by calling it. The rest (texture, textureLod, textureGrad, texelFetch,
-// textureSize) are core since GLSL 130 / ES 300, and an unexpanded macro costs nothing -- they are
-// gated anyway, so the next built-in added to this table cannot re-set the same trap.
+// Two mechanisms keep a stage from paying for that, because one of them cannot be made sufficient:
+//
+// 1. The gate (below, where the shims are emitted): a shim is emitted only when the renamed stage
+//    source names its helper as a whole word, in a copy with comments stripped. That is as precise
+//    as it can get, because there is no preprocessor here: `textureGather` also survives inside a
+//    never-taken `#if` branch and inside a macro body nothing expands -- the nnedi3
+//    `-predict-h-rgb` family is exactly that, `#define NNEDI3_USE_GATHER 0` with the text left in
+//    NNEDI3_DEF_GATHER -- and the gate then believes the stage gathers. So the gate is a size
+//    optimization, not a correctness mechanism. It was first written as the latter, and 7 stages
+//    across 5 presets of the libretro pack failed at `#version 300 es` for precisely that reason.
+//    Measured over that pack (2987 presets, 23515 stages): the helper was emitted into 177 stages
+//    before comments were stripped and 72 after -- the 105 that went away are all fsr-pass0 and
+//    fsr-pass1, whose only mention of the built-in is the commented-out FsrEasu*H bodies in
+//    ffx_fsr1.h -- and 7 of the surviving 72 are the nnedi3 macro bodies, which no textual gate can
+//    rule out. Those 7 are the ones the guard rescues.
+// 2. The guard (version_guard): the one helper whose availability depends on the version says so
+//    itself, so an over-firing gate costs bytes and nothing else. A stage that carries the helper
+//    without calling it compiles anywhere; a stage that really calls it where the built-in does not
+//    exist fails loudly on an undeclared `dolphin_textureGather`, which is the same class of
+//    failure, at the same point, as calling the built-in directly would have been.
+//
+// The guard tests versions only. `defined(GL_ARB_gpu_shader5)` deliberately does not appear in it:
+// an extension macro is defined when the compiler *knows* the extension, not when the shader has
+// enabled it, and a shader's initial state is `#extension all : disable`. Verified against glslang,
+// which predefines GL_ARB_gpu_shader5 and GL_ARB_texture_gather at `#version 330` -- the helper
+// body still fails to compile there unless the source also carries
+// `#extension GL_ARB_gpu_shader5 : enable`. Admitting the helper on the macro alone would re-break
+// every non-gathering pass on any driver that advertises the extension the shader has not enabled.
+// What that costs: on a GL 3.3 context whose header did enable ARB_gpu_shader5 (ProgramShaderCache
+// does, when v < Glsl400 && bSupportsGSInstancing) a genuinely gathering pass is refused although
+// the driver could have run it. Closing that gap means the header telling the shader what it
+// enabled -- a macro of Dolphin's own beside the `#extension` line -- which is not the translator's
+// to decide, and which no preset in the pack needs today.
+//
+// The other built-ins need no guard: `texture`, `textureLod`, `textureGrad`, `texelFetch` and
+// `textureSize` are core in their array forms since GLSL 130 / ES 300, and the three *Offset shims
+// are macros, which cost nothing until expanded. Verified by parsing the whole block with every
+// helper called at 300 es, 310 es, 320 es, 330 and 410. A future entry that does have a floor must
+// carry its own guard -- the gate will not save it.
+constexpr std::string_view TEXTURE_GATHER_GUARD =
+    "__VERSION__ >= 400 || (defined(GL_ES) && __VERSION__ >= 310)";
+
 constexpr SamplerShim SAMPLER_SHIMS[] = {
     {"texture",
      "vec4 dolphin_texture(sampler2DArray s, vec2 c) { return texture(s, vec3(c, 0.0)); }\n"},
@@ -201,7 +241,8 @@ constexpr SamplerShim SAMPLER_SHIMS[] = {
      "  if (comp == 2) return textureGather(s, p, 2);\n"
      "  if (comp == 3) return textureGather(s, p, 3);\n"
      "  return textureGather(s, p, 0);\n"
-     "}\n"},
+     "}\n",
+     /*fragment_only=*/false, TEXTURE_GATHER_GUARD},
     // textureSize is the built-in that could never have been an overload -- the array form differs
     // from the 2D form only in return type (ivec3 vs ivec2), and GLSL forbids overloading on return
     // type. It needed the rename first; now every entry is written the same way.
@@ -249,6 +290,48 @@ bool StartsWith(std::string_view s, std::string_view prefix)
 bool IsWordChar(char c)
 {
   return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
+}
+
+// A copy of `text` with every `//` and `/* */` comment replaced by one space, for searches that are
+// meant to answer "does the compiler see this?" rather than "does the file contain it?". Each
+// comment becomes a space rather than nothing so that deleting it cannot fuse the identifiers on
+// either side into a third one. GLSL has no string literals, so nothing here can be quoted.
+//
+// One knowingly unhandled corner: C99 splices a `\`-continued line before it removes comments, so a
+// `//` comment ending in a backslash swallows the next line too. Treating that next line as code is
+// the safe direction -- it can only make a search say yes where the compiler says no, never the
+// reverse -- and no shader in the libretro pack does it.
+std::string StripComments(std::string_view text)
+{
+  std::string out;
+  out.reserve(text.size());
+  size_t pos = 0;
+  while (pos < text.size())
+  {
+    const bool two_left = pos + 1 < text.size();
+    if (text[pos] == '/' && two_left && text[pos + 1] == '/')
+    {
+      out += ' ';
+      const auto end = text.find('\n', pos + 2);
+      if (end == std::string_view::npos)
+        break;
+      pos = end;  // the newline is not part of the comment, and it terminates a directive
+    }
+    else if (text[pos] == '/' && two_left && text[pos + 1] == '*')
+    {
+      out += ' ';
+      const auto end = text.find("*/", pos + 2);
+      if (end == std::string_view::npos)
+        break;
+      pos = end + 2;
+    }
+    else
+    {
+      out += text[pos];
+      ++pos;
+    }
+  }
+  return out;
 }
 
 // True when `word` occurs in `text` as a whole identifier rather than inside a longer one, so
@@ -683,16 +766,31 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
                         /*function_names_only=*/true);
     }
 
-    // Emit only the shims this stage actually reaches for -- see the note on SAMPLER_SHIMS. The
-    // trigger is the helper name in the renamed source, so a stage gets a helper exactly when the
-    // rename above gave it a call to make.
+    // Emit only the shims this stage reaches for -- see the note on SAMPLER_SHIMS, including why
+    // this gate is a size optimization and not the thing that makes low GLSL versions work. The
+    // trigger is the helper name in the renamed source, with comments stripped: the rename fires
+    // inside comments too (IsFunctionNameUse reads no context), and a commented-out call is the
+    // whole of `textureGather` in the fsr tree.
+    const std::string gate_source = StripComments(out);
     std::string shims;
     for (const SamplerShim& shim : SAMPLER_SHIMS)
     {
       if (is_vertex && shim.fragment_only)
         continue;
-      if (ContainsWord(out, ShimHelperName(shim.builtin)))
+      if (!ContainsWord(gate_source, ShimHelperName(shim.builtin)))
+        continue;
+      if (shim.version_guard.empty())
+      {
         shims += shim.glsl;
+      }
+      else
+      {
+        shims += "#if ";
+        shims += shim.version_guard;
+        shims += '\n';
+        shims += shim.glsl;
+        shims += "#endif\n";
+      }
     }
     if (!shims.empty())
       shims = "\n" + shims;

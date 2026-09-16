@@ -585,8 +585,9 @@ void main()
 )";
 }  // namespace
 
-// R1 regression guard. `textureGather` is core only in GLSL 400 / GLES 320; below that it needs
-// ARB_texture_gather plus ARB_gpu_shader5 (or EXT_gpu_shader5), and ES 3.0 has no form of it at
+// R1 regression guard. `textureGather` is core in GLSL 400 and in GLSL ES 310 (measured, both the
+// 2- and the 3-argument form); below that on desktop it needs ARB_texture_gather plus
+// ARB_gpu_shader5 *enabled*, not merely supported, and ES 3.00 has no form of it at
 // all. Because a shim *calls* the builtin, emitting the shim unconditionally makes every translated
 // pass depend on GLSL 400 -- including passes that never gather. Measured on a real driver (M2 Pro,
 // GL 4.1): the unconditional shim block at `#version 330` gives five "No matching function for call
@@ -618,7 +619,9 @@ TEST(SlangCompile, ShimsDoNotRaiseTheGlslVersionFloor)
 }
 
 // A shader that *does* gather still gets the shim, and still compiles wherever the built-in it
-// wraps is available. Gating must not be mistaken for dropping the feature.
+// wraps is available -- which, measured against glslang's own front end, is desktop 400+ and
+// ES 3.10+, both the 2- and the 3-argument form. Gating must not be mistaken for dropping the
+// feature, and neither must the version guard the helper carries.
 TEST(SlangCompile, GatheringShadersStillGetTheGatherShim)
 {
   const auto translated = TranslateForBackend(SAMPLER_SHADER, BackendNamed("OpenGL"));
@@ -631,6 +634,120 @@ TEST(SlangCompile, GatheringShadersStillGetTheGatherShim)
                               EShLangFragment, 410, ECoreProfile, &log))
       << log << "\n"
       << translated.fragment_glsl;
+  EXPECT_TRUE(ParsesAtVersion(GLES_TARGETS[2].preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                  translated.fragment_glsl,
+                              EShLangFragment, 320, EEsProfile, &log))
+      << log << "\n"
+      << translated.fragment_glsl;
+
+  // And where the built-in does not exist, a shader that really gathers fails loudly rather than
+  // sampling something wrong -- the helper is guarded away, so its call sites do not resolve. This
+  // is the property that lets the guard be unconditional: the cost of guarding is paid only by
+  // shaders that could not have run there anyway.
+  EXPECT_FALSE(ParsesAtVersion(GLES_TARGETS[0].preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                   translated.fragment_glsl,
+                               EShLangFragment, 300, EEsProfile, &log))
+      << translated.fragment_glsl;
+  EXPECT_NE(log.find("dolphin_textureGather"), std::string::npos) << log;
+}
+
+namespace
+{
+// The two shapes in the real pack that put `textureGather` in text the shader never compiles. The
+// gate is a whole-word text match on source the translator has no preprocessor for, so both make it
+// believe the stage gathers.
+//
+// `//`-commented, which is the whole of the `fsr` tree: edge-smoothing/fsr/shaders/ffx_fsr1.h:135-137
+// is three commented-out lines, and fsr-pass0.slang:6 says "SM 4.0 compatible: no textureGather".
+constexpr const char* COMMENTED_OUT_GATHER_SHADER = R"(#version 450
+layout(push_constant) uniform Push { vec4 SourceSize; } params;
+layout(std140, set = 0, binding = 0) uniform UBO { mat4 MVP; } global;
+#pragma stage vertex
+layout(location = 0) in vec4 Position;
+void main() { gl_Position = global.MVP * Position; }
+#pragma stage fragment
+layout(location = 0) out vec4 FragColor;
+layout(set = 0, binding = 2) uniform sampler2D Source;
+// SM 4.0 compatible: no textureGather
+//  vec4 EasuRH(vec2 p) { return textureGather(Source, p, 0); }
+/* vec4 EasuGH(vec2 p) { return textureGather(Source, p, 1); }
+   vec4 EasuBH(vec2 p) { return textureGather(Source, p, 2); } */
+void main() { FragColor = texture(Source, vec2(0.5)); }
+)";
+
+// Behind a disabled `#if`, which is the nnedi3 `-predict-h-rgb` family:
+// nnedi3-nns16-win8x4-predict-h-rgb.slang:4 is `#define NNEDI3_USE_GATHER 0`, so the only
+// `textureGather` text left is in the NNEDI3_DEF_GATHER macro bodies of
+// nnedi3-predict-common.inc:80-112, which nothing ever expands. Comment stripping cannot help here
+// and neither can any gate short of a real preprocessor, so this is the shape that forces the
+// helper to carry its own version guard.
+constexpr const char* DISABLED_BRANCH_GATHER_SHADER = R"(#version 450
+layout(push_constant) uniform Push { vec4 SourceSize; } params;
+layout(std140, set = 0, binding = 0) uniform UBO { mat4 MVP; } global;
+#pragma stage vertex
+layout(location = 0) in vec4 Position;
+void main() { gl_Position = global.MVP * Position; }
+#pragma stage fragment
+#define NNEDI3_USE_GATHER 0
+layout(location = 0) out vec4 FragColor;
+layout(set = 0, binding = 2) uniform sampler2D Source;
+#if NNEDI3_USE_GATHER
+#define NNEDI3_DEF_GATHER(t, c) textureGather(t, c, 0)
+#else
+#define NNEDI3_DEF_GATHER(t, c) texture(t, c)
+#endif
+void main() { FragColor = NNEDI3_DEF_GATHER(Source, vec2(0.5)); }
+)";
+}  // namespace
+
+// R1, second time round. The gate is a text match on source that still contains comments and
+// never-taken preprocessor branches, so it fires on shaders that cannot possibly gather -- 177 rows
+// across 76 presets in the 2987-preset libretro pack, and for 7 stages across 5 presets (the nnedi3
+// `-predict-h-rgb` ones) the manufactured shim was the *only* thing stopping the stage compiling at
+// `#version 300 es`. Comment stripping fixes the first shape; only a self-guarding helper fixes the
+// second, which is why the guard is what this test really pins.
+TEST(SlangCompile, DeadGatherTextDoesNotRaiseTheGlslVersionFloor)
+{
+  const auto commented = TranslateForBackend(COMMENTED_OUT_GATHER_SHADER, BackendNamed("OpenGL"));
+  ASSERT_TRUE(commented.ok) << commented.error;
+  // A commented-out call is not a call: the gate sees comment-stripped source, so no shim at all.
+  // Searched for as the helper's declaration rather than as a word, because the comments themselves
+  // still say `textureGather` -- and say `dolphin_textureGather` too, since the rename reads no
+  // context either. That is harmless in a comment, and it is what makes the gate imprecise.
+  EXPECT_EQ(commented.fragment_glsl.find("dolphin_textureGather(sampler2DArray"), std::string::npos)
+      << commented.fragment_glsl;
+
+  const auto disabled =
+      TranslateForBackend(DISABLED_BRANCH_GATHER_SHADER, BackendNamed("OpenGL"));
+  ASSERT_TRUE(disabled.ok) << disabled.error;
+
+  // Either shape has to compile at every version the OpenGL backend can select. Deliberately not
+  // asserted: whether the shim is present for the second shape. Today it is (and its guard is what
+  // saves it); a future gate with a real preprocessor would drop it instead, and both spellings
+  // satisfy the property that matters here.
+  for (const TranslatedPass* pass : {&commented, &disabled})
+  {
+    for (const LowVersionTarget& target : GLES_TARGETS)
+    {
+      SCOPED_TRACE(target.name);
+      std::string log;
+      EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                      pass->fragment_glsl,
+                                  EShLangFragment, target.version, target.profile, &log))
+          << log << "\n"
+          << pass->fragment_glsl;
+    }
+    for (const LowVersionTarget& target : DESKTOP_TARGETS)
+    {
+      SCOPED_TRACE(target.name);
+      std::string log;
+      EXPECT_TRUE(ParsesAtVersion(target.preamble + std::string(LOW_VERSION_MACROS) + "\n" +
+                                      pass->fragment_glsl,
+                                  EShLangFragment, target.version, target.profile, &log))
+          << log << "\n"
+          << pass->fragment_glsl;
+    }
+  }
 }
 
 // The GLES path, which the shims used to break outright. ESSL 3.00 forbids overloading a built-in:
