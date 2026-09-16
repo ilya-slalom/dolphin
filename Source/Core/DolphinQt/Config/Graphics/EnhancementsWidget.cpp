@@ -3,6 +3,7 @@
 
 #include "DolphinQt/Config/Graphics/EnhancementsWidget.h"
 
+#include <atomic>
 #include <utility>
 
 #include <QApplication>
@@ -45,6 +46,7 @@
 EnhancementsWidget::EnhancementsWidget(GraphicsPane* gfx_pane)
     : m_game_layer{gfx_pane->GetConfigLayer()}
 {
+  MigrateRemovedStereoModes();
   CreateWidgets();
   LoadPostProcessingShaders();
   ConnectWidgets();
@@ -68,6 +70,28 @@ constexpr int ANISO_16X = std::to_underlying(AnisotropicFilteringMode::Force16x)
 constexpr int FILTERING_DEFAULT = std::to_underlying(TextureFilteringMode::Default);
 constexpr int FILTERING_NEAREST = std::to_underlying(TextureFilteringMode::Nearest);
 constexpr int FILTERING_LINEAR = std::to_underlying(TextureFilteringMode::Linear);
+
+void EnhancementsWidget::MigrateRemovedStereoModes()
+{
+  // Anaglyph and Passive are no longer offered (see the stereo combo below), but their enumerators
+  // still parse out of an existing GFX.ini. ConfigChoiceMap has no entry for them, so it would
+  // setCurrentIndex(-1) and leave the combo blank -- the user could not tell which mode they were
+  // in, and VideoConfig::VerifyValidity() is meanwhile rendering them as Off. Rewrite the stored
+  // value once so the control always shows a real mode.
+  const StereoMode mode = Config::Get(m_game_layer, Config::GFX_STEREO_MODE);
+  if (mode != StereoMode::Anaglyph && mode != StereoMode::Passive)
+    return;
+
+  if (m_game_layer != nullptr)
+  {
+    m_game_layer->Set(Config::GFX_STEREO_MODE, StereoMode::Off);
+    Config::OnConfigChanged();
+  }
+  else
+  {
+    Config::SetBaseOrCurrent(Config::GFX_STEREO_MODE, StereoMode::Off);
+  }
+}
 
 void EnhancementsWidget::CreateWidgets()
 {
@@ -221,7 +245,8 @@ void EnhancementsWidget::CreateWidgets()
 
   // Anaglyph and Passive were implemented by the old post-processing shader, which no longer
   // exists; selecting them renders a second layer for no visible effect. ConfigChoiceMap stores
-  // explicit values, so the remaining entries keep their StereoMode meanings.
+  // explicit values, so the remaining entries keep their StereoMode meanings. Stored Anaglyph /
+  // Passive values are rewritten to Off by MigrateRemovedStereoModes() before we get here.
   m_3d_mode = new ConfigChoiceMap<StereoMode>({{tr("Off"), StereoMode::Off},
                                                {tr("Side-by-Side"), StereoMode::SideBySide},
                                                {tr("Top-and-Bottom"), StereoMode::TopAndBottom},
@@ -618,12 +643,19 @@ void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const st
   progress.setMinimumDuration(0);
   progress.setValue(0);
 
+  // Cancellation channel: QWidget state may only be touched on the GUI thread, so the worker never
+  // reads the dialog. QProgressDialog::canceled() fires on the GUI thread and publishes the flag;
+  // the worker only ever loads this atomic. Lives on this stack frame, which outlives the worker
+  // because loop.exec() below does not return until the future has finished.
+  std::atomic<bool> canceled{false};
+  connect(&progress, &QProgressDialog::canceled, &progress, [&canceled] { canceled = true; });
+
   // The DownloadProgress callback runs on the worker thread; marshal percent onto the UI thread.
-  const auto on_progress = [&progress](s64 downloaded, s64 total) -> bool {
+  const auto on_progress = [&progress, &canceled](s64 downloaded, s64 total) -> bool {
     const int percent = total > 0 ? static_cast<int>((downloaded * 100) / total) : 0;
     QMetaObject::invokeMethod(
         &progress, [&progress, percent] { progress.setValue(percent); }, Qt::QueuedConnection);
-    return !progress.wasCanceled();
+    return !canceled;
   };
 
   const std::string dest_root = File::GetUserPath(D_SHADERS_IDX);

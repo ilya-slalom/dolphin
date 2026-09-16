@@ -33,6 +33,7 @@ public:
   explicit EnhancementsWidget(GraphicsPane* gfx_pane);
 
 private:
+  void MigrateRemovedStereoModes();
   void CreateWidgets();
   void ConnectWidgets();
   void AddDescriptions();
