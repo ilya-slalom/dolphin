@@ -398,31 +398,22 @@ DXFramebuffer::~DXFramebuffer() = default;
 
 void DXFramebuffer::Unbind()
 {
-  bool should_apply = false;
-  if (GetColorAttachment() &&
-      D3D::stateman->UnsetTexture(static_cast<DXTexture*>(GetColorAttachment())->GetD3DSRV()) != 0)
+  if (GetColorAttachment())
   {
-    should_apply = true;
+    D3D::stateman->UnbindTextureFromDevice(
+        static_cast<DXTexture*>(GetColorAttachment())->GetD3DSRV());
   }
 
-  if (GetDepthAttachment() &&
-      D3D::stateman->UnsetTexture(static_cast<DXTexture*>(GetDepthAttachment())->GetD3DSRV()) != 0)
+  if (GetDepthAttachment())
   {
-    should_apply = true;
+    D3D::stateman->UnbindTextureFromDevice(
+        static_cast<DXTexture*>(GetDepthAttachment())->GetD3DSRV());
   }
 
   for (auto additional_color_attachment : m_additional_color_attachments)
   {
-    if (D3D::stateman->UnsetTexture(
-            static_cast<DXTexture*>(additional_color_attachment)->GetD3DSRV()) != 0)
-    {
-      should_apply = true;
-    }
-  }
-
-  if (should_apply)
-  {
-    D3D::stateman->ApplyTextures();
+    D3D::stateman->UnbindTextureFromDevice(
+        static_cast<DXTexture*>(additional_color_attachment)->GetD3DSRV());
   }
 }
 

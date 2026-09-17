@@ -220,6 +220,13 @@ public:
   void SetTextureByMask(u32 textureSlotMask, ID3D11ShaderResourceView* srv);
   void ApplyTextures();
 
+  // Immediately unbinds srv from every slot the device currently has it in, so that making its
+  // resource a render target cannot leave it bound as both. Use this instead of
+  // UnsetTexture() + ApplyTextures(): those flush *every* dirty slot, including inputs the caller
+  // staged for the next draw, and doing that here would bind them while the previous render target
+  // is still set - the exact hazard the runtime resolves by nulling them behind our back.
+  void UnbindTextureFromDevice(ID3D11ShaderResourceView* srv);
+
   // call this immediately before any drawing operation or to explicitly apply pending resource
   // state changes
   void Apply();
