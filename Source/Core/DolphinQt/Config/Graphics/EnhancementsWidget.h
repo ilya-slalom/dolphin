@@ -12,8 +12,8 @@ class ConfigChoice;
 template <typename T>
 class ConfigChoiceMap;
 class ConfigComplexChoice;
-class ConfigStringChoice;
 class ConfigFloatSlider;
+class ConfigText;
 class GraphicsPane;
 class QPushButton;
 class QLabel;
@@ -40,7 +40,8 @@ private:
 
   void OnBackendChanged();
   void UpdateAntialiasingOptions();
-  void LoadPostProcessingShaders();
+  void BrowseForShaderPreset();
+  void ClearShaderPreset();
   void ShaderChanged();
 
   void DownloadShaderPack(const std::string& pack_id, const std::string& profile);
@@ -49,7 +50,10 @@ private:
   ConfigChoice* m_ir_combo;
   ConfigComplexChoice* m_antialiasing_combo;
   ConfigComplexChoice* m_texture_filtering_combo;
-  ConfigStringChoice* m_post_processing_effect;
+  // Read-only display of the preset in GFX_ENHANCE_POST_SHADER; the picker dialog writes it.
+  ConfigText* m_post_processing_preset;
+  ToolTipPushButton* m_post_processing_browse;
+  QPushButton* m_post_processing_clear;
   QPushButton* m_download_shader_pack;
   ConfigBool* m_scaled_efb_copy;
   ConfigBool* m_per_pixel_lighting;
