@@ -6,15 +6,13 @@
 #include <utility>
 
 #include "Common/Assert.h"
-#include "Common/Config/Config.h"
-
-#include "Core/Config/GraphicsSettings.h"
 
 #include "VideoCommon/AbstractFramebuffer.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
+#include "VideoCommon/PostProcessing/LibrashaderLoader.h"
 #include "VideoCommon/PostProcessing/LibrashaderPostProcessing.h"
 #include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
 #include "VideoCommon/PostProcessing/MultipassPostProcessing.h"

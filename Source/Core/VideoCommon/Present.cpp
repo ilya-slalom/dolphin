@@ -126,9 +126,13 @@ bool Presenter::Initialize()
     {
       // The renderer is no longer a user-facing choice, so a post-processor that cannot initialise
       // must not take video initialisation down with it. Fall back once, to the engine that has no
-      // external dependency.
-      WARN_LOG_FMT(VIDEO, "Post-processing engine failed to initialise; falling back to the "
-                          "built-in post-processor.");
+      // external dependency. Unreachable today: MultipassPostProcessing::Initialize always returns
+      // true, and LibrashaderPostProcessing::Initialize only rejects an unsupported runtime, which
+      // CreatePostProcessor() has already screened out. This guards against that changing -- and
+      // the message names only what we are retrying with, not what failed, because by then the
+      // built-in engine could be the thing that failed.
+      WARN_LOG_FMT(VIDEO, "Post-processing engine failed to initialise; retrying with the built-in "
+                          "engine.");
       m_post_processor = std::make_unique<VideoCommon::MultipassPostProcessing>();
       if (!m_post_processor->Initialize(m_backbuffer_format))
         return false;

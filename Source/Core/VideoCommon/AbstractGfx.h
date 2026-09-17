@@ -126,8 +126,9 @@ public:
                                                            const void* cache_data = nullptr,
                                                            size_t cache_data_length = 0) = 0;
 
-  // Builds the post-processing engine. Returns VideoCommon::LibrashaderPostProcessing when the
-  // librashader renderer is selected and this backend has a usable runtime, otherwise the built-in
+  // Builds the post-processing engine. Which one you get is not a user setting: it follows from
+  // whether librashader is usable here. Returns VideoCommon::LibrashaderPostProcessing when the
+  // library loaded and this backend has a runtime for it, otherwise the built-in
   // VideoCommon::MultipassPostProcessing. Backends customise it through CreateLibrashaderRuntime()
   // rather than by overriding this.
   virtual std::unique_ptr<VideoCommon::IPostProcessor> CreatePostProcessor();
