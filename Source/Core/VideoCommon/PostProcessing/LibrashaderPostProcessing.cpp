@@ -21,8 +21,10 @@
 #include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
 #include "VideoCommon/PostProcessing/LibrashaderLoader.h"
 #include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
+#include "VideoCommon/PostProcessing/SlangTranslator.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
+#include "VideoCommon/VideoConfig.h"
 
 namespace VideoCommon
 {
@@ -149,15 +151,17 @@ void LibrashaderPostProcessing::BuildPassthroughPipeline()
   if (m_passthrough_pipeline && m_passthrough_format == format)
     return;
 
-  // Fullscreen-triangle copy, identical to MultipassPostProcessing's passthrough. Vulkan needs Y
-  // inverted to match the presenter's expected orientation.
+  // Fullscreen-triangle copy, identical to MultipassPostProcessing's passthrough -- including the
+  // conditional flip, which is only correct on the backends whose clip space is Y-down. Hardcoding
+  // it went unnoticed while Vulkan was the only backend here; on D3D it inverts the whole frame.
+  const std::string flip_y =
+      SlangNeedsClipYFlip(g_backend_info.api_type) ? "  gl_Position.y = -gl_Position.y;\n" : "";
   const std::string vertex_source =
       "VARYING_LOCATION(0) out float2 v_tex0;\n"
       "void main() {\n"
       "  v_tex0 = float2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
-      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n"
-      "  gl_Position.y = -gl_Position.y;\n"
-      "}\n";
+      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n" +
+      flip_y + "}\n";
   const char* const pixel_source = "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
                                    "VARYING_LOCATION(0) in float2 v_tex0;\n"
                                    "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
@@ -195,16 +199,19 @@ void LibrashaderPostProcessing::BuildDownscalePipeline(const SlangSourceDownscal
     return;
   }
 
-  // Fullscreen triangle. The Y flip makes v_tex0 align with gl_FragCoord's top-left origin, so the
-  // bilinear path (v_tex0) and the box path (texelFetch on gl_FragCoord) share one orientation and
-  // both preserve the source's orientation into the native texture.
-  const char* const vertex_source =
+  // Fullscreen triangle. On the Y-down-clip-space backends the flip is what makes v_tex0 align
+  // with gl_FragCoord's top-left origin, so the bilinear path (v_tex0) and the box path (texelFetch
+  // on gl_FragCoord) share one orientation and both preserve the source's orientation into the
+  // native texture. On D3D and Metal clip space already agrees with gl_FragCoord, so adding it
+  // there inverts the native source instead.
+  const std::string flip_y =
+      SlangNeedsClipYFlip(g_backend_info.api_type) ? "  gl_Position.y = -gl_Position.y;\n" : "";
+  const std::string vertex_source =
       "VARYING_LOCATION(0) out float2 v_tex0;\n"
       "void main() {\n"
       "  v_tex0 = float2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
-      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n"
-      "  gl_Position.y = -gl_Position.y;\n"
-      "}\n";
+      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n" +
+      flip_y + "}\n";
 
   std::string pixel_source;
   if (plan.box_filter)
