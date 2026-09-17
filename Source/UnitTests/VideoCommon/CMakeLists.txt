@@ -30,3 +30,4 @@ add_dolphin_test(SlangSourceDownscaleTest PostProcessing/SlangSourceDownscaleTes
 add_dolphin_test(ChainOutputPolicyTest PostProcessing/ChainOutputPolicyTest.cpp)
 add_dolphin_test(ChainDebugDumpTest PostProcessing/ChainDebugDumpTest.cpp)
 add_dolphin_test(LibrashaderLoaderTest PostProcessing/LibrashaderLoaderTest.cpp)
+add_dolphin_test(LibrashaderParametersTest PostProcessing/LibrashaderParametersTest.cpp)

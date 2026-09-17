@@ -3,6 +3,7 @@
 
 #include "VideoCommon/PostProcessing/LibrashaderPostProcessing.h"
 
+#include <map>
 #include <string>
 #include <utility>
 
@@ -20,6 +21,7 @@
 #include "VideoCommon/PostProcessing/ChainDebugDump.h"
 #include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
 #include "VideoCommon/PostProcessing/LibrashaderLoader.h"
+#include "VideoCommon/PostProcessing/LibrashaderParameters.h"
 #include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
 #include "VideoCommon/PostProcessing/PostProcessingConfig.h"
 #include "VideoCommon/PostProcessing/SlangTranslator.h"
@@ -76,6 +78,8 @@ void LibrashaderPostProcessing::RecompileShader()
   // Free any previous chain before rebuilding.
   m_runtime->DestroyChain();
   m_frame_count = 0;
+  m_parameters.clear();
+  m_preset_relative_path.clear();
 
   if (!m_available)
     return;
@@ -92,6 +96,29 @@ void LibrashaderPostProcessing::RecompileShader()
     return;
   }
 
+  // Derive the preset-relative path for override storage. This is the key under
+  // [LibrashaderParameters], matching PCSX2's shape: preset path relative to the shaders root.
+  const std::string shaders_user = File::GetUserPath(D_SHADERS_IDX) + "shaders_slang" DIR_SEP;
+  const std::string shaders_sys = File::GetSysDirectory() + SHADERS_DIR DIR_SEP "shaders_slang" DIR_SEP;
+  if (path.find(shaders_user) == 0)
+    m_preset_relative_path = path.substr(shaders_user.size());
+  else if (path.find(shaders_sys) == 0)
+    m_preset_relative_path = path.substr(shaders_sys.size());
+  else
+    m_preset_relative_path = preset_name;  // Fallback: use the configured name
+
+  // Enumerate the preset's parameters once here at chain construction and cache them. A preset's
+  // parameter list cannot change without the chain being rebuilt, so this needs no per-frame work.
+  // A generation change then costs one Config::GetAsString, one ParseOverrides, and N SetParameter
+  // calls -- no disk access and no preset parse.
+  std::string enum_error;
+  if (!LibrashaderParameters::Enumerate(path, &m_parameters, &enum_error))
+  {
+    WARN_LOG_FMT(VIDEO, "Librashader: failed to enumerate parameters for '{}': {}", path,
+                 enum_error);
+    // Non-fatal: the chain can still run; the dialog will just have nothing to show.
+  }
+
   libra_shader_preset_t preset = nullptr;
   const std::string error =
       Librashader::DescribeAndFreeError(Librashader::Common().preset_create(path.c_str(), &preset));
@@ -103,7 +130,15 @@ void LibrashaderPostProcessing::RecompileShader()
 
   // CreateChain consumes `preset` on every path, so there is nothing to free here.
   if (m_runtime->CreateChain(preset))
+  {
     INFO_LOG_FMT(VIDEO, "Librashader: filter chain created from '{}'", path);
+
+    // Apply stored overrides once at chain creation. The dialog pushes EVERY parameter when the
+    // generation changes, not only the overridden ones, because a freshly built chain starts from
+    // the preset defaults but a live chain remembers the last value it was given -- so resetting a
+    // parameter has to send the default explicitly.
+    ApplyStoredOverrides();
+  }
 }
 
 void LibrashaderPostProcessing::RecompilePipeline()
@@ -111,6 +146,35 @@ void LibrashaderPostProcessing::RecompilePipeline()
   // librashader owns its internal pipelines and rebuilds them as part of the filter chain, so there
   // is nothing backend-pipeline-specific to rebuild here. The passthrough pipeline is (re)built
   // lazily in BlitFromTexture when the framebuffer format changes.
+}
+
+void LibrashaderPostProcessing::ApplyStoredOverrides()
+{
+  if (!m_runtime->HasChain() || m_parameters.empty())
+    return;
+
+  // Load the stored overrides for this preset.
+  const LibrashaderParameters::Overrides overrides =
+      LibrashaderParameters::Load(m_preset_relative_path);
+
+  // Build a map of overridden values for fast lookup.
+  std::map<std::string, float> override_map;
+  for (const auto& [name, value] : overrides)
+    override_map[name] = value;
+
+  // The dialog pushes EVERY parameter, not only the overridden ones. A freshly built chain starts
+  // from the preset defaults, but a live chain remembers the last value it was given -- so
+  // resetting a parameter has to send the default explicitly.
+  for (const auto& param : m_parameters)
+  {
+    const auto it = override_map.find(param.name);
+    const float value = (it != override_map.end()) ? it->second : param.initial;
+    m_runtime->SetParameter(param.name.c_str(), value);
+  }
+
+  // Record that we've seen the current generation, so the poll in BlitFromTexture doesn't
+  // immediately reapply on the next frame.
+  m_last_seen_generation = LibrashaderParameters::CurrentGeneration();
 }
 
 void LibrashaderPostProcessing::BuildPassthroughPipeline()
@@ -325,6 +389,14 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
   AbstractFramebuffer* const framebuffer = g_gfx->GetCurrentFramebuffer();
   if (framebuffer == nullptr)
     return;
+
+  // Poll the generation counter for parameter edits. Save() bumps it after writing, so the dialog
+  // doesn't have to signal manually. On a mismatch, reload and reapply all parameters.
+  const u32 current_gen = LibrashaderParameters::CurrentGeneration();
+  if (m_runtime->HasChain() && current_gen != m_last_seen_generation)
+  {
+    ApplyStoredOverrides();
+  }
 
   // Drive the real librashader filter chain when it was created successfully. If there is no chain
   // (no preset, preset failed, or a required device extension is missing) we skip straight to the

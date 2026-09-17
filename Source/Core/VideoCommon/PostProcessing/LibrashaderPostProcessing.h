@@ -5,8 +5,11 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
+#include "Common/CommonTypes.h"
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
+#include "VideoCommon/PostProcessing/LibrashaderParameters.h"
 #include "VideoCommon/PostProcessing/SlangSourceDownscale.h"
 
 class AbstractShader;
@@ -52,6 +55,10 @@ private:
   // Builds (or rebuilds, on framebuffer-format change) the fullscreen-triangle copy pipeline used
   // for passthrough rendering. Mirrors MultipassPostProcessing::BuildPassthroughPipeline().
   void BuildPassthroughPipeline();
+
+  // Loads the stored overrides for the current preset and applies them to the live chain. Called
+  // once at chain creation and again whenever the generation counter changes.
+  void ApplyStoredOverrides();
 
   // Renders the internally-upscaled source down to a native-resolution texture per `plan`, so the
   // filter chain derives its geometry from native pixels and the discarded upscale detail becomes
@@ -108,5 +115,10 @@ private:
   u32 m_output_target_width = 0;
   u32 m_output_target_height = 0;
   AbstractTextureFormat m_output_target_format = AbstractTextureFormat::Undefined;
+
+  // Parameter live-update: enumerated list (cached at chain creation) and the last-seen generation.
+  std::vector<LibrashaderParameters::ParameterInfo> m_parameters;
+  std::string m_preset_relative_path;
+  u32 m_last_seen_generation = 0;
 };
 }  // namespace VideoCommon

@@ -1,0 +1,193 @@
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include "VideoCommon/PostProcessing/LibrashaderParameters.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <sstream>
+#include <string>
+
+#include <fmt/format.h>
+
+#include "Common/Config/Config.h"
+#include "Common/StringUtil.h"
+#include "VideoCommon/PostProcessing/LibrashaderLoader.h"
+
+namespace VideoCommon::LibrashaderParameters
+{
+namespace
+{
+// Generation counter, bumped by Save so the post-processor can poll for edits without the dialog
+// having to signal manually. Starts at 1 so a zero-initialized last-seen value triggers a load.
+std::atomic<u32> s_generation{1};
+}  // namespace
+
+bool Enumerate(const std::string& absolute_preset_path, std::vector<ParameterInfo>* out,
+               std::string* error)
+{
+  out->clear();
+  error->clear();
+
+  // Never touch a GPU: this is called from the Qt thread with no device. Guard on availability.
+  const Librashader::Availability& avail = Librashader::GetAvailability();
+  if (!avail.available)
+  {
+    *error = avail.reason;
+    return false;
+  }
+
+  // Parse the preset to get its runtime parameter list.
+  libra_shader_preset_t preset = nullptr;
+  const std::string preset_error = Librashader::DescribeAndFreeError(
+      Librashader::Common().preset_create(absolute_preset_path.c_str(), &preset));
+  if (!preset_error.empty())
+  {
+    *error = preset_error;
+    return false;
+  }
+
+  // Get the runtime parameters. The list is freed below; the preset is freed after that.
+  // preset_get_runtime_params takes a const preset pointer.
+  libra_preset_param_list_t param_list = {};
+  const std::string params_error = Librashader::DescribeAndFreeError(
+      Librashader::Common().preset_get_runtime_params(&preset, &param_list));
+  if (!params_error.empty())
+  {
+    Librashader::Common().preset_free(&preset);
+    *error = params_error;
+    return false;
+  }
+
+  // Copy the fields. Keep the names identical to the librashader C API so this loop is auditable
+  // against librashader.h.
+  out->reserve(param_list.length);
+  for (uint64_t i = 0; i < param_list.length; ++i)
+  {
+    const libra_preset_param_t& p = param_list.parameters[i];
+    ParameterInfo info;
+    info.name = p.name ? p.name : "";
+    info.description = p.description ? p.description : "";
+    info.initial = p.initial;
+    info.minimum = p.minimum;
+    info.maximum = p.maximum;
+    info.step = p.step;
+    out->push_back(std::move(info));
+  }
+
+  // preset_free_runtime_params takes the list by value, not by pointer: pass param_list itself.
+  // This is the kind of thing that is silently wrong elsewhere.
+  Librashader::Common().preset_free_runtime_params(param_list);
+  Librashader::Common().preset_free(&preset);
+
+  return true;
+}
+
+Overrides ParseOverrides(const std::vector<std::string>& entries)
+{
+  Overrides result;
+  result.reserve(entries.size());
+
+  for (const std::string& entry : entries)
+  {
+    const size_t eq_pos = entry.find('=');
+    if (eq_pos == std::string::npos)
+      continue;  // No '=': skip
+
+    const std::string name = entry.substr(0, eq_pos);
+    const std::string value_str = entry.substr(eq_pos + 1);
+
+    if (name.empty())
+      continue;  // Empty name: skip
+
+    float value = 0.0f;
+    if (!TryParse(value_str, &value))
+      continue;  // Unparseable: skip
+
+    result.emplace_back(name, value);
+  }
+
+  return result;
+}
+
+std::vector<std::string> FormatOverrides(const Overrides& overrides)
+{
+  std::vector<std::string> result;
+  result.reserve(overrides.size());
+
+  for (const auto& [name, value] : overrides)
+  {
+    result.push_back(fmt::format("{}={:f}", name, value));
+  }
+
+  return result;
+}
+
+int DecimalsForStep(float step)
+{
+  // PCSX2's logarithmic formula (ShaderChainParams.cpp:93-100). The shader pack declares 73
+  // distinct step values; a six-entry lookup table leaves 67 undefined.
+  if (!(step > 0.0f))
+    return 3;
+  // Small bias so 0.01f (slightly below 0.01) still yields 2, not 3.
+  const double digits = std::ceil(-std::log10(static_cast<double>(step)) - 1e-6);
+  return std::clamp(static_cast<int>(digits), 0, 4);
+}
+
+bool IsDefaultValue(float value, float initial)
+{
+  // PCSX2's relative epsilon (ShaderChainParams.cpp:102-106), so floating-point roundtrip error
+  // does not mark every value as edited.
+  return std::abs(value - initial) <= 1e-6f * std::max(1.0f, std::abs(initial));
+}
+
+Overrides Load(const std::string& preset_relative_path)
+{
+  const Config::Location location(Config::System::GFX, "LibrashaderParameters",
+                                  preset_relative_path);
+  const std::optional<std::string> value = Config::GetAsString(location);
+  if (!value || value->empty())
+    return {};
+
+  // Split on ';' before calling ParseOverrides. Parameter names come from #pragma parameter and
+  // none in the shader pack contains ';' or '=', so ';' is a safe separator.
+  const std::vector<std::string> entries = SplitString(*value, ';');
+  return ParseOverrides(entries);
+}
+
+void Save(const std::string& preset_relative_path, const Overrides& overrides)
+{
+  const Config::Location location(Config::System::GFX, "LibrashaderParameters",
+                                  preset_relative_path);
+  Config::Layer* const base_layer = Config::GetLayer(Config::LayerType::Base).get();
+
+  if (overrides.empty())
+  {
+    // Every value is default: remove the key instead of writing an empty string. This is why "only
+    // non-default values are persisted" works.
+    base_layer->DeleteKey(location);
+  }
+  else
+  {
+    // Join with ';' after calling FormatOverrides. Simple loop join since there's no JoinStrings.
+    const std::vector<std::string> entries = FormatOverrides(overrides);
+    std::string joined;
+    for (size_t i = 0; i < entries.size(); ++i)
+    {
+      if (i > 0)
+        joined += ";";
+      joined += entries[i];
+    }
+    base_layer->Set(location, joined);
+  }
+
+  // Bump the generation after writing, so the post-processor's poll detects the change.
+  s_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+u32 CurrentGeneration()
+{
+  return s_generation.load(std::memory_order_relaxed);
+}
+}  // namespace VideoCommon::LibrashaderParameters
