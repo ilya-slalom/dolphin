@@ -14,7 +14,7 @@ add_custom_command(TARGET tests POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Source/UnitTests/VideoCommon/PostProcessing/TestData" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/TestData"
 )
 
-# Copy librashader into the test binary's directory so LibrashaderParametersTest.EnumerateRealPreset
+# Copy librashader into the test binary's directory so LibrashaderParameters.EnumerateFixturePreset
 # can execute. File::GetBundleDirectory() falls back to the executable's own directory when there is
 # no bundle, so fabricating Contents/Frameworks next to the non-bundle tests binary makes the loader
 # resolve correctly. This is a test-harness convenience, not a fix for macOS dolphin-nogui, whose
@@ -30,7 +30,7 @@ if(APPLE AND ENABLE_VULKAN)
   endif()
 endif()
 
-# Copy librashader.dll next to the test binary so EnumerateRealPreset can execute on Windows. The
+# Copy librashader.dll next to the test binary so EnumerateFixturePreset can execute on Windows. The
 # existing copy into Binaries (Source/Core/CMakeLists.txt:101-123) does not cover Binaries/Tests.
 if(WIN32 AND ENABLE_VULKAN)
   set(LIBRASHADER_DLL "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/windows-x64/librashader.dll")
