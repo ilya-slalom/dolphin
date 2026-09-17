@@ -3,13 +3,20 @@
 
 #include "VideoCommon/AbstractGfx.h"
 
+#include <utility>
+
 #include "Common/Assert.h"
+#include "Common/Config/Config.h"
+
+#include "Core/Config/GraphicsSettings.h"
 
 #include "VideoCommon/AbstractFramebuffer.h"
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/BPFunctions.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
+#include "VideoCommon/PostProcessing/LibrashaderPostProcessing.h"
+#include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
 #include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
 #include "VideoCommon/ShaderCache.h"
 #include "VideoCommon/VertexManagerBase.h"
@@ -194,5 +201,13 @@ bool AbstractGfx::UseGeometryShaderForUI() const
 
 std::unique_ptr<VideoCommon::IPostProcessor> AbstractGfx::CreatePostProcessor()
 {
+  if (Config::Get(Config::GFX_ENHANCE_POST_PROCESS_RENDERER) == PostProcessRenderer::Librashader)
+  {
+    // A backend without a runtime, a build without the shared library, or a truncated library all
+    // degrade to the built-in executor rather than to a black screen.
+    std::unique_ptr<VideoCommon::LibrashaderRuntime> runtime = CreateLibrashaderRuntime();
+    if (runtime && runtime->IsSupported())
+      return std::make_unique<VideoCommon::LibrashaderPostProcessing>(std::move(runtime));
+  }
   return std::make_unique<VideoCommon::MultipassPostProcessing>();
 }

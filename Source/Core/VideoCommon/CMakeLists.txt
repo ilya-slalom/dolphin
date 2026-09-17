@@ -148,6 +148,9 @@ add_library(videocommon
   PostProcessing/ChainDebugDump.h
   PostProcessing/LibrashaderLoader.cpp
   PostProcessing/LibrashaderLoader.h
+  PostProcessing/LibrashaderPostProcessing.cpp
+  PostProcessing/LibrashaderPostProcessing.h
+  PostProcessing/LibrashaderRuntime.h
   PostProcessing/LutTexture.cpp
   PostProcessing/LutTexture.h
   PostProcessing/IPostProcessor.h

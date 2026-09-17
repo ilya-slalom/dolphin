@@ -4,37 +4,37 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
+#include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
 #include "VideoCommon/PostProcessing/SlangSourceDownscale.h"
-
-// librashader's opaque Vulkan filter-chain handle is `struct _filter_chain_vk *`
-// (see Externals/librashader/include/librashader.h). Forward-declare it here so this
-// header does not pull in librashader_ld.h, which defines many static-inline symbols and
-// is therefore included in exactly one translation unit (LibrashaderPostProcessing.cpp).
-struct _filter_chain_vk;
 
 class AbstractShader;
 class AbstractPipeline;
 class AbstractTexture;
 class AbstractFramebuffer;
 
-namespace Vulkan
+namespace VideoCommon
 {
-// Vulkan-backend post-processing engine backed by librashader (loaded at runtime via dlopen).
-// This is the Task 4 skeleton: it loads the librashader instance, resolves the selected preset
-// and creates the filter chain, but BlitFromTexture only performs a passthrough copy. The real
-// per-frame libra_vk_filter_chain_frame() call arrives in a later task.
-class LibrashaderPostProcessing final : public VideoCommon::IPostProcessor
+// Resolves a post-processing preset name to an absolute .slangp path using the identical search
+// order as MultipassPostProcessing::AppendPreset(), so both engines consume the same preset file.
+// librashader accepts a single preset, so only the first entry of a ';'-separated chain is used;
+// the dropped entries are named in a warning. Returns "" when no candidate path exists.
+std::string ResolvePresetPath(const std::string& preset_spec);
+
+// Post-processing engine backed by a librashader native runtime. Resolves the selected preset,
+// asks the runtime to build a filter chain from it, and per frame renders the internally-upscaled
+// source down to native resolution, records the chain into a draw-rect-sized target and presents
+// that 1:1 into the backbuffer. Everything here is backend-agnostic; the handful of calls that are
+// not live behind LibrashaderRuntime. Without a chain (no preset, preset failed, library missing)
+// and on any per-frame chain error, BlitFromTexture falls back to a passthrough copy so the screen
+// never blanks.
+class LibrashaderPostProcessing final : public IPostProcessor
 {
 public:
-  LibrashaderPostProcessing();
+  explicit LibrashaderPostProcessing(std::unique_ptr<LibrashaderRuntime> runtime);
   ~LibrashaderPostProcessing() override;
-
-  // Lazily loads the librashader instance once and reports whether the shared library was found
-  // and its ABI is compatible. Used by VKGfx::CreatePostProcessor() to decide whether to fall
-  // back to the built-in engine. Safe to call before any instance exists.
-  static bool IsAvailable();
 
   bool Initialize(AbstractTextureFormat format) override;
   void RecompileShader() override;
@@ -51,27 +51,28 @@ private:
   // Renders the internally-upscaled source down to a native-resolution texture per `plan`, so the
   // filter chain derives its geometry from native pixels and the discarded upscale detail becomes
   // supersampling (box) rather than aliasing (single bilinear tap). Returns the native-res source
-  // texture, left in SHADER_READ_ONLY_OPTIMAL, or nullptr on allocation/pipeline failure.
-  const AbstractTexture* DownscaleToNativeSource(const VideoCommon::SlangSourceDownscalePlan& plan,
-                                                 const AbstractTexture* src_tex, u32 native_width,
-                                                 u32 native_height);
+  // texture, or nullptr on allocation/pipeline failure. The shader-read transition is the
+  // runtime's job: RunFrame() transitions whichever texture it is handed.
+  AbstractTexture* DownscaleToNativeSource(const SlangSourceDownscalePlan& plan,
+                                           const AbstractTexture* src_tex, u32 native_width,
+                                           u32 native_height);
 
   // (Re)builds the downscale pipeline. The box pixel shader bakes the factor as a literal, so it is
   // rebuilt whenever the factor, filter kind (box vs bilinear), or color format changes.
-  void BuildDownscalePipeline(const VideoCommon::SlangSourceDownscalePlan& plan,
-                              AbstractTextureFormat format);
+  void BuildDownscalePipeline(const SlangSourceDownscalePlan& plan, AbstractTextureFormat format);
 
   // (Re)allocates the draw-rect-sized target the filter chain renders into (at viewport origin
   // 0,0), so librashader's OutputSize/FinalViewportSize and every scale_type=viewport pass match
-  // the actually-drawn extent instead of the full backbuffer. Returns nullptr on allocation
-  // failure. See BlitFromTexture for why this matters (vertical-moire root cause).
-  AbstractTexture* EnsureOutputTarget(u32 width, u32 height, AbstractTextureFormat format);
+  // the actually-drawn extent instead of the full backbuffer. Returns the target's framebuffer,
+  // which is what RunFrame() takes, or nullptr on allocation failure. See BlitFromTexture for why
+  // this matters (vertical-moire root cause).
+  AbstractFramebuffer* EnsureOutputTarget(u32 width, u32 height, AbstractTextureFormat format);
 
-  // librashader Vulkan filter chain; null means "passthrough" (creation failed or no preset).
-  _filter_chain_vk* m_chain = nullptr;
+  // The backend's binding to librashader. Never null; HasChain() false means "passthrough".
+  std::unique_ptr<LibrashaderRuntime> m_runtime;
 
   AbstractTextureFormat m_format = AbstractTextureFormat::Undefined;
-  size_t m_frame_count = 0;
+  u64 m_frame_count = 0;
   bool m_available = false;
 
   // Passthrough copy resources.
@@ -98,8 +99,9 @@ private:
 
   // Draw-rect-sized target the filter chain renders into, then blitted 1:1 into the backbuffer.
   std::unique_ptr<AbstractTexture> m_output_target;
+  std::unique_ptr<AbstractFramebuffer> m_output_target_fb;
   u32 m_output_target_width = 0;
   u32 m_output_target_height = 0;
   AbstractTextureFormat m_output_target_format = AbstractTextureFormat::Undefined;
 };
-}  // namespace Vulkan
+}  // namespace VideoCommon
