@@ -20,6 +20,7 @@
 #include "VideoCommon/PostProcessing/ChainDebugDump.h"
 #include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
 #include "VideoCommon/PostProcessing/LibrashaderLoader.h"
+#include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
 
@@ -29,17 +30,36 @@ std::string ResolvePresetPath(const std::string& preset_spec)
 {
   // librashader accepts a single preset, so only the first entry of a ';'-separated chain is used.
   const auto separator = preset_spec.find(';');
+  std::string dropped =
+      separator == std::string::npos ? std::string() : preset_spec.substr(separator + 1);
+  // A tail of nothing but separators and whitespace ("shader;", "shader; ") drops nothing a user
+  // would want to hear about, so it is not worth a warning.
+  if (dropped.find_first_not_of(" \t;") == std::string::npos)
+    dropped.clear();
+
   std::string name = preset_spec.substr(0, separator);
   const auto first = name.find_first_not_of(" \t");
   if (first == std::string::npos)
+  {
+    // Nothing before the separator (";shader"): the entries after it are dropped like any other
+    // tail, except that here they were the whole request. Warn anyway -- this is the mis-typed
+    // input most in need of an explanation, and it used to fail silently.
+    if (!dropped.empty())
+    {
+      WARN_LOG_FMT(VIDEO,
+                   "Librashader: preset '{}' has an empty first entry, so nothing is loaded; only "
+                   "one preset is supported, so '{}' is ignored",
+                   preset_spec, dropped);
+    }
     return {};
+  }
   const auto last = name.find_last_not_of(" \t");
   name = name.substr(first, last - first + 1);
 
-  if (separator != std::string::npos)
+  if (!dropped.empty())
   {
     WARN_LOG_FMT(VIDEO, "Librashader: only one preset is supported; using '{}' and ignoring '{}'",
-                 name, preset_spec.substr(separator + 1));
+                 name, dropped);
   }
 
   std::string path = File::GetUserPath(D_SHADERS_IDX) + "shaders_slang" DIR_SEP + name + ".slangp";
@@ -59,7 +79,13 @@ LibrashaderPostProcessing::LibrashaderPostProcessing(std::unique_ptr<Librashader
 {
 }
 
-LibrashaderPostProcessing::~LibrashaderPostProcessing() = default;
+LibrashaderPostProcessing::~LibrashaderPostProcessing()
+{
+  // Free the chain here rather than relying on every runtime's destructor to remember. The runtime
+  // object is still fully alive in this body, so the virtual call dispatches normally; DestroyChain
+  // is required to be idempotent for exactly this reason.
+  m_runtime->DestroyChain();
+}
 
 bool LibrashaderPostProcessing::Initialize(AbstractTextureFormat format)
 {
@@ -283,9 +309,10 @@ LibrashaderPostProcessing::DownscaleToNativeSource(const SlangSourceDownscalePla
   g_gfx->SetPipeline(m_downscale_pipeline.get());
   g_gfx->Draw(0, 3);
 
-  // The result is handed to librashader as a shader-read source. Ending the render pass and taking
-  // the texture out of render-target state is RunFrame()'s job: it transitions whichever source it
-  // is given, so doing it twice would only add a no-op barrier.
+  // The result is handed to librashader as a shader-read source, but nothing is done about that
+  // here: the caller's g_gfx->SetFramebuffer(framebuffer) restore ends the render pass this draw
+  // opened, and RunFrame() transitions whichever source it is given, so the shader-read transition
+  // is deferred to it rather than issued twice.
   return m_native_source.get();
 }
 
@@ -346,7 +373,9 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
       }
       // The downscale draw left its own framebuffer bound; restore the caller's so that a
       // fall-through to the passthrough copy (on chain error) targets the screen, not the native
-      // RT.
+      // RT. This restore is also what ends the render pass the downscale opened, which is why
+      // DownscaleToNativeSource does not end one itself -- do not remove or move it out of this
+      // branch without putting that back, or the chain's barriers get recorded inside that pass.
       g_gfx->SetFramebuffer(framebuffer);
     }
 

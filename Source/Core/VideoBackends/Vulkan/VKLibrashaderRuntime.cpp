@@ -165,12 +165,13 @@ bool VKLibrashaderRuntime::RunFrame(const AbstractTexture* source, AbstractFrame
 
   // libra_vk_filter_chain_frame() must NOT be recorded inside a render pass, and the header
   // requires the input in SHADER_READ_ONLY_OPTIMAL and the output in COLOR_ATTACHMENT_OPTIMAL.
-  // Ending the render pass first also keeps the barriers below out of any pass a preceding draw
-  // (the native source downscale) left open. (`source` is const, which is fine because
-  // VKTexture::TransitionToLayout is a const member function. Both transitions are no-ops when the
-  // image already has the requested layout.) librashader creates no barrier after its final pass,
-  // so on success the target is left in COLOR_ATTACHMENT_OPTIMAL and Dolphin's own tracking is
-  // reconciled to match.
+  // EndRenderPass() covers a pass the emulated frame left open, which is the case whenever no
+  // native-source downscale ran: on the downscale path the caller's framebuffer restore has
+  // already ended the pass (VKGfx::BindFramebuffer ends it) and this is a no-op. (`source` is
+  // const, which is fine because VKTexture::TransitionToLayout is a const member function. Both
+  // transitions are no-ops when the image already has the requested layout.) librashader creates no
+  // barrier after its final pass, so on success the target is left in COLOR_ATTACHMENT_OPTIMAL and
+  // Dolphin's own tracking is reconciled to match.
   StateTracker::GetInstance()->EndRenderPass();
   const VkCommandBuffer cmd = g_command_buffer_mgr->GetCurrentCommandBuffer();
   in_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

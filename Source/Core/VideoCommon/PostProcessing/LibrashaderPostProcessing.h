@@ -7,7 +7,6 @@
 #include <string>
 
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
-#include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
 #include "VideoCommon/PostProcessing/SlangSourceDownscale.h"
 
 class AbstractShader;
@@ -17,6 +16,12 @@ class AbstractFramebuffer;
 
 namespace VideoCommon
 {
+// Forward-declared rather than included: LibrashaderRuntime.h reaches <librashader.h>, and the
+// fewer translation units that can see that header the harder it is to trip over its include-order
+// trap (see the top of VKLibrashaderRuntime.cpp). unique_ptr only needs the complete type where the
+// destructor is defined, which is LibrashaderPostProcessing.cpp.
+class LibrashaderRuntime;
+
 // Resolves a post-processing preset name to an absolute .slangp path using the identical search
 // order as MultipassPostProcessing::AppendPreset(), so both engines consume the same preset file.
 // librashader accepts a single preset, so only the first entry of a ';'-separated chain is used;

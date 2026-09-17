@@ -35,14 +35,27 @@ public:
   // failure ("the shader preset is immediately invalidated"), so implementations must never free
   // it -- that would be a double free. Returns false and logs on failure.
   virtual bool CreateChain(libra_shader_preset_t preset) = 0;
+
+  // Frees the chain, if there is one. Must be idempotent: LibrashaderPostProcessing's destructor
+  // calls it before releasing the runtime, so an implementation whose own destructor also frees the
+  // chain (a good idea, for standalone use) sees two calls. Guarding on a null handle is enough.
   virtual void DestroyChain() = 0;
+
   virtual bool HasChain() const = 0;
 
   // Records the whole chain, reading `source` and writing `target` over its full extent with the
-  // viewport at (0,0). Called outside any render pass. Implementations must transition `source`
-  // to shader-read and `target` to render-target themselves, and must leave Dolphin's own
-  // pipeline, descriptor and layout tracking consistent afterwards -- librashader binds its own
-  // state and does not restore Dolphin's.
+  // viewport at (0,0). Called outside any render pass. Implementations must transition `source` to
+  // shader-read and `target` to render-target themselves, and must reconcile whatever Dolphin
+  // caches about the images they touched: the Vulkan runtime does this for the target's image
+  // layout (OverrideImageLayout), because librashader leaves it in COLOR_ATTACHMENT_OPTIMAL without
+  // a closing barrier.
+  //
+  // librashader also binds its own pipeline and descriptors on the same command list and does not
+  // restore Dolphin's. Dolphin's Vulkan backend gets away with that incidentally -- the emulated
+  // frame's own draws re-dirty everything the post-chain passthrough blit needs, so nothing is
+  // invalidated explicitly and nothing has been observed to misrender. Do not read that as
+  // "nothing is required": each backend must check whether its own state cache is as forgiving,
+  // and invalidate what is not.
   virtual bool RunFrame(const AbstractTexture* source, AbstractFramebuffer* target,
                         u64 frame_count) = 0;
 
