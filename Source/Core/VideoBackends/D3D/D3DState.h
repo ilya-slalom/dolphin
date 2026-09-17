@@ -224,6 +224,18 @@ public:
   // state changes
   void Apply();
 
+  // Forgets everything we believe is currently bound. Needed after code outside this class
+  // (librashader's filter chain) has bound its own state on the immediate context: every setter
+  // above, and Apply() itself, skips work when the pending value already matches m_current, so a
+  // stale m_current makes the next draw silently reuse the chain's bindings instead of ours.
+  // m_pending is deliberately left alone -- it still holds what Dolphin last asked for, which is
+  // exactly what the next Apply() should re-bind.
+  void InvalidateCachedState()
+  {
+    m_current = {};
+    m_dirtyFlags.set();
+  }
+
   // Binds constant buffers/textures/samplers to the compute shader stage.
   // We don't track these explicitly because it's not often-used.
   void SetComputeUAV(u32 index, ID3D11UnorderedAccessView* uav);

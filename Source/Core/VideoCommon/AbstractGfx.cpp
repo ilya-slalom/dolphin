@@ -199,6 +199,11 @@ bool AbstractGfx::UseGeometryShaderForUI() const
          !g_backend_info.bUsesExplictQuadBuffering;
 }
 
+std::unique_ptr<VideoCommon::LibrashaderRuntime> AbstractGfx::CreateLibrashaderRuntime()
+{
+  return nullptr;
+}
+
 std::unique_ptr<VideoCommon::IPostProcessor> AbstractGfx::CreatePostProcessor()
 {
   if (Config::Get(Config::GFX_ENHANCE_POST_PROCESS_RENDERER) == PostProcessRenderer::Librashader)

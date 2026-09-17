@@ -135,10 +135,7 @@ public:
   // Builds this backend's binding to librashader's native runtime, or null when there is none.
   // Backends with a librashader runtime override only this; CreatePostProcessor() then decides
   // whether to use it.
-  virtual std::unique_ptr<VideoCommon::LibrashaderRuntime> CreateLibrashaderRuntime()
-  {
-    return nullptr;
-  }
+  virtual std::unique_ptr<VideoCommon::LibrashaderRuntime> CreateLibrashaderRuntime();
 
   AbstractFramebuffer* GetCurrentFramebuffer() const { return m_current_framebuffer; }
 
