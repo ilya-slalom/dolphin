@@ -14,30 +14,43 @@ using VideoCommon::ShouldRenderChainDirectly;
 // target cannot change a pixel.
 TEST(ChainOutputPolicy, FullBackbufferRectRendersDirectly)
 {
-  EXPECT_TRUE(ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 1920, 1080), 1920, 1080));
+  EXPECT_TRUE(
+      ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 1920, 1080), 1920, 1080, true));
 }
 
 TEST(ChainOutputPolicy, PillarboxedRectUsesIntermediateTarget)
 {
   // Same height, narrower and offset: OutputSize would be wrong if rendered into the backbuffer.
   EXPECT_FALSE(
-      ShouldRenderChainDirectly(MathUtil::Rectangle<int>(240, 0, 1680, 1080), 1920, 1080));
+      ShouldRenderChainDirectly(MathUtil::Rectangle<int>(240, 0, 1680, 1080), 1920, 1080, true));
 }
 
 TEST(ChainOutputPolicy, LetterboxedRectUsesIntermediateTarget)
 {
-  EXPECT_FALSE(ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 60, 1920, 1020), 1920, 1080));
+  EXPECT_FALSE(
+      ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 60, 1920, 1020), 1920, 1080, true));
 }
 
 TEST(ChainOutputPolicy, StereoHalfRectUsesIntermediateTarget)
 {
   // Side-by-side stereo: full height, half width, at the origin.
-  EXPECT_FALSE(ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 960, 1080), 1920, 1080));
+  EXPECT_FALSE(
+      ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 960, 1080), 1920, 1080, true));
 }
 
 TEST(ChainOutputPolicy, RectLargerThanBackbufferUsesIntermediateTarget)
 {
-  EXPECT_FALSE(ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 1920, 1080), 1280, 720));
+  EXPECT_FALSE(
+      ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 1920, 1080), 1280, 720, true));
+}
+
+// OpenGL's window framebuffer is FBO 0 with no attachment at all, and librashader's GL runtime
+// builds its own FBO around the output TEXTURE it is handed -- so a framebuffer that owns no image
+// cannot be the chain's render target, however well the rect matches.
+TEST(ChainOutputPolicy, TargetWithoutAnImageUsesIntermediateTarget)
+{
+  EXPECT_FALSE(
+      ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 1920, 1080), 1920, 1080, false));
 }
 
 // Dynamic rendering needs both the enabled device feature and a resolvable vkCmdBeginRendering;

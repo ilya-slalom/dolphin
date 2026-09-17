@@ -354,9 +354,8 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
 
   // Drive the real librashader filter chain when it was created successfully. If there is no chain
   // (no preset, preset failed, or a required device extension is missing) we skip straight to the
-  // passthrough copy so the screen never blanks. A framebuffer without a color attachment likewise
-  // falls through to passthrough rather than dereferencing a null attachment.
-  if (m_runtime->HasChain() && framebuffer->GetColorAttachment() != nullptr)
+  // passthrough copy so the screen never blanks.
+  if (m_runtime->HasChain())
   {
     // librashader derives SourceSize/OriginalSize from the input image's dimensions, and CRT
     // presets (crt-royale, RetroCrisis) scale their scanline and phosphor-mask geometry by
@@ -400,7 +399,8 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     // into a draw-rect-sized target at viewport origin (0,0) so OutputSize == the drawn extent,
     // then blit that 1:1 into the backbuffer at the draw rect. This mirrors how ARMSX2 drives
     // librashader.
-    if (ShouldRenderChainDirectly(dst, framebuffer->GetWidth(), framebuffer->GetHeight()))
+    if (ShouldRenderChainDirectly(dst, framebuffer->GetWidth(), framebuffer->GetHeight(),
+                                  framebuffer->GetColorAttachment() != nullptr))
     {
       // The draw rect is the entire backbuffer, so OutputSize is identical whether the chain
       // targets the intermediate texture or the backbuffer itself: render straight into the
@@ -425,9 +425,12 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     }
     else
     {
+      // GetColorFormat() rather than the attachment's own format: they agree whenever there is an
+      // attachment, and OpenGL's window framebuffer has none but still reports the format it
+      // presents (RGBA8), which is the format the 1:1 blit below has to match.
       AbstractFramebuffer* const chain_fb =
           EnsureOutputTarget(static_cast<u32>(dst.GetWidth()), static_cast<u32>(dst.GetHeight()),
-                             framebuffer->GetColorAttachment()->GetFormat());
+                             framebuffer->GetColorFormat());
       if (chain_fb != nullptr && m_runtime->RunFrame(source, chain_fb, m_frame_count++))
       {
         AbstractTexture* const chain_output = chain_fb->GetColorAttachment();

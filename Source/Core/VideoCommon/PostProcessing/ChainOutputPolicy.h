@@ -8,17 +8,25 @@
 
 namespace VideoCommon
 {
-// True when the post-processing chain's draw rect is exactly the whole target framebuffer. Only
-// then may the chain render straight into that framebuffer's image and skip the intermediate
-// draw-rect-sized target plus the 1:1 blit: librashader derives OutputSize / FinalViewportSize
-// from the output IMAGE, so for any sub-rect (pillarbox, letterbox, stereo half) rendering into the
-// backbuffer would size the chain for the wrong extent (the vertical-moire bug the intermediate
-// target exists to fix).
+// True when the post-processing chain's draw rect is exactly the whole target framebuffer AND that
+// framebuffer owns an image. Only then may the chain render straight into it and skip the
+// intermediate draw-rect-sized target plus the 1:1 blit.
+//
+// The rect test: librashader derives OutputSize / FinalViewportSize from the output IMAGE, so for
+// any sub-rect (pillarbox, letterbox, stereo half) rendering into the backbuffer would size the
+// chain for the wrong extent (the vertical-moire bug the intermediate target exists to fix).
+//
+// The image test: every runtime is handed the target's own image, and OpenGL's window framebuffer
+// has none -- OGLGfx's m_system_framebuffer wraps FBO 0 with a null color attachment, unlike the
+// D3D and Vulkan swapchain framebuffers, which wrap a real texture. librashader's GL runtime builds
+// an FBO of its own around the output texture it is given and has no way to be pointed at FBO 0, so
+// on OpenGL the chain always goes through the intermediate target and is then blitted to the
+// screen.
 constexpr bool ShouldRenderChainDirectly(const MathUtil::Rectangle<int>& dst, u32 fb_width,
-                                         u32 fb_height)
+                                         u32 fb_height, bool target_owns_image)
 {
-  return dst.left == 0 && dst.top == 0 && dst.right == static_cast<int>(fb_width) &&
-         dst.bottom == static_cast<int>(fb_height);
+  return target_owns_image && dst.left == 0 && dst.top == 0 &&
+         dst.right == static_cast<int>(fb_width) && dst.bottom == static_cast<int>(fb_height);
 }
 
 // librashader takes its dynamic-rendering path only when the device feature is enabled AND it can
