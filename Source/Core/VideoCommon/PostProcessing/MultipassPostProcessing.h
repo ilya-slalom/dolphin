@@ -64,6 +64,15 @@ private:
     SamplerState input_sampler;              // sampler applied to this pass's inputs
     std::unique_ptr<AbstractShader> vertex_shader;
     std::unique_ptr<AbstractShader> pixel_shader;
+    // This pass's vertex stage translated for a draw that targets the presented framebuffer
+    // instead of one of our textures, i.e. with SlangNeedsPresentClipYFlip in place of
+    // SlangNeedsClipYFlip. Only the chain's last pass draws there, and which pass that is is not
+    // known while a preset is being appended (a later preset appends more passes, a failing one
+    // rolls its own back), so every pass carries the alternative source and
+    // RetargetFinalPassToPresent compiles the one that turns out to be last. Empty on the backends
+    // whose two answers agree -- every backend except OpenGL -- so they translate and compile
+    // exactly what they did before.
+    std::string present_vertex_glsl;
     std::unique_ptr<AbstractPipeline> pipeline;
     std::unique_ptr<AbstractTexture> output_texture;  // null for final pass; this frame's output
     std::unique_ptr<AbstractFramebuffer> output_framebuffer;
@@ -100,6 +109,11 @@ private:
   // Appends one preset's LUTs + passes to the current chain (used by LoadPreset for each preset
   // in a chain). Rolls back its own additions on failure, leaving earlier presets intact.
   void AppendPreset(const std::string& preset_name);
+  // Swaps the assembled chain's last pass onto its present-target vertex shader (see
+  // Pass::present_vertex_glsl). That pass renders straight into the framebuffer being presented,
+  // where OpenGL needs no clip-space Y flip, unlike every earlier pass, which renders into a
+  // texture. No-op when the chain is empty and on the backends whose two answers agree.
+  void RetargetFinalPassToPresent();
   void ClearChain();
   // Builds the built-in pass-through pipeline (a plain copy of the input) for the current
   // framebuffer format, used when no user preset is active or a preset failed to load.

@@ -190,6 +190,21 @@ TEST(SlangTranslator, ClipYFlipMatchesFramebufferShaderGen)
   EXPECT_FALSE(SlangNeedsClipYFlip(APIType::Metal));
 }
 
+TEST(SlangTranslator, PresentClipYFlipDiffersFromTextureTargetOnOpenGL)
+{
+  // The presented framebuffer's row 0 is the display's bottom scanline on OpenGL, not the image's
+  // top row, so the flip that is right for a texture target inverts the screen there. Every other
+  // backend answers both questions the same way.
+  EXPECT_TRUE(SlangNeedsPresentClipYFlip(APIType::Vulkan));
+  EXPECT_FALSE(SlangNeedsPresentClipYFlip(APIType::OpenGL));
+  EXPECT_FALSE(SlangNeedsPresentClipYFlip(APIType::D3D));
+  EXPECT_FALSE(SlangNeedsPresentClipYFlip(APIType::Metal));
+
+  EXPECT_NE(SlangNeedsPresentClipYFlip(APIType::OpenGL), SlangNeedsClipYFlip(APIType::OpenGL));
+  for (const APIType api : {APIType::Vulkan, APIType::D3D, APIType::Metal})
+    EXPECT_EQ(SlangNeedsPresentClipYFlip(api), SlangNeedsClipYFlip(api));
+}
+
 TEST(SlangTranslator, EmitsClipYFlipWhenRequested)
 {
   const auto result = TranslateSlangPass(MakeShader(""), {}, {}, /*flip_clip_y=*/true);

@@ -216,6 +216,9 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
   for (const std::string& name : SplitChainSpec(preset_spec))
     AppendPreset(name);
 
+  // Only now is it settled which pass is last, and the last pass is the one that draws to the
+  // screen rather than into a texture.
+  RetargetFinalPassToPresent();
   AnalyzeRenderStages();
   m_passthrough = m_passes.empty();
 }
@@ -335,8 +338,9 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
       return;
     }
 
-    TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names,
-                                                   SlangNeedsClipYFlip(g_backend_info.api_type));
+    const APIType api_type = g_backend_info.api_type;
+    TranslatedPass translated =
+        TranslateSlangPass(*parsed, known_aliases, lut_names, SlangNeedsClipYFlip(api_type));
     if (!translated.ok)
     {
       ERROR_LOG_FMT(VIDEO, "Post-processing: cannot translate {}: {}; skipping preset {}",
@@ -367,11 +371,59 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
                               pass_config.mipmap_input);
     pass.vertex_shader = std::move(shaders.vertex);
     pass.pixel_shader = std::move(shaders.pixel);
+
+    // Keep the present-target translation of this pass's vertex stage for
+    // RetargetFinalPassToPresent to compile if this pass ends up last. Nothing to keep where the
+    // two answers agree (every backend but OpenGL), and only the vertex source is kept: the
+    // fragment stage, sampler bindings and UBO layout are identical either way -- the whole
+    // difference is one line in the injected main().
+    if (SlangNeedsPresentClipYFlip(api_type) != SlangNeedsClipYFlip(api_type))
+    {
+      TranslatedPass present = TranslateSlangPass(*parsed, known_aliases, lut_names,
+                                                  SlangNeedsPresentClipYFlip(api_type));
+      if (present.ok)
+        pass.present_vertex_glsl = std::move(present.vertex_glsl);
+    }
+
     m_passes.push_back(std::move(pass));
 
     if (!pass_config.alias.empty())
       known_aliases.push_back(pass_config.alias);
   }
+}
+
+void MultipassPostProcessing::RetargetFinalPassToPresent()
+{
+  if (m_passes.empty())
+    return;
+
+  // BlitFromTexture is only ever called with the backbuffer bound (Presenter::Present binds it,
+  // then RenderXFBToScreen calls us), and it draws the last pass into that framebuffer -- the
+  // is_final branches in RecompilePipeline and in the draw loop both key off this same
+  // m_passes.size() - 1, and nothing adds or drops a pass between here and there: only LoadPreset
+  // and ClearChain touch m_passes, and a per-preset rollback has already run by now.
+  Pass& final_pass = m_passes.back();
+  const std::string vertex_glsl = std::move(final_pass.present_vertex_glsl);
+  // Every pass kept one of these because any of them could have turned out to be last. Now that
+  // the answer is known the rest are dead weight, and this function is their only consumer.
+  for (Pass& pass : m_passes)
+    pass.present_vertex_glsl.clear();
+  if (vertex_glsl.empty())
+    return;
+
+  std::unique_ptr<AbstractShader> vertex =
+      CompileTranslatedVertex(vertex_glsl, DirectoryOf(final_pass.config.shader_path));
+  if (!vertex)
+  {
+    // The pass keeps the vertex shader it already has, which flips: the frame is presented upside
+    // down, the way it was before this was split, rather than not presented at all.
+    ERROR_LOG_FMT(VIDEO,
+                  "Post-processing: failed to compile the present-target vertex shader for final "
+                  "pass '{}'; the presented frame will be vertically flipped",
+                  final_pass.config.shader_path);
+    return;
+  }
+  final_pass.vertex_shader = std::move(vertex);
 }
 
 void MultipassPostProcessing::RecompilePipeline()
@@ -517,7 +569,10 @@ void MultipassPostProcessing::BuildPassthroughPipeline()
   // Fullscreen-triangle vertex shader + a plain textured copy. Uses Dolphin's per-backend
   // shader macros (defined by the backend header CreateShaderFromSource prepends), so it works
   // for any backbuffer format -- unlike ScaleTexture, which only supports RGBA8 targets.
-  const std::string flip_y = SlangNeedsClipYFlip(g_backend_info.api_type) ?
+  // BlitPassthrough only ever draws into the framebuffer being presented, so this asks
+  // SlangNeedsPresentClipYFlip and not SlangNeedsClipYFlip: on OpenGL the latter is the answer for
+  // a texture target only.
+  const std::string flip_y = SlangNeedsPresentClipYFlip(g_backend_info.api_type) ?
                                  "  gl_Position.y = -gl_Position.y;\n" :
                                  "";
   const std::string vertex_source =

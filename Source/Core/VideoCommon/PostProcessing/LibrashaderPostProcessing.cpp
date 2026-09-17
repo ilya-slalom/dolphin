@@ -154,8 +154,11 @@ void LibrashaderPostProcessing::BuildPassthroughPipeline()
   // Fullscreen-triangle copy, identical to MultipassPostProcessing's passthrough -- including the
   // conditional flip, which is only correct on the backends whose clip space is Y-down. Hardcoding
   // it went unnoticed while Vulkan was the only backend here; on D3D it inverts the whole frame.
-  const std::string flip_y =
-      SlangNeedsClipYFlip(g_backend_info.api_type) ? "  gl_Position.y = -gl_Position.y;\n" : "";
+  // This draw targets the presented framebuffer, so it asks SlangNeedsPresentClipYFlip and not
+  // SlangNeedsClipYFlip: on OpenGL the latter is the answer for a texture target only.
+  const std::string flip_y = SlangNeedsPresentClipYFlip(g_backend_info.api_type) ?
+                                 "  gl_Position.y = -gl_Position.y;\n" :
+                                 "";
   const std::string vertex_source =
       "VARYING_LOCATION(0) out float2 v_tex0;\n"
       "void main() {\n"

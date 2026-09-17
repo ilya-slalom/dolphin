@@ -877,6 +877,15 @@ std::vector<u8> PackSlangUniforms(const std::vector<UboMember>& members,
   return buffer;
 }
 
+std::unique_ptr<AbstractShader> CompileTranslatedVertex(const std::string& vertex_glsl,
+                                                        const std::string& include_dir)
+{
+  // #include resolver rooted at the shader's own directory and the Sys shaders dir.
+  ShaderIncluder includer(include_dir + DIR_SEP, File::GetSysDirectory() + SHADERS_DIR DIR_SEP);
+  return g_gfx->CreateShaderFromSource(ShaderStage::Vertex, vertex_glsl, &includer,
+                                       "slang post-process vertex");
+}
+
 CompiledPassShaders CompileTranslatedPass(const TranslatedPass& pass,
                                           const std::string& include_dir)
 {
@@ -888,8 +897,7 @@ CompiledPassShaders CompileTranslatedPass(const TranslatedPass& pass,
   ShaderIncluder includer(include_dir + DIR_SEP,
                           File::GetSysDirectory() + SHADERS_DIR DIR_SEP);
 
-  out.vertex = g_gfx->CreateShaderFromSource(ShaderStage::Vertex, pass.vertex_glsl, &includer,
-                                             "slang post-process vertex");
+  out.vertex = CompileTranslatedVertex(pass.vertex_glsl, include_dir);
   if (!out.vertex)
     return {};
 
