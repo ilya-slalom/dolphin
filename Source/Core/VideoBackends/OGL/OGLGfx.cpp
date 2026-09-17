@@ -9,6 +9,7 @@
 #include "Common/Logging/LogManager.h"
 
 #include "VideoBackends/OGL/OGLConfig.h"
+#include "VideoBackends/OGL/OGLLibrashaderRuntime.h"
 #include "VideoBackends/OGL/OGLPipeline.h"
 #include "VideoBackends/OGL/OGLShader.h"
 #include "VideoBackends/OGL/OGLTexture.h"
@@ -248,6 +249,11 @@ std::unique_ptr<AbstractPipeline> OGLGfx::CreatePipeline(const AbstractPipelineC
                                                          size_t cache_data_length)
 {
   return OGLPipeline::Create(config, cache_data, cache_data_length);
+}
+
+std::unique_ptr<VideoCommon::LibrashaderRuntime> OGLGfx::CreateLibrashaderRuntime()
+{
+  return std::make_unique<OGLLibrashaderRuntime>();
 }
 
 void OGLGfx::SetScissorRect(const MathUtil::Rectangle<int>& rc)
@@ -734,6 +740,32 @@ void OGLGfx::RestoreFramebufferBinding()
   glBindFramebuffer(
       GL_FRAMEBUFFER,
       m_current_framebuffer ? static_cast<OGLFramebuffer*>(m_current_framebuffer)->GetFBO() : 0);
+}
+
+void OGLGfx::InvalidateCachedState()
+{
+  // Sampler bindings, then the texture bindings behind them.
+  for (u32 stage = 0; stage < VideoCommon::MAX_PIXEL_SHADER_SAMPLERS; stage++)
+    g_sampler_cache->InvalidateBinding(stage);
+  m_bound_textures.fill(nullptr);
+
+  // The program and the VAO, both cached in ProgramShaderCache rather than here.
+  ProgramShaderCache::InvalidateLastProgram();
+  ProgramShaderCache::InvalidateVertexFormat();
+
+  // SetPipeline() early-outs on the pointer and its Apply*State() helpers early-out on the states,
+  // so all four have to go: a pipeline whose states match what we recorded would otherwise leave
+  // the enable flags, blend equation and depth func as the foreign code left them.
+  m_current_pipeline = nullptr;
+  m_current_rasterization_state = RenderState::GetInvalidRasterizationState();
+  m_current_depth_state = RenderState::GetInvalidDepthState();
+  m_current_blend_state = RenderState::GetInvalidBlendingState();
+
+  // Deliberately not invalidated:
+  //  - m_bound_image_textures, only bound by compute dispatches, which no foreign GL code here
+  //    touches.
+  //  - m_current_framebuffer, which is not a cache of GL state but the record of what the caller
+  //    asked for; RestoreFramebufferBinding() makes GL agree with it again.
 }
 
 SurfaceInfo OGLGfx::GetSurfaceInfo() const
