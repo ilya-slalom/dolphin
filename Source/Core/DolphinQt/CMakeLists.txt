@@ -107,6 +107,8 @@ add_executable(dolphin-emu
   Config/Graphics/GraphicsPane.h
   Config/Graphics/HacksWidget.cpp
   Config/Graphics/HacksWidget.h
+  Config/Graphics/ShaderParametersDialog.cpp
+  Config/Graphics/ShaderParametersDialog.h
   Config/Graphics/ShaderPresetPickerDialog.cpp
   Config/Graphics/ShaderPresetPickerDialog.h
   Config/GraphicsModListWidget.cpp

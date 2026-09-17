@@ -11,9 +11,12 @@
 
 #include <fmt/format.h>
 
+#include "Common/CommonPaths.h"
 #include "Common/Config/Config.h"
+#include "Common/FileUtil.h"
 #include "Common/StringUtil.h"
 #include "VideoCommon/PostProcessing/LibrashaderLoader.h"
+#include "VideoCommon/PostProcessing/PostProcessingConfig.h"
 
 namespace VideoCommon::LibrashaderParameters
 {
@@ -140,6 +143,20 @@ bool IsDefaultValue(float value, float initial)
   // PCSX2's relative epsilon (ShaderChainParams.cpp:102-106), so floating-point roundtrip error
   // does not mark every value as edited.
   return std::abs(value - initial) <= 1e-6f * std::max(1.0f, std::abs(initial));
+}
+
+std::string KeyForPreset(const std::string& absolute_preset_path, const std::string& preset_spec)
+{
+  const std::string user_root = File::GetUserPath(D_SHADERS_IDX) + "shaders_slang" DIR_SEP;
+  if (absolute_preset_path.starts_with(user_root))
+    return absolute_preset_path.substr(user_root.size());
+
+  const std::string sys_root =
+      File::GetSysDirectory() + SHADERS_DIR DIR_SEP "shaders_slang" DIR_SEP;
+  if (absolute_preset_path.starts_with(sys_root))
+    return absolute_preset_path.substr(sys_root.size());
+
+  return ResolveConfiguredPreset(preset_spec);
 }
 
 Overrides Load(const std::string& preset_relative_path)

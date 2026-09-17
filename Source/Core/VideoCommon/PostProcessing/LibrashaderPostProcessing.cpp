@@ -97,15 +97,10 @@ void LibrashaderPostProcessing::RecompileShader()
   }
 
   // Derive the preset-relative path for override storage. This is the key under
-  // [LibrashaderParameters], matching PCSX2's shape: preset path relative to the shaders root.
-  const std::string shaders_user = File::GetUserPath(D_SHADERS_IDX) + "shaders_slang" DIR_SEP;
-  const std::string shaders_sys = File::GetSysDirectory() + SHADERS_DIR DIR_SEP "shaders_slang" DIR_SEP;
-  if (path.find(shaders_user) == 0)
-    m_preset_relative_path = path.substr(shaders_user.size());
-  else if (path.find(shaders_sys) == 0)
-    m_preset_relative_path = path.substr(shaders_sys.size());
-  else
-    m_preset_relative_path = preset_name;  // Fallback: use the configured name
+  // [LibrashaderParameters], matching PCSX2's shape: preset path relative to the shaders root. The
+  // parameters dialog derives it from this same function, so the two cannot disagree about where a
+  // preset's overrides live.
+  m_preset_relative_path = LibrashaderParameters::KeyForPreset(path, preset_name);
 
   // Enumerate the preset's parameters once here at chain construction and cache them. A preset's
   // parameter list cannot change without the chain being rebuilt, so this needs no per-frame work.

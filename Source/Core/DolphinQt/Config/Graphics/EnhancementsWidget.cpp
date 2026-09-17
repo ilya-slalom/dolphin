@@ -14,6 +14,7 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPointer>
@@ -33,6 +34,7 @@
 #include "DolphinQt/Config/ConfigControls/ConfigText.h"
 #include "DolphinQt/Config/GameConfigWidget.h"
 #include "DolphinQt/Config/Graphics/GraphicsPane.h"
+#include "DolphinQt/Config/Graphics/ShaderParametersDialog.h"
 #include "DolphinQt/Config/Graphics/ShaderPresetPickerDialog.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
@@ -193,6 +195,7 @@ void EnhancementsWidget::CreateWidgets()
   m_post_processing_browse = new ToolTipPushButton(tr("Browse…"));
   m_post_processing_clear = new NonDefaultQPushButton(tr("Clear"));
   m_download_shader_pack = new NonDefaultQPushButton(tr("Download…"));
+  m_post_processing_parameters = new ToolTipPushButton(tr("Parameters…"));
 
   m_scaled_efb_copy =
       new ConfigBool(tr("Scaled EFB Copy"), Config::GFX_HACK_COPY_EFB_SCALED, m_game_layer);
@@ -226,11 +229,13 @@ void EnhancementsWidget::CreateWidgets()
 
   // Preset field plus its buttons, following PCSX2's row: the field, Browse…, Clear. Dolphin's
   // Download… goes on the end of the same row rather than into a second one, so the grid keeps the
-  // three columns the rows below it span.
+  // three columns the rows below it span. Parameters… follows Download… because that is the order
+  // PCSX2 lists them in, one row apart.
   auto* const post_processing_buttons = new QHBoxLayout();
   post_processing_buttons->addWidget(m_post_processing_browse);
   post_processing_buttons->addWidget(m_post_processing_clear);
   post_processing_buttons->addWidget(m_download_shader_pack);
+  post_processing_buttons->addWidget(m_post_processing_parameters);
 
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
   enhancements_layout->addWidget(m_post_processing_preset, row, 1);
@@ -327,6 +332,14 @@ void EnhancementsWidget::ConnectWidgets()
           &EnhancementsWidget::BrowseForShaderPreset);
   connect(m_post_processing_clear, &QPushButton::clicked, this,
           &EnhancementsWidget::ClearShaderPreset);
+  connect(m_post_processing_parameters, &QPushButton::clicked, this,
+          &EnhancementsWidget::EditShaderParameters);
+
+  // Parameters… needs a preset, and the field is what every path that changes one goes through:
+  // the picker, Clear, and the right-click that drops a game override (ConfigText::OnConfigChanged
+  // calls setText, which emits this too).
+  connect(m_post_processing_preset, &QLineEdit::textChanged, this,
+          [this] { UpdateParametersButtonState(); });
 
   // Convert download button to menu
   auto* const menu = new QMenu(this);
@@ -361,19 +374,36 @@ void EnhancementsWidget::ConnectWidgets()
   });
 }
 
-void EnhancementsWidget::BrowseForShaderPreset()
+std::string EnhancementsWidget::CurrentShaderPreset() const
 {
   // ResolveConfiguredPreset, not the raw setting: a GFX.ini written before chains were removed can
-  // hold a ';'-separated list, and the picker should open on the preset that is actually in use
-  // rather than fail to match anything. Only ever one preset is written back.
-  const std::string current =
-      VideoCommon::ResolveConfiguredPreset(Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER));
+  // hold a ';'-separated list, and both the picker and the parameters dialog have to act on the
+  // preset that is actually in use rather than on a string neither can match. Only ever one preset
+  // is written back.
+  return VideoCommon::ResolveConfiguredPreset(Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER));
+}
 
-  ShaderPresetPickerDialog dialog(this, QString::fromStdString(current));
+void EnhancementsWidget::BrowseForShaderPreset()
+{
+  ShaderPresetPickerDialog dialog(this, QString::fromStdString(CurrentShaderPreset()));
   if (dialog.exec() != QDialog::Accepted || dialog.SelectedPreset().isEmpty())
     return;
 
   m_post_processing_preset->SetTextAndUpdate(dialog.SelectedPreset());
+}
+
+void EnhancementsWidget::EditShaderParameters()
+{
+  ShaderParametersDialog dialog(this, QString::fromStdString(CurrentShaderPreset()));
+  dialog.exec();
+}
+
+void EnhancementsWidget::UpdateParametersButtonState()
+{
+  // Whether the preset *has* parameters is deliberately not tested here: finding out costs a preset
+  // parse on every repaint of this page, and the dialog says so itself when there are none.
+  m_post_processing_parameters->setEnabled(g_backend_info.bSupportsPostProcessing &&
+                                           !CurrentShaderPreset().empty());
 }
 
 void EnhancementsWidget::ClearShaderPreset()
@@ -403,11 +433,16 @@ void EnhancementsWidget::OnBackendChanged()
           tr("%1 doesn't support this feature.").arg(tr(g_video_backend->GetDisplayName().c_str()));
   for (QWidget* const widget : {static_cast<QWidget*>(m_post_processing_preset),
                                 static_cast<QWidget*>(m_post_processing_browse),
-                                static_cast<QWidget*>(m_post_processing_clear)})
+                                static_cast<QWidget*>(m_post_processing_clear),
+                                static_cast<QWidget*>(m_post_processing_parameters)})
   {
     widget->setEnabled(supports_postprocessing);
     widget->setToolTip(unsupported_tooltip);
   }
+  // Parameters… needs a preset as well as a backend that can run one, so it narrows what the loop
+  // above just set. This is also where its initial state comes from: GraphicsPane emits
+  // BackendChanged once on window creation.
+  UpdateParametersButtonState();
 
   UpdateAntialiasingOptions();
 }
@@ -489,6 +524,11 @@ void EnhancementsWidget::AddDescriptions()
       "Applies a post-processing effect after rendering a frame.<br><br />Opens a searchable tree "
       "of the presets found in the Shaders folders. Use Clear to apply no effect at all.<br><br "
       "/><dolphin_emphasis>If unsure, leave this empty.</dolphin_emphasis>");
+  static const char TR_POSTPROCESSING_PARAMETERS_DESCRIPTION[] = QT_TR_NOOP(
+      "Adjusts the parameters the selected preset declares, such as scanline strength or screen "
+      "curvature.<br><br />Edits take effect immediately, including while a game is running. Only "
+      "the values you change are saved, so a parameter you reset follows the preset's own default "
+      "again.");
   static const char TR_SCALED_EFB_COPY_DESCRIPTION[] =
       QT_TR_NOOP("Greatly increases the quality of textures generated using render-to-texture "
                  "effects.<br><br>Slightly increases GPU load and causes relatively few graphical "
@@ -571,6 +611,12 @@ void EnhancementsWidget::AddDescriptions()
   // is what a user hovers to find out what the row does.
   m_post_processing_browse->SetTitle(tr("Post-Processing Effect"));
   m_post_processing_browse->SetDescription(tr(TR_POSTPROCESSING_DESCRIPTION));
+
+  // Its own description rather than none: the row's, on Browse… above, is about choosing a preset
+  // and says nothing about editing one. Same ToolTipPushButton + SetDescription pattern for the
+  // same reason -- the field it belongs to is read-only, so the buttons carry the row's help.
+  m_post_processing_parameters->SetTitle(tr("Shader Parameters"));
+  m_post_processing_parameters->SetDescription(tr(TR_POSTPROCESSING_PARAMETERS_DESCRIPTION));
 
   m_scaled_efb_copy->SetDescription(tr(TR_SCALED_EFB_COPY_DESCRIPTION));
 

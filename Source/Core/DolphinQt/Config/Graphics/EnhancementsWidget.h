@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <QWidget>
 
 #include "VideoCommon/VideoConfig.h"
@@ -40,8 +42,13 @@ private:
 
   void OnBackendChanged();
   void UpdateAntialiasingOptions();
+  // The preset the post-processing row is showing, which is the one the picker and the parameters
+  // dialog both act on. Empty means no post-processing.
+  std::string CurrentShaderPreset() const;
   void BrowseForShaderPreset();
   void ClearShaderPreset();
+  void EditShaderParameters();
+  void UpdateParametersButtonState();
   void ShaderChanged();
 
   void DownloadShaderPack(const std::string& pack_id, const std::string& profile);
@@ -55,6 +62,7 @@ private:
   ToolTipPushButton* m_post_processing_browse;
   QPushButton* m_post_processing_clear;
   QPushButton* m_download_shader_pack;
+  ToolTipPushButton* m_post_processing_parameters;
   ConfigBool* m_scaled_efb_copy;
   ConfigBool* m_per_pixel_lighting;
   ConfigBool* m_widescreen_hack;

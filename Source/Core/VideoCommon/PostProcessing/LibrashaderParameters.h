@@ -55,6 +55,15 @@ int DecimalsForStep(float step);
 // floating-point roundtrip error does not mark every value as edited.
 bool IsDefaultValue(float value, float initial);
 
+// Derives the key Load and Save file a preset's overrides under: the resolved preset's path
+// relative to whichever shaders root it was found in. `absolute_preset_path` is
+// ResolvePresetPath(preset_spec)'s result, passed in rather than recomputed so a chain rebuild
+// resolves the preset only once. A preset found outside a shaders_slang root, or one that did not
+// resolve at all, falls back to the configured name -- resolved through ResolveConfiguredPreset,
+// never the raw spec, because a legacy ';'-separated GFX.ini value would otherwise key the
+// overrides off a string no other code path produces.
+std::string KeyForPreset(const std::string& absolute_preset_path, const std::string& preset_spec);
+
 // Loads the stored overrides for a preset. The section is LibrashaderParameters, the key is the
 // preset's path relative to the shaders root (matching PCSX2's shape), and the value is a
 // ';'-separated list of "name=value" entries. Returns empty when no overrides are stored.

@@ -111,6 +111,33 @@ TEST(LibrashaderParameters, FormatOverridesRoundTrips)
   EXPECT_FLOAT_EQ(parsed[1].second, 0.75f);
 }
 
+TEST(LibrashaderParameters, KeyForPresetIsRelativeToTheShadersRoot)
+{
+  // The key is the resolved preset's path relative to whichever shaders root it was found in, so
+  // the same preset addresses the same overrides whether it shipped with Dolphin or the user
+  // installed it.
+  const std::string user_root = File::GetUserPath(D_SHADERS_IDX) + "shaders_slang" DIR_SEP;
+  EXPECT_EQ(KeyForPreset(user_root + "crt/crt-royale.slangp", "crt/crt-royale"),
+            "crt/crt-royale.slangp");
+
+  const std::string sys_root =
+      File::GetSysDirectory() + SHADERS_DIR DIR_SEP "shaders_slang" DIR_SEP;
+  EXPECT_EQ(KeyForPreset(sys_root + "crt/crt-royale.slangp", "crt/crt-royale"),
+            "crt/crt-royale.slangp");
+}
+
+TEST(LibrashaderParameters, KeyForPresetFallsBackToTheResolvedName)
+{
+  // A preset found outside a shaders_slang root, or one that did not resolve at all, keys off the
+  // configured name -- resolved through ResolveConfiguredPreset, never the raw setting. A GFX.ini
+  // written before shader chains were removed can still hold a ';'-separated list, and keying off
+  // that would file the overrides under a string no other code path produces, so nothing would ever
+  // read them back.
+  EXPECT_EQ(KeyForPreset("", "crt/crt-royale"), "crt/crt-royale");
+  EXPECT_EQ(KeyForPreset("", "crt/crt-royale;misc/image-adjustment"), "crt/crt-royale");
+  EXPECT_EQ(KeyForPreset(File::GetUserPath(D_SHADERS_IDX) + "loose.slangp", "\tloose "), "loose");
+}
+
 // Both Enumerate tests are limited to the two platforms where this repo ships a librashader binary.
 // Elsewhere there is nothing to load, so a load failure would be the build's normal state rather
 // than a defect, and a test that reports it is noise.
