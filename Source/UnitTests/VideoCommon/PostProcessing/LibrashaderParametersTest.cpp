@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -115,7 +116,7 @@ TEST(LibrashaderParameters, EnumerateRealPreset)
 {
   const std::string pack_root =
       "/Users/ilya.lissoboi/Library/Application Support/PCSX2/shaders/shaders_slang";
-  const std::string preset_path = pack_root + "/crt/crt-royale.slangp";
+  const std::string preset_path = pack_root + "/presets/crt-royale-kurozumi.slangp";
   if (!File::Exists(preset_path))
   {
     GTEST_SKIP() << "Shader pack not present; skipping real-preset test";
@@ -125,15 +126,9 @@ TEST(LibrashaderParameters, EnumerateRealPreset)
   std::string error;
   const bool ok = Enumerate(preset_path, &params, &error);
 
-  if (!ok && error.find("failed to load") != std::string::npos)
-  {
-    // librashader library not available in the test binary's location; this is expected when
-    // running tests standalone without copying the Frameworks bundle.
-    GTEST_SKIP() << "librashader library not available: " << error;
-  }
-
   ASSERT_TRUE(ok) << "Enumerate failed: " << error;
-  EXPECT_FALSE(params.empty()) << "crt-royale declares parameters; list should not be empty";
+  EXPECT_FALSE(params.empty())
+      << "crt-royale-kurozumi declares parameters; list should not be empty";
 
   // Spot-check: every parameter has a non-empty name and a valid range.
   for (const auto& p : params)
@@ -143,5 +138,17 @@ TEST(LibrashaderParameters, EnumerateRealPreset)
     EXPECT_LE(p.initial, p.maximum);
     EXPECT_GE(p.step, 0.0f);
   }
+
+  // Assert against a known parameter from crt-royale-kurozumi.slangp to verify struct layout and
+  // that p.initial reflects the preset's override (2.4), not the underlying .slang default (2.5).
+  // This catches struct-layout and free-semantics regressions across the C ABI.
+  auto it = std::find_if(params.begin(), params.end(),
+                         [](const ParameterInfo& p) { return p.name == "crt_gamma"; });
+  ASSERT_NE(it, params.end()) << "crt_gamma not found in enumerated list";
+  EXPECT_FLOAT_EQ(it->initial, 2.4f)
+      << "crt_gamma initial should be preset override, not .slang default";
+  EXPECT_FLOAT_EQ(it->minimum, 1.0f);
+  EXPECT_FLOAT_EQ(it->maximum, 5.0f);
+  EXPECT_FLOAT_EQ(it->step, 0.025f);
 }
 #endif
