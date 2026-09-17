@@ -111,11 +111,13 @@ TEST(LibrashaderParameters, FormatOverridesRoundTrips)
   EXPECT_FLOAT_EQ(parsed[1].second, 0.75f);
 }
 
+// Both Enumerate tests are limited to the two platforms where this repo ships a librashader binary.
+// Elsewhere there is nothing to load, so a load failure would be the build's normal state rather
+// than a defect, and a test that reports it is noise.
 #if defined(_WIN32) || defined(__APPLE__)
-// Enumerate against the in-tree fixture preset. On these two platforms the repo ships a librashader
-// binary and the CMake places it next to the test binary, so load failure is a real bug and must
-// fail the test rather than skip. This provides unconditional coverage of Enumerate across the C
-// ABI.
+// Enumerate against the in-tree fixture preset. On these two platforms the CMake places librashader
+// next to the test binary, so load failure is a real bug and must fail the test rather than skip.
+// This provides unconditional coverage of Enumerate across the C ABI.
 TEST(LibrashaderParameters, EnumerateFixturePreset)
 {
   // Locate the fixture using the pattern from PatchAllowlistTest.cpp:43-48.
@@ -138,6 +140,9 @@ TEST(LibrashaderParameters, EnumerateFixturePreset)
   auto test_gamma = std::find_if(params.begin(), params.end(),
                                  [](const ParameterInfo& p) { return p.name == "test_gamma"; });
   ASSERT_NE(test_gamma, params.end()) << "test_gamma not found";
+  // description is the second const char* in libra_preset_param_t, so it is where a struct-layout
+  // shift would surface that a name-only check cannot see.
+  EXPECT_EQ(test_gamma->description, "Test Gamma");
   EXPECT_FLOAT_EQ(test_gamma->initial, 2.4f);
   EXPECT_FLOAT_EQ(test_gamma->minimum, 1.0f);
   EXPECT_FLOAT_EQ(test_gamma->maximum, 5.0f);
@@ -146,18 +151,23 @@ TEST(LibrashaderParameters, EnumerateFixturePreset)
   auto test_flag = std::find_if(params.begin(), params.end(),
                                 [](const ParameterInfo& p) { return p.name == "test_flag"; });
   ASSERT_NE(test_flag, params.end()) << "test_flag not found";
+  EXPECT_EQ(test_flag->description, "Test Flag");
   EXPECT_FLOAT_EQ(test_flag->initial, 0.0f);
   EXPECT_FLOAT_EQ(test_flag->minimum, 0.0f);
   EXPECT_FLOAT_EQ(test_flag->maximum, 1.0f);
   EXPECT_FLOAT_EQ(test_flag->step, 1.0f);
 }
-#endif
 
 // Enumerate against a real preset from the SLANG_PRESET environment variable, matching the gate in
 // SlangCompileTest.cpp:888. Generic invariants only; an arbitrary preset would not satisfy
 // crt-royale-specific assertions. This skipping by default is not a repeat of the round-1 defect:
 // it runs whenever the env var is set, and the coverage it used to provide is now unconditional in
 // EnumerateFixturePreset above.
+//
+// It shares SLANG_PRESET with SlangCompile.RealPresetCompilesAllPasses, which needs no librashader
+// and so is useful on every platform. That sharing is why this test sits inside the platform guard:
+// otherwise setting the variable to run that test on Linux would fail this one, for no reason a
+// reader could guess from the failure.
 TEST(LibrashaderParameters, EnumerateRealPresetFromEnv)
 {
   const char* preset_path = std::getenv("SLANG_PRESET");
@@ -182,3 +192,4 @@ TEST(LibrashaderParameters, EnumerateRealPresetFromEnv)
     EXPECT_GE(p.step, 0.0f);
   }
 }
+#endif
