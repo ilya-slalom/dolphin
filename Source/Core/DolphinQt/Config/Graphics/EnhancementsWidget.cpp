@@ -183,12 +183,6 @@ void EnhancementsWidget::CreateWidgets()
   m_texture_filtering_combo->Refresh();
   m_texture_filtering_combo->setEnabled(Get(m_game_layer, Config::GFX_HACK_FAST_TEXTURE_SAMPLING));
 
-
-  m_post_process_renderer = new ConfigChoiceMap<PostProcessRenderer>(
-      {{tr("Builtin"), PostProcessRenderer::Builtin},
-       {tr("librashader"), PostProcessRenderer::Librashader}},
-      Config::GFX_ENHANCE_POST_PROCESS_RENDERER, m_game_layer);
-
   // The post-processing effect "(off)" has the config value "", so we need to use the constructor
   // that sets ConfigStringChoice's m_text_is_data to false. m_post_processing_effect is cleared in
   // LoadPostProcessingShaders so it's pointless to fill it with real data here.
@@ -226,10 +220,6 @@ void EnhancementsWidget::CreateWidgets()
 
   enhancements_layout->addWidget(new QLabel(tr("Texture Filtering:")), row, 0);
   enhancements_layout->addWidget(m_texture_filtering_combo, row, 1, 1, -1);
-  ++row;
-
-  enhancements_layout->addWidget(new QLabel(tr("Post-Processing Renderer:")), row, 0);
-  enhancements_layout->addWidget(m_post_process_renderer, row, 1, 1, -1);
   ++row;
 
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
@@ -429,11 +419,6 @@ void EnhancementsWidget::OnBackendChanged()
     LoadPostProcessingShaders();
   }
 
-  // librashader is loaded through the Vulkan backend only.
-  const bool librashader_possible = g_backend_info.api_type == APIType::Vulkan;
-  m_post_process_renderer->setEnabled(g_backend_info.bSupportsPostProcessing &&
-                                      librashader_possible);
-
   UpdateAntialiasingOptions();
 }
 
@@ -530,11 +515,6 @@ void EnhancementsWidget::AddDescriptions()
       "of the game's textures and might cause issues in a small number of games.<br><br>This "
       "setting is disabled when Manual Texture Sampling is enabled.<br><br>"
       "<dolphin_emphasis>If unsure, select 'Default'.</dolphin_emphasis>");
-  static const char TR_POST_PROCESS_RENDERER_DESCRIPTION[] = QT_TR_NOOP(
-      "Selects which engine runs slang post-processing presets."
-      "<br><br><b>Builtin</b>: Dolphin's own multipass renderer, available on every backend."
-      "<br><b>librashader</b>: the upstream RetroArch shader runtime; Vulkan only."
-      "<br><br><dolphin_emphasis>If unsure, select Builtin.</dolphin_emphasis>");
   static const char TR_POSTPROCESSING_DESCRIPTION[] =
       QT_TR_NOOP("Applies a post-processing effect after rendering a frame.<br><br "
                  "/><dolphin_emphasis>If unsure, select (off).</dolphin_emphasis>");
@@ -615,9 +595,6 @@ void EnhancementsWidget::AddDescriptions()
 
   m_texture_filtering_combo->SetTitle(tr("Texture Filtering"));
   m_texture_filtering_combo->SetDescription(tr(TR_FORCE_TEXTURE_FILTERING_DESCRIPTION));
-
-  m_post_process_renderer->SetTitle(tr("Post-Processing Renderer"));
-  m_post_process_renderer->SetDescription(tr(TR_POST_PROCESS_RENDERER_DESCRIPTION));
 
   m_post_processing_effect->SetTitle(tr("Post-Processing Effect"));
   m_post_processing_effect->SetDescription(tr(TR_POSTPROCESSING_DESCRIPTION));

@@ -206,13 +206,24 @@ std::unique_ptr<VideoCommon::LibrashaderRuntime> AbstractGfx::CreateLibrashaderR
 
 std::unique_ptr<VideoCommon::IPostProcessor> AbstractGfx::CreatePostProcessor()
 {
-  if (Config::Get(Config::GFX_ENHANCE_POST_PROCESS_RENDERER) == PostProcessRenderer::Librashader)
+  // librashader is the engine of record wherever its library loaded. The built-in multipass
+  // executor is the fallback for platforms with no vendored binary -- Android x86_64 and Linux --
+  // not a user-selectable alternative.
+  std::unique_ptr<VideoCommon::LibrashaderRuntime> runtime = CreateLibrashaderRuntime();
+  if (runtime && runtime->IsSupported())
+    return std::make_unique<VideoCommon::LibrashaderPostProcessing>(std::move(runtime));
+
+  const VideoCommon::Librashader::Availability& availability =
+      VideoCommon::Librashader::GetAvailability();
+  if (!availability.available)
   {
-    // A backend without a runtime, a build without the shared library, or a truncated library all
-    // degrade to the built-in executor rather than to a black screen.
-    std::unique_ptr<VideoCommon::LibrashaderRuntime> runtime = CreateLibrashaderRuntime();
-    if (runtime && runtime->IsSupported())
-      return std::make_unique<VideoCommon::LibrashaderPostProcessing>(std::move(runtime));
+    INFO_LOG_FMT(VIDEO, "librashader unavailable ({}); using the built-in post-processor.",
+                 availability.reason);
+  }
+  else
+  {
+    INFO_LOG_FMT(VIDEO, "librashader loaded but this backend has no runtime; using the built-in "
+                        "post-processor.");
   }
   return std::make_unique<VideoCommon::MultipassPostProcessing>();
 }

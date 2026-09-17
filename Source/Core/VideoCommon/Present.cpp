@@ -19,6 +19,7 @@
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OnScreenUI.h"
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
+#include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
@@ -122,7 +123,16 @@ bool Presenter::Initialize()
 
     m_post_processor = g_gfx->CreatePostProcessor();
     if (!m_post_processor->Initialize(m_backbuffer_format))
-      return false;
+    {
+      // The renderer is no longer a user-facing choice, so a post-processor that cannot initialise
+      // must not take video initialisation down with it. Fall back once, to the engine that has no
+      // external dependency.
+      WARN_LOG_FMT(VIDEO, "Post-processing engine failed to initialise; falling back to the "
+                          "built-in post-processor.");
+      m_post_processor = std::make_unique<VideoCommon::MultipassPostProcessing>();
+      if (!m_post_processor->Initialize(m_backbuffer_format))
+        return false;
+    }
 
     m_onscreen_ui = std::make_unique<OnScreenUI>();
     if (!m_onscreen_ui->Initialize(m_backbuffer_width, m_backbuffer_height, m_backbuffer_scale))
@@ -378,14 +388,6 @@ void Presenter::ConfigChanged(u32 changed_bits)
     g_gfx->WaitForGPUIdle();
 
     m_post_processor->RecompileShader();
-  }
-
-  if (changed_bits & ConfigChangeBits::CONFIG_CHANGE_BIT_POST_PROCESS_RENDERER && g_gfx)
-  {
-    g_gfx->WaitForGPUIdle();
-    m_post_processor = g_gfx->CreatePostProcessor();
-    if (m_post_processor)
-      m_post_processor->Initialize(m_backbuffer_format);
   }
 
   // Stereo mode change requires recompiling our post processing pipeline and imgui pipelines for

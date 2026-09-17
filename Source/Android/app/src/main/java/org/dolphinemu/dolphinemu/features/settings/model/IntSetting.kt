@@ -120,12 +120,6 @@ enum class IntSetting(
         "MaxAnisotropy",
         0
     ),
-    GFX_ENHANCE_POST_PROCESS_RENDERER(
-        Settings.FILE_GFX,
-        Settings.SECTION_GFX_ENHANCEMENTS,
-        "PostProcessRenderer",
-        0
-    ),
     GFX_CC_GAME_COLOR_SPACE(
         Settings.FILE_GFX,
         Settings.SECTION_GFX_COLOR_CORRECTION,

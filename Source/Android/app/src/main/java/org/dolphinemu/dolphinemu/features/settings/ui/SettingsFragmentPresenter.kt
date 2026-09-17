@@ -1685,17 +1685,6 @@ class SettingsFragmentPresenter(
             )
         )
 
-        sl.add(
-            SingleChoiceSetting(
-                context,
-                IntSetting.GFX_ENHANCE_POST_PROCESS_RENDERER,
-                R.string.post_processing_renderer,
-                R.string.post_processing_renderer_description,
-                R.array.postProcessingRendererEntries,
-                R.array.postProcessingRendererValues
-            )
-        )
-
         // Post-processing effect picker. A single row whose subtitle shows the current selection
         // (a shader, an arrow-joined chain, or "Off"). Tapping it opens a two-step picker:
         // choose a category, then a shader, with "Select" (replace the chain with this shader) and
