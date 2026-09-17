@@ -146,8 +146,8 @@ add_library(videocommon
   PixelShaderManager.h
   PostProcessing/ChainDebugDump.cpp
   PostProcessing/ChainDebugDump.h
-  PostProcessing/LibrashaderLibrary.cpp
-  PostProcessing/LibrashaderLibrary.h
+  PostProcessing/LibrashaderLoader.cpp
+  PostProcessing/LibrashaderLoader.h
   PostProcessing/LutTexture.cpp
   PostProcessing/LutTexture.h
   PostProcessing/IPostProcessor.h
@@ -284,6 +284,12 @@ PRIVATE
   glslang::SPIRV
   tinygltf
 )
+
+# LibrashaderLoader.h includes <librashader.h>, so the include path has to travel with
+# videocommon's headers rather than sitting on one backend target: the graphics backends and the
+# unit tests both compile against it now. With no LIBRA_RUNTIME_* macro defined the header pulls in
+# nothing but the C standard library, so this costs other consumers nothing.
+target_include_directories(videocommon PUBLIC ${CMAKE_SOURCE_DIR}/Externals/librashader/include)
 
 if(_M_X86_64)
   target_sources(videocommon PRIVATE

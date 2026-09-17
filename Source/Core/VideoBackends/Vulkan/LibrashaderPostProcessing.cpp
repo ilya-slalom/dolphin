@@ -1,6 +1,15 @@
 // Copyright 2026 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// This must stay above every #include in this file, including the ones that look unrelated.
+// LibrashaderLoader.h includes <librashader.h> deliberately without any LIBRA_RUNTIME_* macro, so
+// it stays cheap for the rest of VideoCommon. Whichever translation unit includes it first thereby
+// satisfies librashader.h's include guard, so a later `#include <librashader.h>` here would be a
+// silent no-op leaving every libra_vk_* declaration out -- with no error, because the runtime
+// sections are #ifdef'd, not #error'd. Defining the macro first costs nothing (it pulls in no header
+// of its own) and is the only ordering that survives an include reshuffle.
+#define LIBRA_RUNTIME_VULKAN
+
 #include "VideoBackends/Vulkan/LibrashaderPostProcessing.h"
 
 #include <string>
@@ -12,9 +21,11 @@
 #include "Core/Config/GraphicsSettings.h"
 
 // VulkanContext.h transitively includes VulkanLoader.h, which includes <vulkan/vulkan.h> with
-// VK_NO_PROTOTYPES and declares Dolphin's function-pointer globals (including ::vkGetInstanceProcAddr).
-// It MUST be included before librashader_ld.h so that when librashader.h re-includes
-// <vulkan/vulkan.h> the header guard suppresses conflicting prototype declarations.
+// VK_NO_PROTOTYPES and declares Dolphin's function-pointer globals (including
+// ::vkGetInstanceProcAddr). It MUST come before LibrashaderLoader.h: with LIBRA_RUNTIME_VULKAN
+// defined above, that header's <librashader.h> re-includes <vulkan/vulkan.h>, and only the guard set
+// here suppresses the conflicting prototype declarations. The Vulkan include block sorting ahead of
+// the VideoCommon one is what keeps that true.
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
 #include "VideoBackends/Vulkan/StateTracker.h"
 #include "VideoBackends/Vulkan/VKTexture.h"
@@ -27,51 +38,61 @@
 #include "VideoCommon/AbstractTexture.h"
 #include "VideoCommon/PostProcessing/ChainDebugDump.h"
 #include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
-#include "VideoCommon/PostProcessing/LibrashaderLibrary.h"
+#include "VideoCommon/PostProcessing/LibrashaderLoader.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoConfig.h"
 
-// Override librashader_ld.h's bare-name load with the absolute packaged path. Android and Linux
-// keep the header's default, which their loaders resolve correctly.
-#if defined(_WIN32)
-#include <windows.h>
-#include "Common/StringUtil.h"
-#define _LIBRASHADER_LOAD LoadLibraryW(UTF8ToWString(VideoCommon::LibrashaderLibraryPath()).c_str())
-#elif defined(__APPLE__) && !defined(ANDROID)
-#include <dlfcn.h>
-#define _LIBRASHADER_LOAD dlopen(VideoCommon::LibrashaderLibraryPath().c_str(), RTLD_LAZY)
-#endif
-
-// librashader_ld.h defines many static-inline no-op stubs plus librashader_load_instance(); it is
-// included in exactly this one translation unit. LIBRA_RUNTIME_VULKAN selects the Vulkan runtime
-// entry points.
-#define LIBRA_RUNTIME_VULKAN
-#include <librashader_ld.h>
-
 namespace Vulkan
 {
-// Loads the librashader shared library exactly once. The header guarantees the returned instance is
-// always safe to call: unresolved symbols point at no-op stubs, so a missing/incompatible .so
-// degrades to passthrough rather than crashing. instance_loaded is the authoritative "did it load"
-// flag and is only meaningful right after loading, which is why we cache the instance here.
-static const libra_instance_t& GetLibrashaderInstance()
+namespace
 {
-  static const libra_instance_t s_instance = librashader_load_instance();
-  return s_instance;
+// Vulkan chain entry points, resolved once. Absent symbols leave the pointers null, which
+// IsAvailable() reports rather than calling through -- unlike librashader_ld.h, which substituted
+// no-op stubs and so turned a truncated library into post-processing that silently did nothing.
+struct VulkanFunctions
+{
+  PFN_libra_vk_filter_chain_create create = nullptr;
+  PFN_libra_vk_filter_chain_frame frame = nullptr;
+  PFN_libra_vk_filter_chain_set_param set_param = nullptr;
+  PFN_libra_vk_filter_chain_free free = nullptr;
+
+  VulkanFunctions()
+  {
+    using VideoCommon::Librashader::GetSymbol;
+    create = reinterpret_cast<PFN_libra_vk_filter_chain_create>(
+        GetSymbol("libra_vk_filter_chain_create"));
+    frame =
+        reinterpret_cast<PFN_libra_vk_filter_chain_frame>(GetSymbol("libra_vk_filter_chain_frame"));
+    set_param = reinterpret_cast<PFN_libra_vk_filter_chain_set_param>(
+        GetSymbol("libra_vk_filter_chain_set_param"));
+    free =
+        reinterpret_cast<PFN_libra_vk_filter_chain_free>(GetSymbol("libra_vk_filter_chain_free"));
+  }
+
+  bool Complete() const { return create && frame && set_param && free; }
+};
+
+const VulkanFunctions& Functions()
+{
+  static const VulkanFunctions s_functions;
+  return s_functions;
 }
 
-// Logs a librashader error (if any) and frees it. Returns true if an error was present.
-static bool CheckError(const libra_instance_t& lib, libra_error_t error, const char* context)
+// Logs a librashader error (if any) and frees it. Returns true if an error was present. The message
+// now comes from librashader itself rather than a bare errno, which is strictly more informative.
+bool CheckError(libra_error_t error, const char* context)
 {
+  // Tested against the handle rather than against the description: an error whose message happened
+  // to come back empty would otherwise be reported as success, after having already been freed.
   if (error == nullptr)
     return false;
 
-  ERROR_LOG_FMT(VIDEO, "Librashader: {} failed (errno {})", context,
-                static_cast<int>(lib.error_errno(error)));
-  lib.error_free(&error);
+  ERROR_LOG_FMT(VIDEO, "Librashader: {} failed: {}", context,
+                VideoCommon::Librashader::DescribeAndFreeError(error));
   return true;
 }
+}  // namespace
 
 // Resolves a post-processing preset name to an absolute .slangp path using the identical search
 // order as MultipassPostProcessing::AppendPreset(), so both engines consume the same preset file.
@@ -103,12 +124,12 @@ LibrashaderPostProcessing::LibrashaderPostProcessing() = default;
 LibrashaderPostProcessing::~LibrashaderPostProcessing()
 {
   if (m_chain != nullptr)
-    GetLibrashaderInstance().vk_filter_chain_free(&m_chain);
+    Functions().free(&m_chain);
 }
 
 bool LibrashaderPostProcessing::IsAvailable()
 {
-  return GetLibrashaderInstance().instance_loaded;
+  return VideoCommon::Librashader::GetAvailability().available && Functions().Complete();
 }
 
 bool LibrashaderPostProcessing::Initialize(AbstractTextureFormat format)
@@ -124,12 +145,10 @@ bool LibrashaderPostProcessing::Initialize(AbstractTextureFormat format)
 
 void LibrashaderPostProcessing::RecompileShader()
 {
-  const libra_instance_t& lib = GetLibrashaderInstance();
-
   // Free any previous chain before rebuilding.
   if (m_chain != nullptr)
   {
-    lib.vk_filter_chain_free(&m_chain);
+    Functions().free(&m_chain);
     m_chain = nullptr;
   }
   m_frame_count = 0;
@@ -147,8 +166,11 @@ void LibrashaderPostProcessing::RecompileShader()
   }
 
   libra_shader_preset_t preset = nullptr;
-  if (CheckError(lib, lib.preset_create(path.c_str(), &preset), "preset_create"))
+  if (CheckError(VideoCommon::Librashader::Common().preset_create(path.c_str(), &preset),
+                 "preset_create"))
+  {
     return;
+  }
 
   // libra_device_vk_t = { physical_device, instance, device, queue, entry }. `entry` is the
   // vkGetInstanceProcAddr loader; Dolphin's global (declared in VulkanLoader.h) already holds the
@@ -178,7 +200,7 @@ void LibrashaderPostProcessing::RecompileShader()
   // vk_filter_chain_create invalidates the preset handle regardless of success or failure (see the
   // header: "the shader preset is immediately invalidated"), so it must not be freed on either path
   // -- doing so would be a double-free. On error, leave m_chain null (passthrough).
-  if (CheckError(lib, lib.vk_filter_chain_create(&preset, device, &options, &m_chain),
+  if (CheckError(Functions().create(&preset, device, &options, &m_chain),
                  "vk_filter_chain_create"))
   {
     m_chain = nullptr;
@@ -405,8 +427,6 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
   // likewise falls through to passthrough rather than dereferencing a null attachment.
   if (m_chain != nullptr && framebuffer->GetColorAttachment() != nullptr)
   {
-    const libra_instance_t& lib = GetLibrashaderInstance();
-
     const auto* in_tex = static_cast<const VKTexture*>(src_tex);
 
     // librashader derives SourceSize/OriginalSize from the input image's dimensions, and CRT presets
@@ -467,10 +487,10 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
       source->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
       target->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-      libra_error_t err = lib.vk_filter_chain_frame(&m_chain, cmd, m_frame_count++, in, out, &vp,
-                                                    nullptr, nullptr);
+      libra_error_t err = Functions().frame(&m_chain, cmd, m_frame_count++, in, out, &vp, nullptr,
+                                            nullptr);
       target->OverrideImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-      return !CheckError(lib, err, "vk_filter_chain_frame");
+      return !CheckError(err, "vk_filter_chain_frame");
     };
 
     auto* out_tex = static_cast<VKTexture*>(framebuffer->GetColorAttachment());

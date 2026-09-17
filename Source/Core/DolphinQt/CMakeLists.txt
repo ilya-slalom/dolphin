@@ -687,7 +687,7 @@ if(APPLE)
     endif()
   endif()
 
-  # Copy librashader into the bundle, next to MoltenVK (see LibrashaderLibraryPath).
+  # Copy librashader into the bundle, next to MoltenVK (see Librashader::LibraryPath).
   # Note: macOS dolphin-nogui cannot load librashader because it has no .app bundle for
   # File::GetBundleDirectory() to resolve against. This is a known, accepted limitation.
   if(ENABLE_VULKAN)

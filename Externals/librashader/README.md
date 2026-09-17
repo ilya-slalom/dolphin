@@ -90,14 +90,11 @@ Both desktop builds use the same flags as the Android build (`--no-default-featu
 
 ## Local Modifications
 
-The upstream `librashader_ld.h` has been patched to make the `_LIBRASHADER_LOAD` macro overridable. This allows Dolphin to supply absolute paths to libraries packaged inside macOS `.app` bundles and Windows install directories, which the header's bare-name `dlopen("librashader.dylib", ...)` / `LoadLibraryW(L"librashader.dll")` cannot find.
+The headers are vendored unmodified. `librashader_ld.h` is kept for reference only — nothing in Dolphin includes it.
 
-**Changes:**
-- Line 55-57: Wrapped `#define _LIBRASHADER_LOAD LoadLibraryW(L"librashader.dll")` with `#ifndef _LIBRASHADER_LOAD` / `#endif`
-- Line 66-68: Wrapped `#define _LIBRASHADER_LOAD dlopen("librashader.dylib", RTLD_LAZY)` with `#ifndef _LIBRASHADER_LOAD` / `#endif`
-- Line 77-79: Wrapped `#define _LIBRASHADER_LOAD dlopen("librashader.so", RTLD_LAZY)` with `#ifndef _LIBRASHADER_LOAD` / `#endif`
+Dolphin resolves the C API itself, in `Source/Core/VideoCommon/PostProcessing/LibrashaderLoader.cpp`. The header cannot be used as intended here because it declares a single `libra_instance_t` whose members are gated by the `LIBRA_RUNTIME_*` macros and loads it from a `static inline` function: two translation units including it with different runtime sets would disagree on that struct's layout, and driving every backend from one translation unit would mean including the Vulkan, D3D11, D3D12, OpenGL and Metal headers together. Dolphin therefore includes plain `librashader.h` for the `PFN_libra_*` typedefs and resolves symbols through one `dlopen`/`LoadLibraryW`, which also lets it supply the absolute packaged path that the header's bare-name load cannot find inside a macOS `.app` bundle or a Windows install directory.
 
-Android and Linux keep the header's default load paths; macOS and Windows override `_LIBRASHADER_LOAD` before including the header.
+An earlier revision of this tree patched the header's three `_LIBRASHADER_LOAD` defines to be overridable. That patch has been reverted; do not reintroduce it.
 
 **macOS dylib install name:**  
 The macOS dylib's `LC_ID_DYLIB` install name still references the build-time path (`/private/tmp/librashader/target/aarch64-apple-darwin/release/deps/liblibrashader_capi.dylib`). This is harmless because `dlopen` with an absolute path ignores the install name. Do not rewrite it with `install_name_tool` unless `POSTPROCESS_BUNDLE=ON` (default OFF) requires it — the current packaging has been verified to work as-is.
