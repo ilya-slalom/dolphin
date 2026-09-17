@@ -215,16 +215,18 @@ public:
     m_pending.use_integer_rtv = enable;
   }
 
-  // removes currently set texture from all slots, returns mask of previously bound slots
+  // Stages the removal of srv from all slots, returning a mask of the slots it was bound in. This
+  // only edits our shadow state: nothing reaches the device until the caller applies it.
   u32 UnsetTexture(ID3D11ShaderResourceView* srv);
   void SetTextureByMask(u32 textureSlotMask, ID3D11ShaderResourceView* srv);
   void ApplyTextures();
 
-  // Immediately unbinds srv from every slot the device currently has it in, so that making its
-  // resource a render target cannot leave it bound as both. Use this instead of
-  // UnsetTexture() + ApplyTextures(): those flush *every* dirty slot, including inputs the caller
-  // staged for the next draw, and doing that here would bind them while the previous render target
-  // is still set - the exact hazard the runtime resolves by nulling them behind our back.
+  // Immediately unbinds srv from every slot the device currently has it in. Staged-but-unapplied
+  // bindings are not inspected, so a caller must not sample a texture it is about to render into.
+  // Use this instead of UnsetTexture() + ApplyTextures(): those flush *every* dirty slot, including
+  // inputs the caller staged for the next draw, and doing that here would bind them while the
+  // previous render target is still set - the exact hazard the runtime resolves by nulling them
+  // behind our back.
   void UnbindTextureFromDevice(ID3D11ShaderResourceView* srv);
 
   // call this immediately before any drawing operation or to explicitly apply pending resource
