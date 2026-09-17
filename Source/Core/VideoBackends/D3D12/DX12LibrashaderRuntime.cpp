@@ -1,0 +1,221 @@
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+// This must stay above every #include in this file. LibrashaderLoader.h includes <librashader.h>
+// deliberately without any LIBRA_RUNTIME_* macro, so it stays cheap for the rest of VideoCommon.
+// Whichever translation unit includes it first thereby satisfies librashader.h's include guard, so
+// a later `#include <librashader.h>` here would be a silent no-op leaving every libra_d3d12_*
+// declaration out -- with no error, because the runtime sections are #ifdef'd, not #error'd.
+#define LIBRA_RUNTIME_D3D12
+#include <librashader.h>
+
+#include "VideoBackends/D3D12/DX12LibrashaderRuntime.h"
+
+#include "Common/Logging/Log.h"
+
+#include "VideoBackends/D3D12/D3D12Gfx.h"
+#include "VideoBackends/D3D12/DX12Context.h"
+#include "VideoBackends/D3D12/DX12Texture.h"
+#include "VideoBackends/D3DCommon/D3DCommon.h"
+
+#include "VideoCommon/AbstractFramebuffer.h"
+#include "VideoCommon/PostProcessing/LibrashaderLoader.h"
+
+namespace DX12
+{
+namespace
+{
+// D3D12 chain entry points, resolved once. Absent symbols leave the pointers null, which
+// IsSupported() reports rather than calling through. Only the four the adapter calls are resolved:
+// an unused required symbol is one more way for IsSupported() to fail for no reason.
+struct D3D12Functions
+{
+  PFN_libra_d3d12_filter_chain_create create = nullptr;
+  PFN_libra_d3d12_filter_chain_frame frame = nullptr;
+  PFN_libra_d3d12_filter_chain_set_param set_param = nullptr;
+  PFN_libra_d3d12_filter_chain_free free = nullptr;
+
+  D3D12Functions()
+  {
+    using VideoCommon::Librashader::GetSymbol;
+    create = reinterpret_cast<PFN_libra_d3d12_filter_chain_create>(
+        GetSymbol("libra_d3d12_filter_chain_create"));
+    frame = reinterpret_cast<PFN_libra_d3d12_filter_chain_frame>(
+        GetSymbol("libra_d3d12_filter_chain_frame"));
+    set_param = reinterpret_cast<PFN_libra_d3d12_filter_chain_set_param>(
+        GetSymbol("libra_d3d12_filter_chain_set_param"));
+    free = reinterpret_cast<PFN_libra_d3d12_filter_chain_free>(
+        GetSymbol("libra_d3d12_filter_chain_free"));
+  }
+
+  bool Complete() const { return create && frame && set_param && free; }
+};
+
+const D3D12Functions& Functions()
+{
+  static const D3D12Functions s_functions;
+  return s_functions;
+}
+
+// Logs a librashader error (if any) and frees it. Returns true if an error was present.
+bool CheckError(libra_error_t error, const char* context)
+{
+  if (error == nullptr)
+    return false;
+
+  ERROR_LOG_FMT(VIDEO, "Librashader: {} failed: {}", context,
+                VideoCommon::Librashader::DescribeAndFreeError(error));
+  return true;
+}
+}  // namespace
+
+DX12LibrashaderRuntime::DX12LibrashaderRuntime() = default;
+
+DX12LibrashaderRuntime::~DX12LibrashaderRuntime()
+{
+  DestroyChain();
+}
+
+bool DX12LibrashaderRuntime::IsSupported() const
+{
+  return VideoCommon::Librashader::GetAvailability().available && Functions().Complete();
+}
+
+bool DX12LibrashaderRuntime::CreateChain(libra_shader_preset_t preset)
+{
+  // force_hlsl_pipeline would trade librashader's SPIR-V pipeline for an HLSL one, which its own
+  // header warns reduces shader compatibility. frames_in_flight 0 selects librashader's default of
+  // three, which matches Dolphin's own NUM_COMMAND_LISTS (3): librashader recycles a pass's
+  // per-frame objects three of its frames later, by which point the command list that recorded the
+  // older frame has been waited on, because Dolphin waits on a command list's fence before reusing
+  // its slot.
+  filter_chain_d3d12_opt_t options = {};
+  options.version = LIBRASHADER_CURRENT_VERSION;
+  options.force_hlsl_pipeline = false;
+  options.force_no_mipmaps = false;
+  options.disable_cache = false;
+  options.frames_in_flight = 0;
+
+  libra_d3d12_filter_chain_t chain = nullptr;
+  // create() invalidates `preset` on success and on failure alike, so it is never freed here. It
+  // also does its own LUT uploads on a command queue of its own and blocks until they complete --
+  // that is what distinguishes it from _create_deferred, which hands that work to the caller's
+  // command list -- so unlike PCSX2 there is nothing to flush of ours first.
+  const std::string error = VideoCommon::Librashader::DescribeAndFreeError(
+      Functions().create(&preset, g_dx_context->GetDevice(), &options, &chain));
+
+  if (!error.empty())
+  {
+    ERROR_LOG_FMT(VIDEO, "Librashader: d3d12_filter_chain_create failed: {}", error);
+    m_chain = nullptr;
+    return false;
+  }
+
+  m_chain = chain;
+  INFO_LOG_FMT(VIDEO, "Librashader: Direct3D 12 filter chain created");
+  return true;
+}
+
+void DX12LibrashaderRuntime::DestroyChain()
+{
+  if (m_chain == nullptr)
+    return;
+
+  auto chain = static_cast<libra_d3d12_filter_chain_t>(m_chain);
+  Functions().free(&chain);
+  m_chain = nullptr;
+}
+
+bool DX12LibrashaderRuntime::HasChain() const
+{
+  return m_chain != nullptr;
+}
+
+bool DX12LibrashaderRuntime::RunFrame(const AbstractTexture* source, AbstractFramebuffer* target,
+                                      u64 frame_count)
+{
+  if (m_chain == nullptr)
+    return false;
+
+  const auto* in_tex = static_cast<const DXTexture*>(source);
+  auto* out_fb = static_cast<DXFramebuffer*>(target);
+  auto* out_tex = static_cast<DXTexture*>(out_fb->GetColorAttachment());
+  if (out_tex == nullptr || out_fb->GetRTVDescriptorCount() == 0)
+    return false;
+
+  // librashader requires the source in PIXEL_SHADER_RESOURCE and the target in RENDER_TARGET, and
+  // records no closing barrier: its header states the output "will remain in
+  // D3D12_RESOURCE_STATE_RENDER_TARGET after all shader passes". Because that is the state we asked
+  // for here, DXTexture's own tracking already describes what the chain leaves behind, so there is
+  // nothing to reconcile the way the Vulkan runtime has to override its image layout. Both
+  // transitions are no-ops when the resource is already in the requested state. (`source` is const,
+  // which is fine: TransitionToState is a const member function over a mutable state field.)
+  //
+  // Nothing else needs closing first. PCSX2 ends a render pass and commits both textures' deferred
+  // clears at this point; Dolphin's D3D12 backend has neither -- BindFramebuffer() is a bare
+  // OMSetRenderTargets, and clears are issued immediately.
+  in_tex->TransitionToState(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+  out_tex->TransitionToState(D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+  // The chain is handed our own views, not the bare resources. IMAGE_TYPE_RESOURCE, where the chain
+  // creates and owns the descriptors itself, cannot work here: it derives the view formats from
+  // ID3D12Resource::GetDesc(), and every Dolphin render target is created with a *typeless* DXGI
+  // format -- DXTexture::Create() passes config.IsRenderTarget() as
+  // GetDXGIFormatForAbstractFormat's `typeless` argument, so the typed format exists only in the
+  // views. A view cannot be created with a typeless format, so that path made librashader issue
+  // invalid view creations, which the driver answered by removing the device -- the debug layer's
+  // account of it was "CreateRenderTargetView: The Format (0x17, R10G10B10A2_TYPELESS) is invalid,
+  // when creating a View" followed by "RemoveDevice: ... (DXGI_ERROR_INVALID_CALL)".
+  // PCSX2 does use IMAGE_TYPE_RESOURCE, because GSTexture12 creates typed resources; Dolphin's
+  // typeless-resource-plus-typed-view architecture wins here. It also puts D3D12 on the same
+  // footing as the D3D11 runtime, whose frame entry point only ever takes an SRV and an RTV.
+  //
+  // Passing a CPU handle out of Dolphin's shadow heap is what librashader expects: the heap is
+  // created with D3D12_DESCRIPTOR_HEAP_FLAG_NONE, and the chain copies the descriptor into its own
+  // shader-visible heap, which is legal only from a non-shader-visible source heap.
+  libra_image_d3d12_t in = {};
+  in.image_type = LIBRA_D3D12_IMAGE_TYPE_SOURCE_IMAGE;
+  in.handle.source.descriptor = in_tex->GetSRVDescriptor().cpu_handle;
+  in.handle.source.resource = in_tex->GetResource();
+
+  // The output carries its own format and size because an RTV alone describes neither. RTV zero is
+  // the color attachment's, created with exactly this format by DXFramebuffer::CreateRTVDescriptor.
+  libra_image_d3d12_t out = {};
+  out.image_type = LIBRA_D3D12_IMAGE_TYPE_OUTPUT_IMAGE;
+  out.handle.output.descriptor = out_fb->GetRTVDescriptorArray()[0];
+  out.handle.output.format =
+      D3DCommon::GetRTVFormatForAbstractFormat(out_fb->GetColorFormat(), false);
+  out.handle.output.width = out_fb->GetWidth();
+  out.handle.output.height = out_fb->GetHeight();
+
+  libra_viewport_t vp{0.0f, 0.0f, static_cast<u32>(target->GetWidth()),
+                      static_cast<u32>(target->GetHeight())};
+
+  auto chain = static_cast<libra_d3d12_filter_chain_t>(m_chain);
+  const libra_error_t err =
+      Functions().frame(&chain, g_dx_context->GetCommandList(), static_cast<size_t>(frame_count),
+                        in, out, &vp, nullptr, nullptr);
+
+  // The chain recorded its own root signature, pipeline state, descriptor heaps and viewport onto
+  // our command list and restored none of them, so nothing Gfx believes is bound still is. That is
+  // exactly the situation ExecuteCommandList() faces, and one DirtyState_All is how it answers it.
+  // Two things D3D11 and PCSX2 need here have no counterpart: there is no second "what the command
+  // list currently has" mirror to reset, because ApplyState() tests one dirty bit per binding and
+  // then issues from m_state unconditionally; and DirtyState_All includes
+  // DirtyState_DescriptorHeaps, which SetDescriptorHeaps() acts on at the top of both ApplyState()
+  // and DispatchComputeShader(), so PCSX2's manual heap rebind -- which it needs only because it
+  // binds heaps at command list reset and nowhere else -- would achieve nothing here.
+  Gfx::GetInstance()->InvalidateCachedState();
+
+  return !CheckError(err, "d3d12_filter_chain_frame");
+}
+
+void DX12LibrashaderRuntime::SetParameter(const char* name, float value)
+{
+  if (m_chain == nullptr)
+    return;
+
+  auto chain = static_cast<libra_d3d12_filter_chain_t>(m_chain);
+  CheckError(Functions().set_param(&chain, name, value), "d3d12_filter_chain_set_param");
+}
+}  // namespace DX12

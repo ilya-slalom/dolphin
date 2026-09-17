@@ -10,6 +10,7 @@
 #include "VideoBackends/D3D12/D3D12PerfQuery.h"
 #include "VideoBackends/D3D12/D3D12SwapChain.h"
 #include "VideoBackends/D3D12/DX12Context.h"
+#include "VideoBackends/D3D12/DX12LibrashaderRuntime.h"
 #include "VideoBackends/D3D12/DX12Pipeline.h"
 #include "VideoBackends/D3D12/DX12Shader.h"
 #include "VideoBackends/D3D12/DX12Texture.h"
@@ -65,6 +66,11 @@ Gfx::CreateFramebuffer(AbstractTexture* color_attachment, AbstractTexture* depth
   return DXFramebuffer::Create(static_cast<DXTexture*>(color_attachment),
                                static_cast<DXTexture*>(depth_attachment),
                                std::move(additional_color_attachments));
+}
+
+std::unique_ptr<VideoCommon::LibrashaderRuntime> Gfx::CreateLibrashaderRuntime()
+{
+  return std::make_unique<DX12LibrashaderRuntime>();
 }
 
 std::unique_ptr<AbstractShader>
@@ -445,6 +451,16 @@ void Gfx::ExecuteCommandList(bool wait_for_completion)
 {
   PerfQuery::GetInstance()->ResolveQueries();
   g_dx_context->ExecuteCommandList(wait_for_completion);
+  m_dirty_bits = DirtyState_All;
+}
+
+void Gfx::InvalidateCachedState()
+{
+  // The same one-liner ExecuteCommandList() uses above, for the same reason: whatever the command
+  // list was believed to hold is no longer there. m_state is deliberately left alone -- it holds
+  // what Dolphin *wants* bound, which is what the next ApplyState() should re-issue -- and so are
+  // m_current_framebuffer and m_current_pipeline, since ApplyState() returns false on either being
+  // null and would silently drop the next draw.
   m_dirty_bits = DirtyState_All;
 }
 
