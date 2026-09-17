@@ -61,13 +61,15 @@ git clone --branch librashader-cache-v0.12.0 --depth 1 \
     https://github.com/SnowflakePowered/librashader /tmp/librashader
 cd /tmp/librashader
 cargo build -p librashader-capi --release --target aarch64-apple-darwin \
-    --no-default-features --features runtime-vulkan
+    --no-default-features --features runtime-vulkan,runtime-metal,runtime-opengl
 ```
 
 **Artifact:**
 - **Path:** `lib/macos-arm64/librashader.dylib`
-- **Size:** 11,335,856 bytes
+- **Size:** 12,480,240 bytes
 - **Source:** `target/aarch64-apple-darwin/release/liblibrashader_capi.dylib` (renamed)
+- **ABI:** 2 / **API:** 5
+- **Exported symbol families:** `libra_vk_*` (8), `libra_mtl_*` (8), `libra_gl_*` (7) — total 52 `libra_` exports
 
 ### Windows x64
 
@@ -76,17 +78,23 @@ cargo build -p librashader-capi --release --target aarch64-apple-darwin \
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul
 set RUSTC=C:\Users\Ilya\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin\rustc.exe
 cd /d C:\src\librashader
-"C:\Users\Ilya\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin\cargo.exe" build -p librashader-capi --release --target x86_64-pc-windows-msvc --no-default-features --features runtime-vulkan
+"C:\Users\Ilya\.rustup\toolchains\stable-x86_64-pc-windows-msvc\bin\cargo.exe" build -p librashader-capi --release --target x86_64-pc-windows-msvc --no-default-features --features runtime-vulkan,runtime-d3d11,runtime-d3d12-static,runtime-opengl
 ```
 
 **Note:** The build invokes the real toolchain binaries directly rather than `rustup run stable cargo` because rustup shims in `C:\Users\Ilya\.cargo\bin\` cannot be launched from ssh sessions (error 448 / "untrusted mount point").
 
+**Feature rationale:** `runtime-d3d12-static` rather than `runtime-d3d12` links `mach-dxcompiler-rs`'s `DxcCreateInstance` in statically (`librashader-runtime-d3d12/src/util.rs:233-252`) instead of importing `dxcompiler.dll`, so no extra DLL has to be packaged with Dolphin. The DLL carries no `dxcompiler` dependency in its import table.
+
 **Artifact:**
 - **Path:** `lib/windows-x64/librashader.dll`
-- **Size:** 8,611,840 bytes
+- **Size:** 38,358,016 bytes
 - **Source:** `target\x86_64-pc-windows-msvc\release\librashader_capi.dll` (renamed)
+- **ABI:** 2 / **API:** 5
+- **Exported symbol families:** `libra_vk_*` (8), `libra_d3d11_*` (8), `libra_d3d12_*` (8), `libra_gl_*` (7) — total 60 `libra_` exports
 
-Both desktop builds use the same flags as the Android build (`--no-default-features --features runtime-vulkan`) and produce binaries with ABI 2 / API 5.
+**OpenGL runtime note:** `libra_gl_*` exports 7 symbols, not 8, because the OpenGL runtime has no `*_create_deferred` function — deferred creation exists for command-buffer APIs (Vulkan, D3D11, D3D12, Metal), but OpenGL is immediate-mode and submits commands synchronously.
+
+The desktop builds now enable the native-backend runtimes in addition to Vulkan. ABI 2 / API 5 is unchanged from the original Android-only build.
 
 ## Local Modifications
 
