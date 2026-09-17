@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "Common/CommonPaths.h"
 #include "Common/FileUtil.h"
 #include "VideoCommon/PostProcessing/LibrashaderParameters.h"
 
@@ -109,17 +110,59 @@ TEST(LibrashaderParameters, FormatOverridesRoundTrips)
   EXPECT_FLOAT_EQ(parsed[1].second, 0.75f);
 }
 
-#if defined(__APPLE__)
-// Enumerate against a real preset, gated on the shader pack being present the way existing preset
-// tests do. On macOS the pack is under PCSX2's Application Support.
-TEST(LibrashaderParameters, EnumerateRealPreset)
+#if defined(_WIN32) || defined(__APPLE__)
+// Enumerate against the in-tree fixture preset. On these two platforms the repo ships a librashader
+// binary and the CMake places it next to the test binary, so load failure is a real bug and must
+// fail the test rather than skip. This provides unconditional coverage of Enumerate across the C
+// ABI.
+TEST(LibrashaderParameters, EnumerateFixturePreset)
 {
-  const std::string pack_root =
-      "/Users/ilya.lissoboi/Library/Application Support/PCSX2/shaders/shaders_slang";
-  const std::string preset_path = pack_root + "/presets/crt-royale-kurozumi.slangp";
-  if (!File::Exists(preset_path))
+  // Locate the fixture using the pattern from PatchAllowlistTest.cpp:43-48.
+  std::string test_data_dir = File::GetExeDirectory()
+#if defined(__APPLE__)
+                              + DIR_SEP "Tests"  // FIXME: Ugly hack.
+#endif
+                              + DIR_SEP "TestData";
+  const std::string preset_path = test_data_dir + DIR_SEP "parameter-fixture.slangp";
+
+  std::vector<ParameterInfo> params;
+  std::string error;
+  const bool ok = Enumerate(preset_path, &params, &error);
+
+  ASSERT_TRUE(ok) << "Enumerate failed: " << error;
+  ASSERT_EQ(params.size(), 2u) << "Fixture declares exactly 2 parameters";
+
+  // Assert against the measured values. test_gamma initial=2.4 (not 2.5) is the assertion that
+  // proves the preset override is folded into p.initial, not the #pragma parameter default.
+  auto test_gamma = std::find_if(params.begin(), params.end(),
+                                 [](const ParameterInfo& p) { return p.name == "test_gamma"; });
+  ASSERT_NE(test_gamma, params.end()) << "test_gamma not found";
+  EXPECT_FLOAT_EQ(test_gamma->initial, 2.4f);
+  EXPECT_FLOAT_EQ(test_gamma->minimum, 1.0f);
+  EXPECT_FLOAT_EQ(test_gamma->maximum, 5.0f);
+  EXPECT_FLOAT_EQ(test_gamma->step, 0.025f);
+
+  auto test_flag = std::find_if(params.begin(), params.end(),
+                                [](const ParameterInfo& p) { return p.name == "test_flag"; });
+  ASSERT_NE(test_flag, params.end()) << "test_flag not found";
+  EXPECT_FLOAT_EQ(test_flag->initial, 0.0f);
+  EXPECT_FLOAT_EQ(test_flag->minimum, 0.0f);
+  EXPECT_FLOAT_EQ(test_flag->maximum, 1.0f);
+  EXPECT_FLOAT_EQ(test_flag->step, 1.0f);
+}
+#endif
+
+// Enumerate against a real preset from the SLANG_PRESET environment variable, matching the gate in
+// SlangCompileTest.cpp:888. Generic invariants only; an arbitrary preset would not satisfy
+// crt-royale-specific assertions. This skipping by default is not a repeat of the round-1 defect:
+// it runs whenever the env var is set, and the coverage it used to provide is now unconditional in
+// EnumerateFixturePreset above.
+TEST(LibrashaderParameters, EnumerateRealPresetFromEnv)
+{
+  const char* preset_path = std::getenv("SLANG_PRESET");
+  if (!preset_path)
   {
-    GTEST_SKIP() << "Shader pack not present; skipping real-preset test";
+    GTEST_SKIP() << "SLANG_PRESET not set; skipping real-preset test";
   }
 
   std::vector<ParameterInfo> params;
@@ -127,10 +170,9 @@ TEST(LibrashaderParameters, EnumerateRealPreset)
   const bool ok = Enumerate(preset_path, &params, &error);
 
   ASSERT_TRUE(ok) << "Enumerate failed: " << error;
-  EXPECT_FALSE(params.empty())
-      << "crt-royale-kurozumi declares parameters; list should not be empty";
+  EXPECT_FALSE(params.empty()) << "Real preset should declare at least one parameter";
 
-  // Spot-check: every parameter has a non-empty name and a valid range.
+  // Generic invariants: every parameter has a non-empty name and a valid range.
   for (const auto& p : params)
   {
     EXPECT_FALSE(p.name.empty());
@@ -138,17 +180,4 @@ TEST(LibrashaderParameters, EnumerateRealPreset)
     EXPECT_LE(p.initial, p.maximum);
     EXPECT_GE(p.step, 0.0f);
   }
-
-  // Assert against a known parameter from crt-royale-kurozumi.slangp to verify struct layout and
-  // that p.initial reflects the preset's override (2.4), not the underlying .slang default (2.5).
-  // This catches struct-layout and free-semantics regressions across the C ABI.
-  auto it = std::find_if(params.begin(), params.end(),
-                         [](const ParameterInfo& p) { return p.name == "crt_gamma"; });
-  ASSERT_NE(it, params.end()) << "crt_gamma not found in enumerated list";
-  EXPECT_FLOAT_EQ(it->initial, 2.4f)
-      << "crt_gamma initial should be preset override, not .slang default";
-  EXPECT_FLOAT_EQ(it->minimum, 1.0f);
-  EXPECT_FLOAT_EQ(it->maximum, 5.0f);
-  EXPECT_FLOAT_EQ(it->step, 0.025f);
 }
-#endif
