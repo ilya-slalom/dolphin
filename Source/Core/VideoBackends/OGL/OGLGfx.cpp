@@ -19,6 +19,7 @@
 #include "VideoCommon/AsyncShaderCompiler.h"
 #include "VideoCommon/DriverDetails.h"
 #include "VideoCommon/Present.h"
+#include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
 
 #include <algorithm>
@@ -760,6 +761,13 @@ void OGLGfx::InvalidateCachedState()
   m_current_rasterization_state = RenderState::GetInvalidRasterizationState();
   m_current_depth_state = RenderState::GetInvalidDepthState();
   m_current_blend_state = RenderState::GetInvalidBlendingState();
+
+  // The indexed GL_UNIFORM_BUFFER binding points are not tracked here, and foreign code rebinds
+  // them at whatever index its own shaders reflect -- which can collide with 1 through 4, the range
+  // ProgramShaderCache uses: 1 pixel, 2 vertex, 3 custom constants (only when there are any) and
+  // 4 geometry. It only re-binds them when a shader manager is dirty, so marking the constants
+  // dirty is what forces the re-bind, for all of them at once.
+  VertexManagerBase::InvalidateConstants();
 
   // Deliberately not invalidated:
   //  - m_bound_image_textures, only bound by compute dispatches, which no foreign GL code here
