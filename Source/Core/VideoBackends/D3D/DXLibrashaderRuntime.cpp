@@ -3,11 +3,14 @@
 
 #include "VideoBackends/D3D/DXLibrashaderRuntime.h"
 
+#include <utility>
+
 #include "Common/Logging/Log.h"
 
 #include "VideoBackends/D3D/D3DBase.h"
 #include "VideoBackends/D3D/D3DState.h"
 #include "VideoBackends/D3D/DXTexture.h"
+#include "VideoBackends/D3DCommon/D3DCommon.h"
 
 #include "VideoCommon/AbstractFramebuffer.h"
 #include "VideoCommon/Constants.h"
@@ -96,8 +99,50 @@ bool DXLibrashaderRuntime::CreateChain(libra_shader_preset_t preset)
   return true;
 }
 
+bool DXLibrashaderRuntime::EnsureInputSRV(const DXTexture* in_tex)
+{
+  ID3D11Texture2D* const resource = in_tex->GetD3DTexture();
+  if (m_input_srv && m_input_srv_source.Get() == resource)
+    return true;
+
+  // One slot, so the previous view goes before the replacement is made rather than being left to
+  // the assignment. If creation then fails the cache is simply empty and the next frame retries.
+  m_input_srv.Reset();
+  m_input_srv_source.Reset();
+
+  // The format has to be Dolphin's own SRV format for this texture, not something derived from the
+  // resource description -- render targets are created typeless, and a different typed format would
+  // change what the chain samples. Mip range matches DXTexture::CreateSRV(); a TEXTURE2D view has
+  // no array-slice field and addresses the first slice implicitly, which is the slice the chain
+  // wants.
+  const TextureConfig& config = in_tex->GetConfig();
+  const CD3D11_SHADER_RESOURCE_VIEW_DESC desc(
+      D3D11_SRV_DIMENSION_TEXTURE2D, D3DCommon::GetSRVFormatForAbstractFormat(config.format), 0,
+      config.levels);
+
+  ComPtr<ID3D11ShaderResourceView> srv;
+  const HRESULT hr = D3D::device->CreateShaderResourceView(resource, &desc, &srv);
+  if (FAILED(hr))
+  {
+    ERROR_LOG_FMT(VIDEO,
+                  "Librashader: failed to create a non-array input SRV for a {}x{}x{} source: {}",
+                  config.width, config.height, config.layers, DX11HRWrap(hr));
+    return false;
+  }
+
+  m_input_srv = std::move(srv);
+  m_input_srv_source = resource;
+  return true;
+}
+
 void DXLibrashaderRuntime::DestroyChain()
 {
+  // Release the cached input view and its retained source unconditionally, before the early return:
+  // only RunFrame() creates them and it returns early without a chain, so nothing could be stranded
+  // today, but doing it up front removes the reachability argument rather than relying on it.
+  m_input_srv.Reset();
+  m_input_srv_source.Reset();
+
   if (m_chain == nullptr)
     return;
 
@@ -120,7 +165,13 @@ bool DXLibrashaderRuntime::RunFrame(const AbstractTexture* source, AbstractFrame
   const auto* in_tex = static_cast<const DXTexture*>(source);
   auto* out_fb = static_cast<DXFramebuffer*>(target);
 
-  ID3D11ShaderResourceView* srv = in_tex->GetD3DSRV();
+  // Not in_tex->GetD3DSRV(): that one is TEXTURE2DARRAY, and librashader's HLSL declares a
+  // non-array Texture2D. Reading an array view through a non-array declaration is undefined by the
+  // D3D spec even though every driver tested tolerates it, so the chain gets a view of its own.
+  if (!EnsureInputSRV(in_tex))
+    return false;
+
+  ID3D11ShaderResourceView* srv = m_input_srv.Get();
   ID3D11RenderTargetView* rtv = out_fb->GetRTVArray()[0];
 
   libra_viewport_t vp{0.0f, 0.0f, static_cast<u32>(target->GetWidth()),

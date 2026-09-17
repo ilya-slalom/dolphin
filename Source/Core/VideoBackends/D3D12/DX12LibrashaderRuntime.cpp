@@ -116,8 +116,74 @@ bool DX12LibrashaderRuntime::CreateChain(libra_shader_preset_t preset)
   return true;
 }
 
+bool DX12LibrashaderRuntime::EnsureInputDescriptor(const DXTexture* in_tex)
+{
+  ID3D12Resource* const resource = in_tex->GetResource();
+  if (m_input_srv_descriptor && m_input_srv_source.Get() == resource)
+    return true;
+
+  // One slot: the previous descriptor is released before the replacement is allocated. The heap is
+  // a finite pool (MAX_SRVS), so an insert-only cache would exhaust it rather than merely grow.
+  ReleaseInputDescriptor();
+
+  DescriptorHandle descriptor = {};
+  if (!g_dx_context->GetDescriptorHeapManager().Allocate(&descriptor))
+  {
+    ERROR_LOG_FMT(VIDEO, "Librashader: failed to allocate a non-array input SRV descriptor");
+    return false;
+  }
+
+  // The format has to be Dolphin's own SRV format for this texture, not something derived from the
+  // resource description -- render targets are created typeless, and a different typed format would
+  // change what the chain samples. Mip range matches DXTexture::CreateSRVDescriptor(); a TEXTURE2D
+  // view has no array-slice field and addresses the first slice implicitly, which is the slice the
+  // chain wants.
+  const TextureConfig& config = in_tex->GetConfig();
+  D3D12_SHADER_RESOURCE_VIEW_DESC desc = {D3DCommon::GetSRVFormatForAbstractFormat(config.format),
+                                          D3D12_SRV_DIMENSION_TEXTURE2D,
+                                          D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING};
+  desc.Texture2D.MostDetailedMip = 0;
+  desc.Texture2D.MipLevels = config.levels;
+  g_dx_context->GetDevice()->CreateShaderResourceView(resource, &desc, descriptor.cpu_handle);
+
+  m_input_srv_descriptor = descriptor;
+  m_input_srv_source = resource;
+  return true;
+}
+
+void DX12LibrashaderRuntime::ReleaseInputDescriptor()
+{
+  // DescriptorHeapManager, not DescriptorAllocator: the former is the persistent bitset allocator
+  // that DXTexture itself uses, while the latter is a per-frame linear allocator whose Reset()
+  // would recycle the descriptor out from under the chain.
+  //
+  // Deferred to the current command list's fence rather than freed at once, which is what
+  // ~DXTexture does with its own SRV descriptor out of the same heap manager -- and what the
+  // descriptor this replaced (DXTexture's) was covered by. The slot itself is never read by the GPU
+  // (the heap is created D3D12_DESCRIPTOR_HEAP_FLAG_NONE, so it is not shader-visible and can only
+  // be copied from on the CPU), but librashader is a prebuilt binary whose header states a lifetime
+  // rule for resource pointers and says nothing about descriptor handles, so matching the backend's
+  // own idiom is preferable to reasoning about when it stops reading the handle. Still bounded: one
+  // slot, deferred by at most NUM_COMMAND_LISTS frames. A descriptor deferred from DestroyChain()
+  // during shutdown is never drained, which is harmless -- the heap is destroyed moments later by
+  // DXContext::Destroy(), exactly as for every texture still alive at that point.
+  if (m_input_srv_descriptor)
+  {
+    g_dx_context->DeferDescriptorDestruction(g_dx_context->GetDescriptorHeapManager(),
+                                             m_input_srv_descriptor.index);
+  }
+
+  m_input_srv_descriptor = {};
+  m_input_srv_source.Reset();
+}
+
 void DX12LibrashaderRuntime::DestroyChain()
 {
+  // Release the cached descriptor and its retained source unconditionally, before the early return:
+  // only RunFrame() creates them and it returns early without a chain, so nothing could be stranded
+  // today, but doing it up front removes the reachability argument rather than relying on it.
+  ReleaseInputDescriptor();
+
   if (m_chain == nullptr)
     return;
 
@@ -141,6 +207,13 @@ bool DX12LibrashaderRuntime::RunFrame(const AbstractTexture* source, AbstractFra
   auto* out_fb = static_cast<DXFramebuffer*>(target);
   auto* out_tex = static_cast<DXTexture*>(out_fb->GetColorAttachment());
   if (out_tex == nullptr || out_fb->GetRTVDescriptorCount() == 0)
+    return false;
+
+  // Not in_tex->GetSRVDescriptor(): that one is TEXTURE2DARRAY, and librashader's HLSL declares a
+  // non-array Texture2D. Reading an array view through a non-array declaration is undefined by the
+  // D3D spec even though every driver tested tolerates it, so the chain gets a descriptor of its
+  // own. Done before the barriers so a failure costs nothing.
+  if (!EnsureInputDescriptor(in_tex))
     return false;
 
   // librashader requires the source in PIXEL_SHADER_RESOURCE and the target in RENDER_TARGET, and
@@ -175,7 +248,7 @@ bool DX12LibrashaderRuntime::RunFrame(const AbstractTexture* source, AbstractFra
   // shader-visible heap, which is legal only from a non-shader-visible source heap.
   libra_image_d3d12_t in = {};
   in.image_type = LIBRA_D3D12_IMAGE_TYPE_SOURCE_IMAGE;
-  in.handle.source.descriptor = in_tex->GetSRVDescriptor().cpu_handle;
+  in.handle.source.descriptor = m_input_srv_descriptor.cpu_handle;
   in.handle.source.resource = in_tex->GetResource();
 
   // The output carries its own format and size because an RTV alone describes neither. RTV zero is
