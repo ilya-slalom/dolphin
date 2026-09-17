@@ -28,8 +28,8 @@
 #include "VideoCommon/PostProcessing/MipGen.h"
 #include "VideoCommon/PostProcessing/PassGraph.h"
 #include "VideoCommon/PostProcessing/PassSizing.h"
+#include "VideoCommon/PostProcessing/PostProcessingConfig.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
-#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangSamplers.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
@@ -209,11 +209,10 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
 {
   ClearChain();
 
-  // The config value may be a single preset name or a ';'-separated chain of presets whose pass
-  // graphs are concatenated (each preset's first pass samples the previous preset's output as
-  // "Source"). A plain name has no ';', so this is backwards compatible. SplitChainSpec is the
-  // single splitter shared with the front ends, so a name means the same thing in both.
-  for (const std::string& name : SplitChainSpec(preset_spec))
+  // Load a single preset. Configs written before the chain feature was removed may hold a
+  // ';'-separated list; ResolveConfiguredPreset takes the first entry and warns.
+  const std::string name = ResolveConfiguredPreset(preset_spec);
+  if (!name.empty())
     AppendPreset(name);
 
   // Only now is it settled which pass is last, and the last pass is the one that draws to the

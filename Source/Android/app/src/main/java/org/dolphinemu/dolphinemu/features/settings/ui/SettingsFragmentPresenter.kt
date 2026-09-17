@@ -2944,8 +2944,7 @@ class SettingsFragmentPresenter(
 
     // Two-step post-processing picker. Step 1 lists the shader categories (top-level folders of
     // the buildbot pack) plus "All"; step 2 lists the shaders in the chosen category with "Select"
-    // (replace the whole chain with this one shader) and "Add to Chain" (append it) actions. The
-    // "Add to Chain" button is only offered once at least one shader is already selected.
+    // (replace with this one shader) action.
     private fun openPostProcessingPicker() {
         val shaderList = PostProcessing.shaderList
         if (shaderList.isEmpty()) {
@@ -2976,8 +2975,7 @@ class SettingsFragmentPresenter(
     }
 
     // Step 2 of the picker: the shaders in the chosen category, prefixed with "Off". Radio-style
-    // single selection; "Select" replaces the current chain with the highlighted shader, while
-    // "Add to Chain" appends it. "Add to Chain" is hidden until at least one shader is selected.
+    // single selection; "Select" sets the highlighted shader as the configured preset.
     private fun showPostShaderList(category: String, presets: List<String>) {
         val settings = this.settings ?: return
         if (presets.isEmpty()) {
@@ -2989,38 +2987,22 @@ class SettingsFragmentPresenter(
         val entries = arrayOf(off, *presets.toTypedArray())
         val values = arrayOf("", *presets.toTypedArray())
 
-        // Highlight whichever entry matches the last preset in the current chain, if any.
+        // Highlight whichever entry matches the current preset.
         val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
-        val lastPreset = current.split(';').lastOrNull { it.isNotEmpty() } ?: ""
-        var checked = values.indexOf(lastPreset).let { if (it >= 0) it else 0 }
-        val hasSelection = current.isNotEmpty()
+        var checked = values.indexOf(current).let { if (it >= 0) it else 0 }
 
         val builder = MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
             .setTitle(category)
             .setSingleChoiceItems(entries, checked) { _: DialogInterface, which: Int ->
                 checked = which
             }
-            // "Select": reset the chain to just the highlighted preset (empty selection = Off).
+            // "Select": set the highlighted preset (empty selection = Off).
             .setPositiveButton(R.string.post_processing_select) { _: DialogInterface, _: Int ->
                 StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, values[checked])
                 fragmentView.onSettingChanged()
                 loadSettingsList()
             }
             .setNeutralButton(R.string.cancel, null)
-
-        // "Add to Chain": append the highlighted preset to the existing chain. Only meaningful
-        // when something is already selected, so it is offered only in that case.
-        if (hasSelection) {
-            builder.setNegativeButton(R.string.post_processing_chain_add) { _: DialogInterface, _: Int ->
-                val chosen = values[checked]
-                if (chosen.isEmpty()) return@setNegativeButton  // "Off" has nothing to append.
-                val existing = StringSetting.GFX_ENHANCE_POST_SHADER.string
-                val updated = if (existing.isEmpty()) chosen else "$existing;$chosen"
-                StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, updated)
-                fragmentView.onSettingChanged()
-                loadSettingsList()
-            }
-        }
 
         builder.show()
     }

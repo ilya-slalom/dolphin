@@ -32,13 +32,11 @@
 #include "DolphinQt/Config/ConfigControls/ConfigFloatSlider.h"
 #include "DolphinQt/Config/GameConfigWidget.h"
 #include "DolphinQt/Config/Graphics/GraphicsPane.h"
-#include "DolphinQt/Config/Graphics/PostProcessingChainDialog.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 
 #include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
-#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/ShaderPackDownload.h"
 #include "VideoCommon/PostProcessing/ShaderPackSource.h"
 #include "VideoCommon/VideoBackendBase.h"
@@ -189,7 +187,6 @@ void EnhancementsWidget::CreateWidgets()
   const std::vector<std::pair<QString, QString>> separate_data_and_text;
   m_post_processing_effect =
       new ConfigStringChoice(separate_data_and_text, Config::GFX_ENHANCE_POST_SHADER, m_game_layer);
-  m_configure_post_chain = new NonDefaultQPushButton(tr("Chain…"));
   m_download_shader_pack = new NonDefaultQPushButton(tr("Download…"));
 
   m_scaled_efb_copy =
@@ -224,8 +221,7 @@ void EnhancementsWidget::CreateWidgets()
 
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
   enhancements_layout->addWidget(m_post_processing_effect, row, 1);
-  enhancements_layout->addWidget(m_configure_post_chain, row, 2);
-  enhancements_layout->addWidget(m_download_shader_pack, row, 3);
+  enhancements_layout->addWidget(m_download_shader_pack, row, 2);
   ++row;
 
   enhancements_layout->addWidget(m_scaled_efb_copy, row, 0);
@@ -318,9 +314,6 @@ void EnhancementsWidget::ConnectWidgets()
   connect(m_post_processing_effect, &QComboBox::currentIndexChanged, this,
           &EnhancementsWidget::ShaderChanged);
 
-  connect(m_configure_post_chain, &QPushButton::clicked, this,
-          &EnhancementsWidget::ConfigurePostProcessingChain);
-
   // Convert download button to menu
   auto* const menu = new QMenu(this);
   for (const VideoCommon::ShaderPackSource& source : VideoCommon::GetShaderPackSources())
@@ -381,14 +374,6 @@ void EnhancementsWidget::LoadPostProcessingShaders()
   if (!found)
     m_post_processing_effect->setCurrentIndex(0);  // "(off)"
 
-  // A chain is not one of the listed presets; add it so the combo shows the current value.
-  if (selected_shader.find(VideoCommon::CHAIN_SEPARATOR) != std::string::npos)
-  {
-    m_post_processing_effect->addItem(
-        QString::fromStdString(VideoCommon::DescribeChainSpec(selected_shader)),
-        QString::fromStdString(selected_shader));
-  }
-
   m_post_processing_effect->Load();
   ShaderChanged();
 }
@@ -437,26 +422,6 @@ void EnhancementsWidget::ShaderChanged()
     else
       Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, shader);
   }
-}
-
-void EnhancementsWidget::ConfigurePostProcessingChain()
-{
-  PostProcessingChainDialog dialog(
-      this, QString::fromStdString(Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER)));
-  if (dialog.exec() != QDialog::Accepted)
-    return;
-
-  const std::string chain = dialog.ChainSpec().toStdString();
-  if (m_game_layer != nullptr)
-  {
-    m_game_layer->Set(Config::GFX_ENHANCE_POST_SHADER.GetLocation(), chain);
-    Config::OnConfigChanged();
-  }
-  else
-  {
-    Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, chain);
-  }
-  LoadPostProcessingShaders();
 }
 
 void EnhancementsWidget::UpdateAntialiasingOptions()

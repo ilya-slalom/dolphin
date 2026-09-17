@@ -43,7 +43,6 @@ private:
   void LoadPostProcessingShaders();
   void ShaderChanged();
 
-  void ConfigurePostProcessingChain();
   void DownloadShaderPack(const std::string& pack_id, const std::string& profile);
 
   // Enhancements
@@ -51,7 +50,6 @@ private:
   ConfigComplexChoice* m_antialiasing_combo;
   ConfigComplexChoice* m_texture_filtering_combo;
   ConfigStringChoice* m_post_processing_effect;
-  QPushButton* m_configure_post_chain;
   QPushButton* m_download_shader_pack;
   ConfigBool* m_scaled_efb_copy;
   ConfigBool* m_per_pixel_lighting;

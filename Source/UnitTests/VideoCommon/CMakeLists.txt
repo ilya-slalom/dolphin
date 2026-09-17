@@ -25,7 +25,7 @@ endif()
 # directly instead of going through SPIRV::Compile* (that path cannot target below 310 es).
 target_link_libraries(SlangCompileTest PRIVATE glslang-default-resource-limits)
 add_dolphin_test(RetroCrisisInstallTest PostProcessing/RetroCrisisInstallTest.cpp)
-add_dolphin_test(ShaderChainSpecTest PostProcessing/ShaderChainSpecTest.cpp)
+add_dolphin_test(PostProcessingConfigTest PostProcessing/PostProcessingConfigTest.cpp)
 add_dolphin_test(SlangSourceDownscaleTest PostProcessing/SlangSourceDownscaleTest.cpp)
 add_dolphin_test(ChainOutputPolicyTest PostProcessing/ChainOutputPolicyTest.cpp)
 add_dolphin_test(ChainDebugDumpTest PostProcessing/ChainDebugDumpTest.cpp)

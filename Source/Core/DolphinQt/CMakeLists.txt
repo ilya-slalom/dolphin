@@ -105,8 +105,6 @@ add_executable(dolphin-emu
   Config/Graphics/GeneralWidget.h
   Config/Graphics/GraphicsPane.cpp
   Config/Graphics/GraphicsPane.h
-  Config/Graphics/PostProcessingChainDialog.cpp
-  Config/Graphics/PostProcessingChainDialog.h
   Config/Graphics/HacksWidget.cpp
   Config/Graphics/HacksWidget.h
   Config/GraphicsModListWidget.cpp
