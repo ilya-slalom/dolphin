@@ -142,8 +142,14 @@ void ShaderPresetPickerDialog::OnFilterChanged(const QString& text)
     return;
   }
 
-  // Clearing the box should feel like undo rather than like losing your place, so collapse back
-  // down and then scroll to whatever is selected again.
+  // Collapse back down and scroll to whatever is still selected, so clearing the box does not also
+  // lose your place in the tree.
+  //
+  // "Still selected" is the limit of it: a filter that hides the selected row makes the view drop
+  // its current index, which reaches OnCurrentChanged, empties m_selected and disables OK, so by
+  // the time the box is empty again there is nothing left to restore and this only collapses. That
+  // is deliberate rather than missing -- holding on to a selection the tree no longer shows would
+  // let OK accept a preset the user can neither see nor confirm.
   m_tree->collapseAll();
   SelectPreset(m_selected);
 }

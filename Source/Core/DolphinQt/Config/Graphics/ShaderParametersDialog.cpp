@@ -21,7 +21,8 @@
 
 namespace Parameters = VideoCommon::LibrashaderParameters;
 
-ShaderParametersDialog::ShaderParametersDialog(QWidget* parent, const QString& preset)
+ShaderParametersDialog::ShaderParametersDialog(QWidget* parent, const QString& preset,
+                                               bool opened_from_game_properties)
     : QDialog(parent)
 {
   const std::string preset_id = preset.toStdString();
@@ -34,7 +35,7 @@ ShaderParametersDialog::ShaderParametersDialog(QWidget* parent, const QString& p
   setWindowTitle(tr("Shader Parameters - %1").arg(QString::fromStdString(title)));
   resize(720, 560);
 
-  CreateWidgets();
+  CreateWidgets(opened_from_game_properties);
 
   const std::string path = VideoCommon::ResolvePresetPath(preset_id);
   m_key = Parameters::KeyForPreset(path, preset_id);
@@ -45,7 +46,7 @@ ShaderParametersDialog::ShaderParametersDialog(QWidget* parent, const QString& p
   ApplyOverrides(Parameters::Load(m_key));
 }
 
-void ShaderParametersDialog::CreateWidgets()
+void ShaderParametersDialog::CreateWidgets(bool opened_from_game_properties)
 {
   // Hand-built rather than ported from PCSX2's ShaderParametersDialog.ui because DolphinQt has no
   // uic step: there is no .ui file anywhere under Source/Core/DolphinQt and no AUTOUIC in its
@@ -73,6 +74,17 @@ void ShaderParametersDialog::CreateWidgets()
   footer->addWidget(close);
 
   auto* const layout = new QVBoxLayout(this);
+  if (opened_from_game_properties)
+  {
+    // Above the parameters, not on a tooltip: the values below are shared, and the one page that
+    // makes that surprising is the one this was opened from. A tooltip would only reach the user
+    // after they had already changed something for what they thought was one game.
+    auto* const scope = new QLabel(
+        tr("Note: parameter values are global. They apply to every game that uses this preset."),
+        this);
+    scope->setWordWrap(true);
+    layout->addWidget(scope);
+  }
   layout->addWidget(m_status);
   layout->addWidget(m_scroll);
   layout->addLayout(footer);
@@ -309,5 +321,9 @@ void ShaderParametersDialog::SaveOverrides()
   // then pushes *every* parameter rather than only the ones stored here, because a chain remembers
   // the last value it was given and a reset therefore has to send the default explicitly; that push
   // lives in LibrashaderPostProcessing::ApplyStoredOverrides().
+  //
+  // The write is to the base layer whichever page opened this dialog, so parameter values are
+  // global. That is a known limitation rather than an oversight -- see the note CreateWidgets adds
+  // when the caller is a game's own graphics page.
   Parameters::Save(m_key, CollectOverrides());
 }

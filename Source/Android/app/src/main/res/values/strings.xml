@@ -230,7 +230,6 @@
     <string name="post_processing_shader">Post-Processing Effect</string>
     <string name="post_processing_category_all">All</string>
     <string name="post_processing_select">Select</string>
-    <string name="post_processing_chain_add">Add to Chain</string>
     <string name="post_processing_chain_empty">No shaders available. Download the shader pack first.</string>
     <string name="post_processing_download_libretro">Download libretro Shaders</string>
     <string name="post_processing_download_libretro_description">RetroArch slang shader pack (~50 MB) from the libretro buildbot</string>

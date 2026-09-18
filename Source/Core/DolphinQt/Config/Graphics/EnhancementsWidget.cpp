@@ -39,6 +39,7 @@
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 
+#include "VideoCommon/PostProcessing/LibrashaderLoader.h"
 #include "VideoCommon/PostProcessing/PostProcessingConfig.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
 #include "VideoCommon/PostProcessing/ShaderPackDownload.h"
@@ -55,6 +56,10 @@ EnhancementsWidget::EnhancementsWidget(GraphicsPane* gfx_pane)
   ShaderChanged();
   ConnectWidgets();
   AddDescriptions();
+
+  // The preset field is filled by its own constructor, i.e. before ConnectWidgets could hear about
+  // it, so the initial value needs one explicit pass to be resolved for display.
+  ShowResolvedPreset();
 
   // BackendChanged is called by parent on window creation.
   connect(gfx_pane, &GraphicsPane::BackendChanged, this, &EnhancementsWidget::OnBackendChanged);
@@ -339,8 +344,10 @@ void EnhancementsWidget::ConnectWidgets()
   // the picker, Clear, and the right-click that drops a game override (ConfigText::OnConfigChanged
   // calls setText, which emits this too). Reading the field is what makes this correct rather than
   // one edit behind -- see CurrentShaderPreset().
-  connect(m_post_processing_preset, &QLineEdit::textChanged, this,
-          [this] { UpdateParametersButtonState(); });
+  connect(m_post_processing_preset, &QLineEdit::textChanged, this, [this] {
+    ShowResolvedPreset();
+    UpdateParametersButtonState();
+  });
 
   // Convert download button to menu
   auto* const menu = new QMenu(this);
@@ -391,6 +398,31 @@ std::string EnhancementsWidget::CurrentShaderPreset() const
   return VideoCommon::ResolveConfiguredPreset(m_post_processing_preset->text().toStdString());
 }
 
+void EnhancementsWidget::ShowResolvedPreset()
+{
+  // The field is a plain ConfigText, so it displays the stored string verbatim -- and a GFX.ini
+  // written before chains were removed stores a ';'-separated list. Every path that acts on the
+  // value uses only the first entry (CurrentShaderPreset, the picker, the parameters dialog, the
+  // post-processor), so left alone the row would name presets that nothing loads. Show the one in
+  // use instead.
+  //
+  // Display only, no write-back: replacing the stored value here would silently rewrite a game or
+  // global INI just because someone opened the graphics page. The row now matches what runs; the
+  // stored chain is rewritten only when the user picks or clears a preset. Safe because a read-only
+  // ConfigText no longer saves on editingFinished (ConfigText::Update), so this setText cannot
+  // become a write by way of the window closing.
+  //
+  // The guard also terminates the recursion through textChanged -> here, since the resolved value
+  // resolves to itself, and it means ResolveConfiguredPreset stops warning about the dropped tail
+  // after the first pass instead of on every keystroke-sized signal.
+  const QString resolved = QString::fromStdString(
+      VideoCommon::ResolveConfiguredPreset(m_post_processing_preset->text().toStdString()));
+  if (resolved == m_post_processing_preset->text())
+    return;
+
+  m_post_processing_preset->setText(resolved);
+}
+
 void EnhancementsWidget::BrowseForShaderPreset()
 {
   ShaderPresetPickerDialog dialog(this, QString::fromStdString(CurrentShaderPreset()));
@@ -402,7 +434,12 @@ void EnhancementsWidget::BrowseForShaderPreset()
 
 void EnhancementsWidget::EditShaderParameters()
 {
-  ShaderParametersDialog dialog(this, QString::fromStdString(CurrentShaderPreset()));
+  // The layer is passed as a bare "are we in Game Properties" flag, not as a layer to write: the
+  // dialog stores its values globally either way, and that is what the flag makes it say. Giving it
+  // a per-game parameter layer would need a per-game section, a merge rule for it and a way to see
+  // and clear the override, none of which exist.
+  ShaderParametersDialog dialog(this, QString::fromStdString(CurrentShaderPreset()),
+                                m_game_layer != nullptr);
   dialog.exec();
 }
 
@@ -410,7 +447,16 @@ void EnhancementsWidget::UpdateParametersButtonState()
 {
   // Whether the preset *has* parameters is deliberately not tested here: finding out costs parsing
   // the preset every time this row changes, and the dialog says so itself when there are none.
+  //
+  // Whether librashader loaded *is* tested, because that one is not a property of the preset. The
+  // dialog gets its list from LibrashaderParameters::Enumerate, which is guarded on
+  // GetAvailability() and returns the availability reason as its error, so without the library
+  // every preset reports "Could not load preset" no matter how many parameters it declares. A
+  // button that can only ever open an error is better disabled, with the reason in its tooltip
+  // (see AddDescriptions) -- the built-in engine still post-processes, it just cannot be tuned
+  // from here.
   m_post_processing_parameters->setEnabled(g_backend_info.bSupportsPostProcessing &&
+                                           VideoCommon::Librashader::GetAvailability().available &&
                                            !CurrentShaderPreset().empty());
 }
 
@@ -624,7 +670,25 @@ void EnhancementsWidget::AddDescriptions()
   // and says nothing about editing one. Same ToolTipPushButton + SetDescription pattern for the
   // same reason -- the field it belongs to is read-only, so the buttons carry the row's help.
   m_post_processing_parameters->SetTitle(tr("Shader Parameters"));
-  m_post_processing_parameters->SetDescription(tr(TR_POSTPROCESSING_PARAMETERS_DESCRIPTION));
+
+  // When librashader did not load, the button is disabled (UpdateParametersButtonState) and this is
+  // where the user finds out why: Qt still delivers hover events to a disabled widget, so the
+  // balloon still opens. Composed once rather than per state change because availability is decided
+  // by the first GetAvailability() call and cached for the process.
+  const VideoCommon::Librashader::Availability& librashader =
+      VideoCommon::Librashader::GetAvailability();
+  if (librashader.available)
+  {
+    m_post_processing_parameters->SetDescription(tr(TR_POSTPROCESSING_PARAMETERS_DESCRIPTION));
+  }
+  else
+  {
+    m_post_processing_parameters->SetDescription(
+        tr("Unavailable: editing shader parameters needs the librashader library, which could "
+           "not be loaded (%1). Post-processing itself still works.<br><br>%2")
+            .arg(QString::fromStdString(librashader.reason),
+                 tr(TR_POSTPROCESSING_PARAMETERS_DESCRIPTION)));
+  }
 
   m_scaled_efb_copy->SetDescription(tr(TR_SCALED_EFB_COPY_DESCRIPTION));
 

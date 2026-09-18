@@ -28,7 +28,12 @@ class ShaderParametersDialog final : public QDialog
 public:
   // `preset` is the relative preset id the picker stores in GFX_ENHANCE_POST_SHADER ('/'
   // separators, no ".slangp"), already resolved through VideoCommon::ResolveConfiguredPreset.
-  ShaderParametersDialog(QWidget* parent, const QString& preset);
+  //
+  // `opened_from_game_properties` is true when the caller's other controls write a per-game layer.
+  // The values edited here are global whatever the caller is (see SaveOverrides), and a page where
+  // everything else is per-game is exactly where that is least expected, so the dialog says so up
+  // front instead of leaving the user to discover it.
+  ShaderParametersDialog(QWidget* parent, const QString& preset, bool opened_from_game_properties);
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -46,7 +51,7 @@ private:
 
   static constexpr int MAX_SLIDER_STEPS = 10000;
 
-  void CreateWidgets();
+  void CreateWidgets(bool opened_from_game_properties);
   bool LoadParameters(const std::string& absolute_preset_path);
   void BuildRows();
   void ApplyOverrides(const VideoCommon::LibrashaderParameters::Overrides& overrides);

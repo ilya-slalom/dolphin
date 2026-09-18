@@ -45,6 +45,9 @@ private:
   // The preset the post-processing row is showing, which is the one the picker and the parameters
   // dialog both act on. Empty means no post-processing.
   std::string CurrentShaderPreset() const;
+  // Replaces the field's text with the preset that is actually in use when the stored value is a
+  // legacy ';'-separated chain, so the row does not advertise passes nothing runs.
+  void ShowResolvedPreset();
   void BrowseForShaderPreset();
   void ClearShaderPreset();
   void EditShaderParameters();

@@ -1686,9 +1686,9 @@ class SettingsFragmentPresenter(
         )
 
         // Post-processing effect picker. A single row whose subtitle shows the current selection
-        // (a shader, an arrow-joined chain, or "Off"). Tapping it opens a two-step picker:
-        // choose a category, then a shader, with "Select" (replace the chain with this shader) and
-        // "Add to Chain" (append it) actions. See openPostProcessingPicker.
+        // (the preset in use, or "Off"). Tapping it opens a two-step picker: choose a category,
+        // then a shader, with a single "Select" action that makes that shader the preset. Chains,
+        // and the "Add to Chain" action that built them, are gone. See openPostProcessingPicker.
         sl.add(
             RunRunnable(
                 context,
@@ -2935,11 +2935,21 @@ class SettingsFragmentPresenter(
         )
     }
 
-    // Builds the subtitle for the post-processing effect row: "Off" when empty, the single preset
-    // name, or an arrow-joined chain (e.g. "crt/crt-royale → interpolation/sharp-bilinear").
+    // Kotlin mirror of VideoCommon::ResolveConfiguredPreset (PostProcessingConfig.cpp): only the
+    // first entry of the stored value is ever loaded, and a GFX.ini written before chains were
+    // removed can still hold several joined with ';'. Every place this screen reads the setting has
+    // to agree with what runs -- the row's subtitle and the radio button the picker pre-selects.
+    // Kotlin's trim() drops more than the C++ side's " \t", which only helps: a hand-edited INI can
+    // leave a stray \r behind.
+    private fun resolveConfiguredPreset(spec: String): String = spec.substringBefore(';').trim()
+
+    // Builds the subtitle for the post-processing effect row: "Off" when nothing is configured,
+    // otherwise the preset in use. A legacy chain shows only the entry that loads; the arrow-joined
+    // rendering this used to do ("a → b") advertised passes that no backend runs any more.
     private fun describePostShaderSelection(spec: String): CharSequence {
-        if (spec.isEmpty()) return context.getString(R.string.off)
-        return spec.split(';').filter { it.isNotEmpty() }.joinToString(" → ")
+        val preset = resolveConfiguredPreset(spec)
+        if (preset.isEmpty()) return context.getString(R.string.off)
+        return preset
     }
 
     // Two-step post-processing picker. Step 1 lists the shader categories (top-level folders of
@@ -2987,8 +2997,13 @@ class SettingsFragmentPresenter(
         val entries = arrayOf(off, *presets.toTypedArray())
         val values = arrayOf("", *presets.toTypedArray())
 
-        // Highlight whichever entry matches the current preset.
-        val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
+        // Highlight whichever entry matches the preset in use. Resolved first, because `values`
+        // holds single preset ids: a stored "a;b" matched nothing, indexOf returned -1, and the
+        // fallback below turned that into 0 -- "Off" -- so one tap on Select silently disabled
+        // post-processing for a user who had only meant to look. The fallback still lands on "Off"
+        // when the configured preset is simply not in the category being browsed, which is honest:
+        // that list does not contain it, and "Off" is what the dialog is showing as checked.
+        val current = resolveConfiguredPreset(StringSetting.GFX_ENHANCE_POST_SHADER.string)
         var checked = values.indexOf(current).let { if (it >= 0) it else 0 }
 
         val builder = MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
