@@ -1,7 +1,7 @@
 # Librashader Desktop Runtimes and Single-Preset Shader UI — Design
 
 **Date:** 2026-09-16
-**Status:** approved (scope decisions recorded in §6; one gate open in §7)
+**Status:** approved (scope decisions recorded in §6; the §7 gate resolved by measurement 2026-09-18)
 **Related:** [desktop post-processing parity](2026-09-16-desktop-postprocessing-parity-design.md),
 [librashader Android post-processing](2026-08-22-librashader-android-postprocessing-design.md)
 **Reference implementation:** PCSX2 (`~/work/pcsx2`), `pcsx2/GS/ShaderChain/` and `pcsx2-qt/Shader*Dialog.*`
@@ -17,7 +17,7 @@ Windows UAT of the `2606-fork-2` release produced three findings:
 
 Finding 1 is a defect in the hand-rolled multipass executor's D3D12 path. Finding 2 is a
 design problem — the UI was ported from Android without rethinking it for a 30,864-preset
-library. Finding 3 is not yet root-caused (§7).
+library. Finding 3 is resolved by measurement: no Dolphin defect (§7).
 
 ## 2. What is already established
 
@@ -255,9 +255,19 @@ Out of scope: the librashader D3D9 runtime (Dolphin has no D3D9 backend); Linux 
 Intel librashader binaries; the R50 `#endif` preprocessor bug in UBO-member extraction
 (~956 of 2987 presets), which belongs to the built-in translator and is tracked separately.
 
-## 7. Open gate: the crt-royale darkening
+## 7. Resolved: the crt-royale darkening
 
-Root cause **not established**. Refuted this session, each by evidence:
+This section left three candidates open, all of which needed pixels from a running Dolphin:
+**(1)** there is no defect and crt-royale is simply this dark; **(2)** the chain's input is already
+dark, so the defect is upstream in the XFB or the downscale; **(3)** the chain's output is mishandled
+downstream, in the passthrough blit or the backbuffer handling.
+
+The answer is **(1): no Dolphin defect.** Measured 2026-09-18 on the UAT host against real GameCube
+content. crt-royale's brightness loss is the shader's own, and Dolphin hands the chain's output to the
+screen intact: on one static frame the on-screen picture is **99.0%** of the chain's own output image.
+UAT finding 3 closes on this measurement.
+
+Refuted before that measurement, each by evidence, and none of them resurrected by it:
 
 | Theory | Refuted by |
 |---|---|
@@ -265,10 +275,11 @@ Root cause **not established**. Refuted this session, each by evidence:
 | Library version differs from PCSX2's | Both are 0.12.0, built on the same machine |
 | Our box-downscale loses energy | `sum` over n×n then `* (1.0/n²)` — verified correct |
 | Input-resolution policy | PCSX2's regime measures 70.8%, ours 68% |
-| 10-bit swapchain format | librashader maps `A2B10G10R10_UNORM_PACK32` correctly (`librashader-common/src/vk.rs:18-19,56-57`) |
+| 10-bit swapchain format | librashader maps `A2B10G10R10_UNORM_PACK32` correctly (`librashader-common/src/vk.rs:18-19,56-57`). Right about the renderer — but the 10-bit swapchain is exactly what broke the *instrument*, see §7.2 |
 | HDR/color-space frame options | Both Dolphin and PCSX2 pass `nullptr` frame options |
 
-Measured on the UAT host with a flat sRGB-128 field:
+The earlier numbers here came from librashader's CLI on a **flat sRGB-128 field**, not from a running
+Dolphin — the UAT host had no GameCube/Wii images at the time:
 
 | runtime | source | output | mean vs input |
 |---|---|---|---|
@@ -277,23 +288,122 @@ Measured on the UAT host with a flat sRGB-128 field:
 | d3d11 | 640×528 | 1920×1080 | 68.1% |
 | d3d12 | 640×528 | 1920×1080 | 68.0% |
 
-crt-royale through librashader is inherently ~68-71% of input mean at 1080p output,
-consistent across runtimes and independent of source resolution. **A real possibility is
-that the reported darkness *is* that inherent ~68-70% and there is no Dolphin defect.**
+That table is kept for provenance, but its ~68-71% is **not a criterion**. A phosphor-mask shader's
+loss depends on both the output resolution and the picture: the same table already spans 68% to 111%
+purely by changing resolution, and the measurement below spans 86% to 56% purely by changing which
+frame it lands on. Candidate 1 was originally phrased as "output/input ≈ 68-71%"; its substance
+— no Dolphin defect — is what was established, by a different and stronger test than a band.
 
-Three candidates remain, and all three need pixels from a running Dolphin: the chain's input
-is already dark; the chain's output is mishandled downstream (the passthrough blit or the
-backbuffer handling); or there is no defect. The UAT host has no GameCube/Wii images, so
-these cannot be separated without either a capture from the user or instrumentation.
+### 7.1 What was measured
 
-Note for whoever captures it: **Dolphin's own screenshot will not show the shader.**
-`Present.cpp:322` hands the frame dumper `m_xfb_entry->texture`, which is pre-post-processing.
-An OS-level capture is required.
+Game images arrived on the UAT host (`F:\games\emulated\gc`), so the chain dump could be pointed at
+real content. All figures are mean channel value over the region, 0-255, via
+`Tools/chain-dump-mean.py`. The frame is the static
+Metroid Prime (GM8E01) title screen, dump armed at post-processed frame 2100 (~35 s in, at the rig's
+measured 58-59 fps). The chain input dump is **bit-identical across runs and across backends** — sha1
+`34a584f20d1634c0c33992e1f726c532a9528b17` on both Vulkan and D3D12 — which is what makes these rows
+comparable. Chain input is 640×448; chain output and the window's render rect are both 640×477, so the
+screen column is `--crop 8,32,640,477` of the 656×519 window capture.
 
-**The plan therefore front-loads an instrumentation task** — a debug option that dumps the
-chain's input and output images to PNG once — so the question becomes a measurement against
-the table above rather than a judgement about a screenshot. Everything downstream of §4 is
-independent of the answer and proceeds regardless.
+| backend | executor | preset | chain input | chain output | on screen | output/input | screen/input |
+|---|---|---|---|---|---|---|---|
+| Vulkan | librashader | crt-royale | 63.292 | 54.760 | 54.203 | **86.5%** | 85.6% |
+| Vulkan | librashader | `nearest` (control) | 63.292 | 63.271 | 62.200 | **100.0%** | 98.3% |
+| D3D12 | librashader | crt-royale | 63.292 | — (§7.2) | 52.710 | — | 83.3% |
+| D3D12 | librashader | crt-geom | — | — | 48.240 | — | 76.2% |
+| D3D12 | built-in | crt-geom | — | — | 46.272 | — | 73.1% |
+
+Three things this establishes:
+
+- **The chain's input is not dark** (rules out candidate 2). `nearest.slangp` is `stock.slang`, a pure
+  passthrough; its chain output is 100.0% of its input and its on-screen picture is 98.3% of it — the
+  residual being the 448→477 letterbox rows the crop includes.
+- **Nothing downstream loses light** (rules out candidate 3). For crt-royale the screen is 99.0% of the
+  chain's own output image. The passthrough blit and backbuffer handling that Task 4 restructured are
+  faithful.
+- **librashader is not darker than Dolphin's built-in executor.** On the same preset and backend it is
+  *brighter* — 76.2% against 73.1% — which is the opposite of the direction UAT finding 3 assumed.
+
+The loss is strongly content-dependent, so one frame is not the answer. On the dark Retro Studios
+logo frame (frame 1200) the same Vulkan + crt-royale chain measures input 19.697 → output 11.015, i.e.
+**55.9%**. A mask-and-scanline simulation costs proportionally more on a dark picture, which has less
+headroom for its bloom to recover.
+
+Visual check, not only ratios: every capture above was inspected. All show the Metroid Prime title
+screen at normal brightness with the preset's characteristic look — crt-royale's fine phosphor triads,
+crt-geom's barrel curvature and vignette. None is a black or near-black screen.
+
+Note for anyone repeating this: **Dolphin's own screenshot will not show the shader.**
+`Present.cpp:322` hands the frame dumper `m_xfb_entry->texture`, which is pre-post-processing. An
+OS-level capture is required.
+
+### 7.2 The instrument had to be fixed twice first, and O10 is diagnosed
+
+Neither defect below is in Dolphin's rendering; both are in the debug dump added early in this branch.
+Both are recorded because either one silently fabricates this section's numbers.
+
+1. **The dump fired on the black boot screen.** The one-shot budget spends itself on the first frame
+   the chain runs, which on a fresh boot is the console's black screen, so the first pair came back
+   bit-exact zero — mean 0.000, max byte 0. Fixed in `bc6e7e1ccd` by adding
+   `LibrashaderDumpChainDelayFrames` (default 0, deliberately not in the UI), counting only frames
+   seen while the flag is set.
+2. **The chain output dump is not RGBA8, and reading it as RGBA8 fabricates a plausible number.** The
+   chain output target inherits the backbuffer's format (`LibrashaderPostProcessing.cpp:180,367`) and
+   this host's swapchain is 10-bit. `AbstractTexture::Save` builds an **RGBA8** readback staging
+   texture regardless of the source format, copies into it, and hands the bytes to the PNG encoder
+   unconverted — so the file is a valid PNG full of misread `A2B10G10R10` words. It does not look
+   broken. Read that way, the passthrough control measured **160.0%** of its own input, and crt-royale
+   appeared to be 1.72× brighter than the screen, which is what an earlier pass of this task
+   misdiagnosed as a downstream blit defect. The giveaway is alpha: an opaque 10-bit image read as
+   RGBA8 has alpha in exactly **192..255**, because a 2-bit alpha of 3 occupies the top two bits of
+   the fourth byte. `chain-dump-mean.py --rgb10a2-output` unpacks it; unpacked, the passthrough
+   reproduces its input to within 0.05/255 with alpha == 3 everywhere.
+
+**The same defect takes Dolphin down on D3D12**, which is almost certainly O10 — the never-diagnosed
+crash where setting `LibrashaderDumpChainImages` killed Dolphin shortly after the first dump on D3D11.
+
+What was observed on 2026-09-18, separating evidence from inference. Observed: with the dump armed on
+D3D12, the **input** dump line is written (that texture really is RGBA8) and the log ends there — no
+output-dump line, and no window by the next capture 14 s later; the byte-identical run without the
+dump flag survived all three captures and logged no error. So the fatal step is the **output** dump's
+readback, not rendering and not the input dump. Inferred, not verified at the API level: the cause is
+item 2's cross-format staging copy, since D3D's `CopyTextureRegion` requires copy-compatible formats
+while Vulkan's image-to-buffer copy is byte-legal at 4 bytes per pixel and so succeeds with the wrong
+meaning instead of failing. Nobody has yet read the D3D12 debug layer's own message for this. O10 was
+not re-run on D3D11 here, but the log kept from the run that first hit it (`E:\work\log-d3d11-dump.txt`
+on the UAT host) shows the **same signature** — an input-dump line and no output-dump line — so on the
+evidence available the two are one defect rather than two.
+
+**Not fixed here.** The dump is a debug-only, UI-hidden, default-off option, and the two hypotheses
+this task was asked to test (a repeating per-frame readback when `RunFrame` fails; `Save` disturbing
+D3D11 state mid-frame) are both refuted by the above, which was the diagnosis asked for. The fix —
+convert to RGBA8 before saving, or refuse and log the format — is a scope decision rather than part of
+resolving this section. Carried forward as **O11**.
+
+### 7.3 UAT finding 1: D3D12 + slang shader renders a black screen
+
+**Not reproducible on this build.** Run on 2026-09-18 at `bc6e7e1ccd`, three legs, Metroid Prime,
+D3D12, validation layer on:
+
+| leg | executor | preset | log evidence | result |
+|---|---|---|---|---|
+| 1 | librashader | crt-royale | `Direct3D 12 filter chain created` | renders; 292 distinct sampled colours |
+| 2 | librashader | crt-geom | `Direct3D 12 filter chain created` | renders; 418 distinct sampled colours |
+| 3 | built-in | crt-geom | `librashader unavailable (…); using the built-in post-processor.` | renders; 421 distinct sampled colours |
+
+Leg 3 renamed the build tree's `librashader.dll` aside and back, and is the **first observation of
+Task 10's availability-driven fallback on Windows** rather than an argument about it: the fallback
+fired, named the reason, and the built-in executor rendered the preset. No errors or warnings in any
+leg's log.
+
+One limit of this matrix: leg 3 exercised the built-in executor with **crt-geom**, not crt-royale, so
+§2.1's specific case — a pass declaring 9 samplers against D3D12's 8-SRV utility root signature — was
+not re-tested. §2.1 stands as written and is unaffected by these three legs.
+
+**No commit is claimed as the fix.** Tasks 1, 9a, 9b and 9d all touched D3D12 correctness on this
+branch and any of them could plausibly account for it, but the mechanism was never identified, so this
+is reported as unreproducible rather than fixed. If it returns, this matrix is the baseline to
+re-run.
 
 ## 8. Risks
 
