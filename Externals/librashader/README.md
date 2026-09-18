@@ -6,7 +6,7 @@
 
 ## Build Configuration
 
-This directory contains prebuilt shared libraries and C headers for librashader's Vulkan runtime (Android arm64, macOS arm64, Windows x64).
+This directory contains prebuilt shared libraries and C headers for librashader. The desktop builds (macOS arm64, Windows x64) enable the native-backend runtimes (Metal, D3D11, D3D12, OpenGL) in addition to Vulkan. The Android arm64 binary (Vulkan-only) is vendored separately in `Source/Android/app/src/main/jniLibs/arm64-v8a/`.
 
 ### Build Environment
 - **NDK:** `29.0.14206865`
@@ -48,7 +48,7 @@ SONAME, so the rename is safe — nothing references it by an embedded name.
 The prebuilt `librashader.so` requires `libc++_shared.so` as a NEEDED dependency. Both are vendored into `Source/Android/app/src/main/jniLibs/arm64-v8a/` to ensure runtime availability. Dolphin builds with `ANDROID_STL=c++_static`, so `libc++_shared.so` is not otherwise present in the APK. The two libc++ instances do not clash because librashader's ABI boundary is plain C.
 
 ### Architecture Support
-Only `arm64-v8a` is supported. The `x86_64` ABI correctly falls back to Dolphin's built-in post-processing.
+Only `arm64-v8a` is supported. On Android, the `x86_64` ABI falls back to Dolphin's built-in post-processing. On desktop Linux, no librashader binary is vendored, so all architectures fall back to the built-in executor (§4.3 of the design spec).
 
 ## Desktop Builds
 

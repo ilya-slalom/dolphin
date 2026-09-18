@@ -165,22 +165,27 @@ Backend-agnostic and hoisted to a `VideoCommon::LibrashaderPostProcessing` base 
 | `BuildDownscalePipeline` (`:244`) | `g_gfx` only |
 | `EnsureOutputTarget` (`:375`) | `g_gfx` only |
 | `DownscaleToNativeSource` (`:327`) | `g_gfx`, plus a Vulkan barrier tail |
-| `BlitFromTexture` orchestration (`:392`) | `g_gfx`, plus five hooks |
+| `BlitFromTexture` orchestration (`:392`) | `g_gfx`, plus a runtime adapter |
 
-The five hooks become the per-backend interface:
+The per-backend interface (`VideoCommon::LibrashaderRuntime`) defines six pure virtual methods
+plus one optional method with a default no-op body:
 
-1. **Create** the chain from a `libra_shader_preset_t` with the backend's device struct and
-   options.
-2. **Free** the chain.
-3. **Describe** an `AbstractTexture` as the backend's `libra_image_*`.
-4. **Prepare** — end the render pass, commit clears, transition source → shader-read and
-   destination → render-target.
-5. **Reconcile** — restore Dolphin's own tracking after librashader has recorded commands.
+1. **`IsSupported()`** — true when every `libra_<api>_*` symbol this runtime needs resolved.
+2. **`CreateChain(preset)`** — builds a chain from a `libra_shader_preset_t` with the backend's
+   device struct and options.
+3. **`DestroyChain()`** — frees the chain, if there is one. Must be idempotent.
+4. **`HasChain()`** — true when a chain is live.
+5. **`RunFrame(source, target, frame_count)`** — records the whole chain, reading `source` and
+   writing `target`. Must transition images and reconcile Dolphin's own tracking of anything
+   librashader touched. Vulkan reconciles the target's image layout via `OverrideImageLayout`.
+   D3D11 and D3D12 must invalidate cached state and re-bind descriptor heaps, per PCSX2's
+   `GSDevice12.cpp:5015-5061`.
+6. **`SetParameter(name, value)`** — pushes a `#pragma parameter` override into the live chain.
 
-Hook 5 is where the backends differ most. PCSX2's D3D12 path
-(`GSDevice12.cpp:5015-5061`) shows the requirement: after
-`libra_d3d12_filter_chain_frame`, call `InvalidateCachedState()` **and re-bind the
-descriptor heaps**. Vulkan's equivalent is today's `OverrideImageLayout`.
+The seventh method, **`DiscardPendingTargetClear()`**, has a default empty body and is
+overridden only by backends with deferred clears. It is called before `RunFrame()` when the
+chain writes straight into the backbuffer, so the backend can drop the clear: the chain's final
+pass covers every pixel.
 
 ### 4.3 Renderer selection
 
@@ -418,19 +423,22 @@ re-run.
 
 ## 8. Risks
 
-- **Rebuilding librashader with four runtimes** enlarges the shipped binary — the current
-  Vulkan-only DLL is 8.6 MB and statically linked DXC is not small. Mitigated by §2.5/§2.6:
-  both D3D runtimes are proven on the target GPU and need no extra DLL.
-- **Metal and OpenGL runtimes are unproven here.** Neither was exercised by the CLI probe.
-  `runtime-metal` pulls `__cbindgen_internal_objc`, and librashader's GL runtime targets
-  GL 3.3/4.6 while macOS caps at 4.1 — either could fail to build or to initialise. If one
-  does, the §4.3 rule degrades that backend to the built-in executor rather than breaking
-  it, which is exactly the path finding 1 lives on — so §2.1's fixes are not optional.
-- **Hook 5 (state reconciliation) is the likeliest source of new bugs**, because a missed
-  invalidation shows up as corruption in unrelated later draws. PCSX2's D3D12 sequence is
-  the reference to follow literally.
-- **Dropping chains is user-visible.** Anyone who built a multi-preset chain loses entries.
-  On the librashader path they had already lost them silently.
+- **Rebuilding librashader with four runtimes** enlarges the shipped binary. **Materialised:**
+  Windows grew from 8.6 MB to 36.6 MB (Task 5); macOS from 11.3 MB to 11.9 MB. Both D3D
+  runtimes were proven on the target GPU and need no extra DLL (`runtime-d3d12-static` links
+  DXC statically).
+- **Metal and OpenGL runtimes are unproven here.** **Partially avoided:** both built
+  successfully (Task 5). OpenGL was exercised on Windows with crt-royale and rendered
+  correctly (Task 8). Metal compiled and links but was never run — no chain was created or
+  executed on macOS (Task 9). The §4.3 fallback rule degrades backends whose runtime fails to
+  initialise to the built-in executor, so Metal's unexercised state does not break the backend.
+- **`RunFrame` (state reconciliation) is the likeliest source of new bugs**, because a missed
+  invalidation shows up as corruption in unrelated later draws. **Avoided:** no corruption was
+  observed on any backend during UAT. D3D11/D3D12 invalidate cached state and re-bind descriptor
+  heaps per PCSX2's sequence; Vulkan reconciles image layout via `OverrideImageLayout`; Metal's
+  encoder lifecycle management invalidates automatically (Tasks 6, 7, 9).
+- **Dropping chains is user-visible.** **Materialised:** anyone who built a multi-preset chain
+  loses entries (Task 11). On the librashader path they had already lost them silently (§2.3).
 
 ## 9. Verification
 
