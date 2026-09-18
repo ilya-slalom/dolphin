@@ -143,6 +143,16 @@ const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING{
 // Debug aid for the "crt-royale renders dark" investigation: dumps the images entering and
 // leaving the librashader chain, once, so their means can be compared against a reference
 // render. Deliberately not exposed in the UI.
+//
+// Two hazards, which are why it stays out of the UI. Both are documented in the design doc's
+// section 7.2 (docs/superpowers/specs/2026-09-16-librashader-desktop-runtimes-design.md):
+//   - The output dump takes the device down on D3D11 and D3D12 whenever the backbuffer is not
+//     RGBA8. AbstractTexture::Save stages through an RGBA8 readback texture whatever the source
+//     format is, and D3D rejects that cross-format copy; on Vulkan the same copy is byte-legal at
+//     4 bytes per pixel, so it silently produces a PNG of misread words instead of failing. A
+//     10-bit swapchain is the common case, not a corner case.
+//   - The one-shot budget is only spent on the success path, so if RunFrame fails the input dump
+//     repeats every frame for as long as it keeps failing.
 const Info<bool> GFX_LIBRASHADER_DUMP_CHAIN_IMAGES{
     {System::GFX, "Settings", "LibrashaderDumpChainImages"}, false};
 

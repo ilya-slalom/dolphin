@@ -348,8 +348,10 @@ Both are recorded because either one silently fabricates this section's numbers.
    `LibrashaderDumpChainDelayFrames` (default 0, deliberately not in the UI), counting only frames
    seen while the flag is set.
 2. **The chain output dump is not RGBA8, and reading it as RGBA8 fabricates a plausible number.** The
-   chain output target inherits the backbuffer's format (`LibrashaderPostProcessing.cpp:180,367`) and
-   this host's swapchain is 10-bit. `AbstractTexture::Save` builds an **RGBA8** readback staging
+   chain output target inherits the backbuffer's format — `BlitFromTexture` passes
+   `framebuffer->GetColorFormat()` to `EnsureOutputTarget`
+   (`LibrashaderPostProcessing.cpp:474`), which creates the target with it
+   (`:369`) — and this host's swapchain is 10-bit. `AbstractTexture::Save` builds an **RGBA8** readback staging
    texture regardless of the source format, copies into it, and hands the bytes to the PNG encoder
    unconverted — so the file is a valid PNG full of misread `A2B10G10R10` words. It does not look
    broken. Read that way, the passthrough control measured **160.0%** of its own input, and crt-royale
@@ -362,23 +364,32 @@ Both are recorded because either one silently fabricates this section's numbers.
 **The same defect takes Dolphin down on D3D12**, which is almost certainly O10 — the never-diagnosed
 crash where setting `LibrashaderDumpChainImages` killed Dolphin shortly after the first dump on D3D11.
 
-What was observed on 2026-09-18, separating evidence from inference. Observed: with the dump armed on
-D3D12, the **input** dump line is written (that texture really is RGBA8) and the log ends there — no
-output-dump line, and no window by the next capture 14 s later; the byte-identical run without the
-dump flag survived all three captures and logged no error. So the fatal step is the **output** dump's
-readback, not rendering and not the input dump. Inferred, not verified at the API level: the cause is
-item 2's cross-format staging copy, since D3D's `CopyTextureRegion` requires copy-compatible formats
-while Vulkan's image-to-buffer copy is byte-legal at 4 bytes per pixel and so succeeds with the wrong
-meaning instead of failing. Nobody has yet read the D3D12 debug layer's own message for this. O10 was
-not re-run on D3D11 here, but the log kept from the run that first hit it (`E:\work\log-d3d11-dump.txt`
-on the UAT host) shows the **same signature** — an input-dump line and no output-dump line — so on the
-evidence available the two are one defect rather than two.
+What was found on 2026-09-18, with evidence kept apart from inference:
 
-**Not fixed here.** The dump is a debug-only, UI-hidden, default-off option, and the two hypotheses
-this task was asked to test (a repeating per-frame readback when `RunFrame` fails; `Save` disturbing
-D3D11 state mid-frame) are both refuted by the above, which was the diagnosis asked for. The fix —
-convert to RGBA8 before saving, or refuse and log the format — is a scope decision rather than part of
-resolving this section. Carried forward as **O11**.
+- **Observed.** With the dump armed on D3D12, the **input** dump line is written (that texture really
+  is RGBA8) and the log ends there — no output-dump line, and no window by the next capture 14 s
+  later. The byte-identical run without the dump flag survived all three captures and logged no error.
+  So the fatal step is the **output** dump's readback: not rendering, and not the input dump.
+- **Observed.** O10 was not re-run on D3D11 here, but the log kept from the run that first hit it
+  (`E:\work\log-d3d11-dump.txt` on the UAT host) shows the **same signature** — an input-dump line and
+  no output-dump line. On the evidence available the two are one defect rather than two.
+- **Inferred, not verified at the API level.** The cause is the RGB10A2 staging copy described in
+  item 2 above: D3D's `CopyTextureRegion` requires copy-compatible formats, while Vulkan's
+  image-to-buffer copy is byte-legal at 4 bytes per pixel and so succeeds with the wrong meaning
+  instead of failing. Nobody has yet read the D3D12 debug layer's own message for this.
+
+Neither of the two hypotheses this task was asked to test survives as the explanation. `Save`
+disturbing D3D11 state mid-frame is refuted outright: the *input* dump calls `Save` at the same point
+in the same frame and succeeds. The repeating per-frame readback is refuted **as the cause of this
+crash** — `RunFrame` did not fail, so the loop never ran — but the code path is real and worth
+knowing about: `NoteChainImagesDumped` is called only on the success path, so a `RunFrame` that keeps
+failing would re-dump the input every frame. Both hazards are noted on the config key in
+`GraphicsSettings.cpp`.
+
+**Not fixed here.** The dump is a debug-only, UI-hidden, default-off option. The fix — convert to
+RGBA8 before saving, or refuse and log the format — is a scope decision rather than part of resolving
+this section. Carried forward as **O11**. If this option is ever exposed in the UI, it has to be fixed
+first.
 
 ### 7.3 UAT finding 1: D3D12 + slang shader renders a black screen
 
