@@ -200,6 +200,7 @@ extern const Info<std::string> GFX_DRIVER_PACKAGE;
 
 extern const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING;
 extern const Info<bool> GFX_LIBRASHADER_DUMP_CHAIN_IMAGES;
+extern const Info<u32> GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES;
 
 // Vertex loader
 

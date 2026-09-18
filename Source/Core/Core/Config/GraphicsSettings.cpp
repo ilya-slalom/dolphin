@@ -146,6 +146,13 @@ const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING{
 const Info<bool> GFX_LIBRASHADER_DUMP_CHAIN_IMAGES{
     {System::GFX, "Settings", "LibrashaderDumpChainImages"}, false};
 
+// How many post-processed frames to let past before the dump above fires. A game's first frames
+// are the console's black boot screen, so the default of 0 -- the frame the chain first runs on --
+// yields two bit-exact black PNGs and no measurement. Set this to land the capture on a frame the
+// game has actually drawn. Also deliberately not exposed in the UI.
+const Info<u32> GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES{
+    {System::GFX, "Settings", "LibrashaderDumpChainDelayFrames"}, 0};
+
 const Info<VertexLoaderType> GFX_VERTEX_LOADER_TYPE{{System::GFX, "Settings", "VertexLoaderType"},
                                                     VertexLoaderType::Native};
 

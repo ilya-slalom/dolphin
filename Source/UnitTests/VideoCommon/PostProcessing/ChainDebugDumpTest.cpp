@@ -39,3 +39,26 @@ TEST_F(ChainDebugDumpTest, BudgetIsSpentAfterOneFrame)
   // stays set so a config reload is not needed, but the budget is gone.
   EXPECT_FALSE(VideoCommon::ShouldDumpChainImages());
 }
+
+TEST_F(ChainDebugDumpTest, DelaySkipsEarlyFrames)
+{
+  Config::SetCurrent(Config::GFX_LIBRASHADER_DUMP_CHAIN_IMAGES, true);
+  Config::SetCurrent(Config::GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES, 2u);
+  // The frames right after a boot are the console's black screen, so a dump that always lands on
+  // the first one measures nothing: input and output both read back bit-exact zero.
+  EXPECT_FALSE(VideoCommon::ShouldDumpChainImages());
+  EXPECT_FALSE(VideoCommon::ShouldDumpChainImages());
+  EXPECT_TRUE(VideoCommon::ShouldDumpChainImages());
+}
+
+TEST_F(ChainDebugDumpTest, DelayCountsOnlyFramesWithTheFlagSet)
+{
+  Config::SetCurrent(Config::GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES, 1u);
+  // Frames seen with the dump off must not burn the delay down, or turning it on later would dump
+  // on whatever frame came next -- which is the failure the delay exists to avoid.
+  EXPECT_FALSE(VideoCommon::ShouldDumpChainImages());
+  EXPECT_FALSE(VideoCommon::ShouldDumpChainImages());
+  Config::SetCurrent(Config::GFX_LIBRASHADER_DUMP_CHAIN_IMAGES, true);
+  EXPECT_FALSE(VideoCommon::ShouldDumpChainImages());
+  EXPECT_TRUE(VideoCommon::ShouldDumpChainImages());
+}

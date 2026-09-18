@@ -9,7 +9,9 @@ class AbstractTexture;
 
 namespace VideoCommon
 {
-// True while GFX_LIBRASHADER_DUMP_CHAIN_IMAGES is set and this run has not dumped yet.
+// True once GFX_LIBRASHADER_DUMP_CHAIN_IMAGES is set, GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES
+// frames have gone by with it set, and this run has not dumped yet. Counts a frame per call, so
+// call it exactly once per frame the chain runs.
 bool ShouldDumpChainImages();
 
 // Spends the one-frame budget. Call once per dumping frame, after the images are written.
