@@ -190,13 +190,42 @@ pass covers every pixel.
 ### 4.3 Renderer selection
 
 The user-facing "Post-Processing Renderer" choice goes away. The rule becomes: **use
-librashader when the library loaded; use the built-in multipass executor only when it did
-not.** That satisfies "librashader only on desktop" without platform `#ifdef`s, and it keeps
-the executor reachable where no librashader binary is vendored — Android x86_64 (documented
-in `Externals/librashader/README.md:51`) and Linux.
+librashader when this backend has a runtime and that runtime says it can run here; use the
+built-in multipass executor otherwise.** That satisfies "librashader only on desktop" without
+platform `#ifdef`s.
 
-`MultipassPostProcessing` therefore stays in the tree. It is not dead code, it is the
-fallback, and 15 unit-test targets cover it.
+As implemented in `AbstractGfx::CreatePostProcessor()` (`AbstractGfx.cpp:205-212`) the test is
+`runtime && runtime->IsSupported()`, and each half excludes a different set of cases:
+
+- **`runtime`** comes from the virtual `CreateLibrashaderRuntime()`, whose base implementation
+  returns `nullptr` (`AbstractGfx.cpp:200-203`). A backend that does not override it — Software
+  and Null — therefore gets the built-in executor *even where the library loaded and is
+  perfectly usable*. The library is not consulted at all in that branch.
+- **`IsSupported()`** is where library availability is actually checked, per backend, together
+  with symbol resolution: every implementation is `GetAvailability().available &&
+  Functions().Complete()`, so a library that loaded but is missing a `libra_<api>_*` symbol this
+  runtime needs degrades to the executor rather than to a black screen
+  (`LibrashaderRuntime.h:31-33`). OpenGL adds device conditions to the same predicate — GLSL
+  330 or better, not GLES, and `bSupportsTextureStorage` — because librashader's GL runtime
+  cannot compile below 330 and the images it is handed are allocated with `glTexStorage2D`
+  (`OGLLibrashaderRuntime.cpp:164-185`).
+
+An earlier draft of this section stated the rule as "use librashader when the library loaded",
+which is the availability half alone. That is wrong in both directions: it implies Software and
+Null would run librashader on a desktop host, and it hides the fact that a *loaded* library
+still yields the built-in executor on an incomplete symbol set or an OpenGL 2.1 / GLES context.
+
+So the executor stays reachable in five distinct situations, not one: no vendored binary
+(Android x86_64, documented in `Externals/librashader/README.md`, and desktop Linux); the
+Software and Null backends anywhere; a library that fails to load for any local reason; a
+library missing a needed symbol; and an OpenGL context below librashader's floor.
+
+`MultipassPostProcessing` therefore stays in the tree, and it is not dead code — it is the
+fallback. The extent of its unit coverage should not be overstated, though: no test
+instantiates it, because it needs a GPU. What the 22 targets under
+`Source/UnitTests/VideoCommon/PostProcessing/` cover is the CPU-side machinery it drives —
+preset parsing, pass sizing, the pass graph, mip generation, slang translation and
+compilation — several pieces of which the librashader path uses too.
 
 ### 4.4 Single preset
 
@@ -215,8 +244,23 @@ settings plumbing allows:
   preset list, filter box with recursive filtering, non-selectable folder items,
   double-click to accept, OK disabled until a preset is current.
 - **`ShaderParametersDialog`** — one row per `#pragma parameter` (label, slider, spin box,
-  per-row Reset), *Reset All*, a debounced write, and rows hidden behind a status label when
-  the preset has no parameters or fails to load.
+  per-row Reset), *Reset All*, and rows hidden behind a status label when the preset has no
+  parameters or fails to load.
+
+An earlier draft of this section listed "a debounced write" among the dialog's features. It has
+none, and should not: PCSX2 debounces because its write goes through
+`Host::CommitBaseSettingChanges()`, which writes the INI, so a slider drag would thrash the
+disk. Dolphin's write does not. `OnValueEdited` and `OnResetAllClicked` both call
+`SaveOverrides()` immediately (`ShaderParametersDialog.cpp:294-320`), and that lands in
+`Config::Layer::Set` — an assignment into the layer's in-memory map plus a dirty flag. The INI
+is written later, by the `Config::Save()` that runs when the settings window closes
+(`SettingsWindow.cpp:216`). There is nothing here to debounce.
+
+The value reaches a running game by a different route again, not by the settings write: `Save`
+bumps a generation counter, and the video thread compares it once per frame in
+`BlitFromTexture` (`LibrashaderPostProcessing.cpp:414-420`), rebuilding the parameter set when
+it has moved. That push sends *every* parameter, not only the stored ones, because a filter
+chain retains the last value it was given, so a reset has to state the default explicitly.
 
 The `EnhancementsWidget` post-processing row becomes PCSX2's shape: a read-only preset field
 plus *Browse…*, *Clear*, *Parameters…*, keeping this fork's existing *Download…* menu.
@@ -251,8 +295,22 @@ Recorded from this session's review:
 - **Drop chains** — single preset, exactly as PCSX2. (Not: extend the chain editor, and not:
   keep chains on the built-in path only.)
 - **Port the picker and the parameters dialog.** Explicitly *not* ported: PCSX2's
-  *Favorites…* dialog, its preset-cycling hotkeys, and its per-game settings layer, none of
-  which Dolphin has an equivalent for.
+  *Favorites…* dialog and its preset-cycling hotkeys, neither of which Dolphin has an
+  equivalent for.
+- **Shader parameters are global, not per game.** An earlier draft of this list bundled
+  PCSX2's per-game settings layer in with the two items above, as something "Dolphin has no
+  equivalent for". That premise is false: Dolphin has `Config::LayerType::LocalGame`, built by
+  `GenerateLocalGameConfigLoader` (`GameConfigLoader.cpp:334`), and the graphics pane already
+  writes to it — `EnhancementsWidget` holds the pane's layer and reads or writes through it
+  precisely so a per-game page does not disturb the global value
+  (`EnhancementsWidget.cpp:52,95-115`). The preset path itself is per-game for that reason,
+  since it is an ordinary `Config::Info` on a graphics page.
+  Parameter *values* are not, and this is a real limitation rather than a platform constraint:
+  `LibrashaderParameters::Save` writes the base layer unconditionally, so editing a parameter
+  from a game's own graphics page changes it for every game using that preset. The dialog says
+  so out loud when it was opened from game properties (`ShaderParametersDialog.cpp:76-86`)
+  rather than letting the user discover it afterwards. Making them per-game means keying the
+  stored string by game ID or routing the write through the pane's layer; neither is done here.
 - **Match PCSX2's layout as closely as possible** rather than inventing a Dolphin-native
   arrangement.
 
@@ -446,13 +504,79 @@ re-run.
 - **Dropping chains is user-visible.** **Materialised:** anyone who built a multi-preset chain
   loses entries (Task 11). On the librashader path they had already lost them silently (§2.3).
 
+### 8.1 Accepted and not fixed
+
+Two defects found in the final whole-branch review are real, were considered, and are
+deliberately left alone. They are recorded here so that a later reader does not have to
+rediscover them, and so that neither is mistaken for something nobody noticed.
+
+1. **The parameter write is not synchronised against the video thread's read.** Editing a
+   slider calls `Config::Layer::Set` on the Qt thread while the video thread may be inside
+   `Config::GetAsString` for the same key. `Layer` carries no mutex — neither `Layer.h` nor
+   `Layer.cpp` has one — so this is a data race on the layer's map in the strict sense.
+   Not fixed because it is Dolphin's existing config model rather than anything this branch
+   introduced: every `ConfigSlider` writes the same way from the same thread
+   (`ConfigSlider.cpp:26` connects `valueChanged` straight to the config write), and dozens of
+   graphics settings are read from the video thread the same way. Fixing it here would mean
+   either locking Dolphin's config layers globally or giving this one setting a private
+   snapshot, and the first is a tree-wide change while the second buys safety for one key out
+   of hundreds. What this branch *does* keep off the hot path is the trigger: the video thread's
+   per-frame check reads only `std::atomic<u32> s_generation`
+   (`LibrashaderParameters.cpp:28`, polled at `LibrashaderPostProcessing.cpp:414-420`), so the
+   unsynchronised string read happens only on a frame where an edit actually landed, not every
+   frame. If Dolphin's config ever grows a lock, this site needs nothing new.
+2. **In side-by-side and top-and-bottom stereo, the librashader frame counter advances twice per
+   presented frame.** `Present.cpp:905-916` calls `BlitFromTexture` once per eye, and the
+   executor increments `m_frame_count` on each successful `RunFrame`
+   (`LibrashaderPostProcessing.cpp:482-484`, `:506-508`), so a preset using `FrameCount` — for
+   animated noise, scanline phase, interlacing — advances at 2× in those two modes.
+   Not fixed because the shape is pre-existing and shared: the built-in executor does exactly
+   the same thing (`MultipassPostProcessing.cpp:724` increments inside `BlitFromTexture` too),
+   and it did so at this branch's merge base, so nothing here regressed. Fixing it properly
+   means deciding what a "frame" means to a shader that is invoked once per eye, which is a
+   design question about stereo rather than about librashader — the honest answers are to
+   increment on the first eye only, or to advance the counter in `Present` and pass it down. The
+   visible effect is limited to animated presets in two of Dolphin's stereo modes.
+
 ## 9. Verification
 
-- Unit tests for the loader (availability, symbol resolution, error formatting), parameter
-  enumeration and override round-tripping, and the picker's tree construction and filtering —
-  all CPU-only, no GPU or Qt event loop.
-- Full unit suite green on macOS arm64 and Windows x64 (the current baselines are 1143/1144
-  and 1455/1456, one environment-gated skip on each).
+- Unit tests, all CPU-only, no GPU or Qt event loop. What that covers, stated as narrowly as
+  the tests actually do — an earlier draft of this list claimed more than exists:
+  - **Loader** — `LibrashaderLoaderTest.cpp`, four tests, and every one of them is a negative
+    or a packaging assertion: a missing library reports a reason instead of crashing, the
+    expected library path matches how each platform packages it, `DescribeAndFreeError`
+    tolerates a null handle, and `GetSymbol` returns null for a name that is not there. It is
+    *not* the "availability, symbol resolution, error formatting" triple this list used to
+    claim: no test performs a successful load, resolves a real symbol, or formats a non-null
+    librashader error. Those need the vendored binary to be loadable in the test process, which
+    is now true on macOS and Windows — `Source/UnitTests/CMakeLists.txt` copies it beside the
+    test binary unconditionally — but is not yet asserted anywhere.
+    `LibrashaderParameters.EnumerateFixturePreset` is the one test that does exercise a real
+    load end to end, and it does so through `Enumerate` rather than the loader's own surface.
+  - **Parameters** — formatting, parsing, the decimals formula, the default-value epsilon, key
+    derivation, and the Config round trip including deletion and the generation counter
+    (`LibrashaderParametersTest.cpp`), plus enumeration across the C ABI against an in-tree
+    fixture preset.
+  - **Picker** — tree construction only: `PresetTreeTest.cpp`'s nine tests over
+    `BuildPresetTree`. **Filtering is not covered.** It is `QSortFilterProxyModel` with
+    `setRecursiveFilteringEnabled(true)` on `ROLE_PATH`
+    (`ShaderPresetPickerDialog.cpp:76-80`), i.e. Qt's own behaviour driven from the dialog, so
+    testing it needs a `QApplication` and a widget tree that this suite has no fixture for. The
+    dialog-side logic worth testing is the selection bookkeeping when the filter hides the
+    current row (`:136-150`); that is a gap, recorded rather than papered over.
+  - **Preset resolution** — `PostProcessingConfigTest.cpp` covers what
+    `ResolveConfiguredPreset` *returns* for a chain spec, whitespace and empty tails. The
+    warning it logs when it drops trailing entries is not observed by any test; doing so would
+    mean standing up `LogManager` and a listener, which no test in this suite does.
+- Full unit suite green on macOS arm64: **1170 tests, 1168 passed, 2 skipped.** Both skips are
+  environment-gated by design — `SlangCompile.RealPresetCompilesAllPasses` and
+  `LibrashaderParameters.EnumerateRealPresetFromEnv`, which run only with `SLANG_PRESET` set to
+  a preset from a real shader pack. (The figures previously recorded here, 1143/1144 and one
+  skip, predate this branch's tests.)
+- Windows x64: **not re-measured.** The last figure written down was 1455/1456 with one skip,
+  from before this branch added tests and before the second environment-gated skip existed, so
+  it cannot be right now and is not carried forward as if it were. It has to be re-run on the
+  UAT host.
 - Per-backend smoke on the Windows host: crt-royale on D3D11, D3D12 and Vulkan.
 - The §7 instrumentation dump compared against the photometric table before finding 3 is
   called resolved.
