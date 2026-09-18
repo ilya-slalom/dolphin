@@ -172,6 +172,11 @@ bool VKLibrashaderRuntime::RunFrame(const AbstractTexture* source, AbstractFrame
   // transitions are no-ops when the image already has the requested layout.) librashader creates no
   // barrier after its final pass, so on success the target is left in COLOR_ATTACHMENT_OPTIMAL and
   // Dolphin's own tracking is reconciled to match.
+  //
+  // Image layouts and render passes are not the whole of what the chain disturbs: it also binds
+  // its own pipeline, descriptor sets and vertex buffer onto our command buffer and restores none
+  // of them, so the tracker's cached bindings become a lie too. That is reconciled below, after
+  // the recording.
   StateTracker::GetInstance()->EndRenderPass();
   const VkCommandBuffer cmd = g_command_buffer_mgr->GetCurrentCommandBuffer();
   in_tex->TransitionToLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -180,6 +185,17 @@ bool VKLibrashaderRuntime::RunFrame(const AbstractTexture* source, AbstractFrame
   const libra_error_t err =
       Functions().frame(&m_chain, cmd, frame_count, in, out, &vp, nullptr, nullptr);
   out_tex->OverrideImageLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+  // The layout override above reconciles the image; this reconciles the bindings. Every
+  // StateTracker setter early-outs when what it is asked for equals what it recorded, so without
+  // this the next draw in this command buffer emits neither vkCmdBindPipeline nor
+  // vkCmdBindDescriptorSets and runs against librashader's final-pass state.
+  // InvalidateCachedState() clears the descriptor-set handles and raises exactly the flags the
+  // chain invalidates (pipeline, descriptor sets, viewport, scissor, vertex and index buffer).
+  // Mono presents hide the need because VKGfx invalidates on every submit; a Side-by-Side or
+  // Top-and-Bottom present blits twice into one command buffer.
+  StateTracker::GetInstance()->InvalidateCachedState();
+
   return !CheckError(err, "vk_filter_chain_frame");
 }
 
