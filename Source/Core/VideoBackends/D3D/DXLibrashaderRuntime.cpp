@@ -1,3 +1,11 @@
+// Copyright 2026 Dolphin Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+// This must stay above every #include in this file. LibrashaderLoader.h includes <librashader.h>
+// deliberately without any LIBRA_RUNTIME_* macro, so it stays cheap for the rest of VideoCommon.
+// Whichever translation unit includes it first thereby satisfies librashader.h's include guard, so
+// a later `#include <librashader.h>` here would be a silent no-op leaving every libra_d3d11_*
+// declaration out -- with no error, because the runtime sections are #ifdef'd, not #error'd.
 #define LIBRA_RUNTIME_D3D11
 #include <librashader.h>
 
@@ -84,12 +92,13 @@ bool DXLibrashaderRuntime::CreateChain(libra_shader_preset_t preset)
 
   libra_d3d11_filter_chain_t chain = nullptr;
   // create() invalidates `preset` on success and on failure alike, so it is never freed here.
-  const std::string error = VideoCommon::Librashader::DescribeAndFreeError(
-      Functions().create(&preset, D3D::device.Get(), &options, &chain));
-
-  if (!error.empty())
+  //
+  // Success is decided by CheckError, i.e. by the error handle, not by whether its description
+  // renders non-empty: an error with an empty message read as success left m_chain null while the
+  // log said the chain had been created, so the user got silent passthrough with no error line.
+  if (CheckError(Functions().create(&preset, D3D::device.Get(), &options, &chain),
+                 "d3d11_filter_chain_create"))
   {
-    ERROR_LOG_FMT(VIDEO, "Librashader: d3d11_filter_chain_create failed: {}", error);
     m_chain = nullptr;
     return false;
   }

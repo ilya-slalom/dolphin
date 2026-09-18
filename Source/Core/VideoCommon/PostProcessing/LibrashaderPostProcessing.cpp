@@ -114,12 +114,13 @@ void LibrashaderPostProcessing::RecompileShader()
     // Non-fatal: the chain can still run; the dialog will just have nothing to show.
   }
 
+  // Tested against the error handle, not against its description: an error whose message renders
+  // empty would otherwise be read as success, and CreateChain would then be handed a null preset.
   libra_shader_preset_t preset = nullptr;
-  const std::string error =
-      Librashader::DescribeAndFreeError(Librashader::Common().preset_create(path.c_str(), &preset));
-  if (!error.empty())
+  if (const libra_error_t error = Librashader::Common().preset_create(path.c_str(), &preset))
   {
-    ERROR_LOG_FMT(VIDEO, "Librashader: preset_create('{}') failed: {}", path, error);
+    ERROR_LOG_FMT(VIDEO, "Librashader: preset_create('{}') failed: {}", path,
+                  Librashader::DescribeAndFreeError(error));
     return;
   }
 

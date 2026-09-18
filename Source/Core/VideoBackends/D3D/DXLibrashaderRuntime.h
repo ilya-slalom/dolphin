@@ -28,6 +28,11 @@ public:
                 u64 frame_count) override;
   void SetParameter(const char* name, float value) override;
 
+  // DiscardPendingTargetClear() is deliberately not overridden: Dolphin's D3D11 backend has no
+  // deferred clear to drop. SetAndClearFramebuffer() applies the state and issues
+  // DXFramebuffer::Clear() immediately (D3DGfx.cpp:228-236), so there is no clear-pending flag
+  // anywhere -- unlike PCSX2's GSTexture11 commit-clear.
+
 private:
   // Points m_input_srv at a non-array view of `in_tex`'s resource, creating it if the source
   // identity changed. False means no view exists and the frame must be skipped.

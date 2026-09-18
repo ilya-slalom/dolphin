@@ -41,25 +41,25 @@ bool Enumerate(const std::string& absolute_preset_path, std::vector<ParameterInf
     return false;
   }
 
-  // Parse the preset to get its runtime parameter list.
+  // Parse the preset to get its runtime parameter list. Both calls below are tested against the
+  // error handle rather than against its description: an error whose message renders empty would
+  // otherwise be read as success, and the code would go on to use a null preset handle.
   libra_shader_preset_t preset = nullptr;
-  const std::string preset_error = Librashader::DescribeAndFreeError(
-      Librashader::Common().preset_create(absolute_preset_path.c_str(), &preset));
-  if (!preset_error.empty())
+  if (const libra_error_t preset_error =
+          Librashader::Common().preset_create(absolute_preset_path.c_str(), &preset))
   {
-    *error = preset_error;
+    *error = Librashader::DescribeAndFreeError(preset_error);
     return false;
   }
 
   // Get the runtime parameters. The list is freed below; the preset is freed after that.
   // preset_get_runtime_params takes a const preset pointer.
   libra_preset_param_list_t param_list = {};
-  const std::string params_error = Librashader::DescribeAndFreeError(
-      Librashader::Common().preset_get_runtime_params(&preset, &param_list));
-  if (!params_error.empty())
+  if (const libra_error_t params_error =
+          Librashader::Common().preset_get_runtime_params(&preset, &param_list))
   {
+    *error = Librashader::DescribeAndFreeError(params_error);
     Librashader::Common().preset_free(&preset);
-    *error = params_error;
     return false;
   }
 

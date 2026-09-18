@@ -157,8 +157,8 @@ OGLLibrashaderRuntime::OGLLibrashaderRuntime() = default;
 
 OGLLibrashaderRuntime::~OGLLibrashaderRuntime()
 {
+  // DestroyChain() releases the scratch images too, and is idempotent.
   DestroyChain();
-  ReleaseImages();
 }
 
 bool OGLLibrashaderRuntime::IsSupported() const
@@ -206,6 +206,15 @@ bool OGLLibrashaderRuntime::CreateChain(libra_shader_preset_t preset)
 
 void OGLLibrashaderRuntime::DestroyChain()
 {
+  // Release the two scratch GL_TEXTURE_2D images unconditionally, before the early return, the way
+  // DXLibrashaderRuntime::DestroyChain releases its cached input view: only RunFrame() allocates
+  // them and it returns early without a chain, so the chain and the images always live and die
+  // together. Leaving them to the destructor was a real leak rather than a reachability argument,
+  // because LibrashaderPostProcessing::RecompileShader() destroys the chain and returns with this
+  // runtime object alive -- so selecting Post-Processing "(off)" at 4K retained two full-size
+  // images (~64 MB) for the rest of the session.
+  ReleaseImages();
+
   if (m_chain == nullptr)
     return;
 

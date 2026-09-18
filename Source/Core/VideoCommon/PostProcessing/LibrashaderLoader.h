@@ -45,7 +45,9 @@ const CommonFunctions& Common();
 // Raw symbol lookup for a backend's libra_<api>_* functions. nullptr when unavailable or absent.
 void* GetSymbol(const char* name);
 
-// Formats a libra_error_t and frees it. Returns "" for nullptr, so it doubles as a success test.
+// Formats a libra_error_t and frees it. Returns "" for nullptr. Do NOT use the returned string as
+// the success test: librashader is free to hand back a non-null error whose message renders empty,
+// which would then read as success. Test the handle, then call this to describe it.
 std::string DescribeAndFreeError(libra_error_t error);
 
 // Absolute path to the packaged library: next to the executable on Windows,
