@@ -3,6 +3,7 @@
 
 #include "VideoCommon/PostProcessing/LibrashaderPostProcessing.h"
 
+#include <algorithm>
 #include <map>
 #include <string>
 #include <utility>
@@ -64,7 +65,8 @@ LibrashaderPostProcessing::~LibrashaderPostProcessing()
 
 bool LibrashaderPostProcessing::Initialize(AbstractTextureFormat format)
 {
-  m_format = format;
+  // `format` is deliberately unused: see the note by m_frame_count in the header. Every format
+  // decision is taken per frame from the live framebuffer, which is what survives an HDR toggle.
   m_available = m_runtime->IsSupported();
   if (!m_available)
     return false;
@@ -322,15 +324,25 @@ LibrashaderPostProcessing::DownscaleToNativeSource(const SlangSourceDownscalePla
   {
     m_native_source_fb.reset();
     m_native_source.reset();
+    m_native_source_width = 0;
+    m_native_source_height = 0;
+    m_native_source_format = AbstractTextureFormat::Undefined;
     const TextureConfig config(native_width, native_height, 1, 1, 1, format,
                                AbstractTextureFlag_RenderTarget,
                                AbstractTextureType::Texture_2DArray);
     m_native_source = g_gfx->CreateTexture(config, "librashader native source");
     if (m_native_source)
       m_native_source_fb = g_gfx->CreateFramebuffer(m_native_source.get(), nullptr);
-    m_native_source_width = native_width;
-    m_native_source_height = native_height;
-    m_native_source_format = format;
+    // Record the dimensions only once BOTH objects exist. Recording them unconditionally meant a
+    // CreateTexture that succeeded followed by a CreateFramebuffer that failed left the recreate
+    // condition permanently unsatisfied, so this returned nullptr for that size for the rest of the
+    // session instead of retrying on the next frame.
+    if (m_native_source && m_native_source_fb)
+    {
+      m_native_source_width = native_width;
+      m_native_source_height = native_height;
+      m_native_source_format = format;
+    }
   }
   if (!m_native_source || !m_native_source_fb)
     return nullptr;
@@ -360,19 +372,32 @@ LibrashaderPostProcessing::DownscaleToNativeSource(const SlangSourceDownscalePla
 AbstractFramebuffer* LibrashaderPostProcessing::EnsureOutputTarget(u32 width, u32 height,
                                                                    AbstractTextureFormat format)
 {
+  // No dimension may be zero: a texture that size is not allocatable. The built-in executor clamps
+  // its own pass sizes the same way (MultipassPostProcessing::RecompilePipeline). No caller can
+  // currently reach this with a zero extent, so it is hardening and adds no new failure path.
+  width = std::max<u32>(1, width);
+  height = std::max<u32>(1, height);
+
   if (!m_output_target || m_output_target_width != width || m_output_target_height != height ||
       m_output_target_format != format)
   {
     m_output_target_fb.reset();
     m_output_target.reset();
+    m_output_target_width = 0;
+    m_output_target_height = 0;
+    m_output_target_format = AbstractTextureFormat::Undefined;
     const TextureConfig config(width, height, 1, 1, 1, format, AbstractTextureFlag_RenderTarget,
                                AbstractTextureType::Texture_2DArray);
     m_output_target = g_gfx->CreateTexture(config, "librashader chain output");
     if (m_output_target)
       m_output_target_fb = g_gfx->CreateFramebuffer(m_output_target.get(), nullptr);
-    m_output_target_width = width;
-    m_output_target_height = height;
-    m_output_target_format = format;
+    // Record the dimensions only once BOTH objects exist -- see DownscaleToNativeSource for why.
+    if (m_output_target && m_output_target_fb)
+    {
+      m_output_target_width = width;
+      m_output_target_height = height;
+      m_output_target_format = format;
+    }
   }
   return m_output_target_fb.get();
 }
@@ -450,8 +475,13 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
       // pass covers every backbuffer pixel, which also makes the clear BindBackbuffer deferred
       // redundant.
       m_runtime->DiscardPendingTargetClear();
-      if (m_runtime->RunFrame(source, framebuffer, m_frame_count++))
+      // The counter advances only on success (both here and on the intermediate path below). A
+      // post-increment in the argument list advanced it for a frame the chain never rendered, so a
+      // preset keyed on FrameCount -- an interlacer, an animated NTSC phase -- saw a gap in the
+      // sequence for every failed frame.
+      if (m_runtime->RunFrame(source, framebuffer, m_frame_count))
       {
+        ++m_frame_count;
         if (dump_images)
         {
           // UAT instrument: the output is the backbuffer, which cannot be read back reliably. A
@@ -473,8 +503,9 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
       AbstractFramebuffer* const chain_fb =
           EnsureOutputTarget(static_cast<u32>(dst.GetWidth()), static_cast<u32>(dst.GetHeight()),
                              framebuffer->GetColorFormat());
-      if (chain_fb != nullptr && m_runtime->RunFrame(source, chain_fb, m_frame_count++))
+      if (chain_fb != nullptr && m_runtime->RunFrame(source, chain_fb, m_frame_count))
       {
+        ++m_frame_count;
         AbstractTexture* const chain_output = chain_fb->GetColorAttachment();
         if (dump_images)
         {

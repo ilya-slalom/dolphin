@@ -21,7 +21,7 @@ void NoteChainImagesDumped();
 // behind ShouldDumpChainImages().
 bool DumpChainImage(const AbstractTexture* texture, std::string_view label);
 
-// Resolution 1: Test-only reset for the process-global budget. The budget is process-global by
-// design so it persists across frames; tests must re-arm it between test cases.
+// Test-only reset for the process-global budget. The budget is process-global by design so it
+// persists across frames; tests must re-arm it between test cases.
 void ResetChainImageDumpBudgetForTest();
 }  // namespace VideoCommon

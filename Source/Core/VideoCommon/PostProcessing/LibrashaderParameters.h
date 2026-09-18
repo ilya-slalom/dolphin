@@ -43,7 +43,8 @@ Overrides ParseOverrides(const std::vector<std::string>& entries);
 // Formats overrides back into "name=value" strings, used by Save before joining with ';'. Only
 // non-default values are persisted: resetting a parameter removes it rather than writing the
 // default back, so a preset's own defaults can change on a pack update without users being pinned
-// to the old ones.
+// to the old ones. A name containing ';' or '=' is skipped (and warned about once): the storage
+// format cannot represent it, and half of such an entry would parse as some other parameter.
 std::vector<std::string> FormatOverrides(const Overrides& overrides);
 
 // Computes the number of decimal places a spin box should display for a given step, using PCSX2's

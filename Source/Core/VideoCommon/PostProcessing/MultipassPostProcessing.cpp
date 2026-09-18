@@ -152,6 +152,7 @@ void MultipassPostProcessing::ClearChain()
   m_history_textures.clear();
   m_max_history = 0;
   m_passthrough = true;
+  m_pipeline_creation_failed = false;
   m_reported_pipeline_failure = false;
 }
 
@@ -381,7 +382,21 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
       TranslatedPass present = TranslateSlangPass(*parsed, known_aliases, lut_names,
                                                   SlangNeedsPresentClipYFlip(api_type));
       if (present.ok)
+      {
         pass.present_vertex_glsl = std::move(present.vertex_glsl);
+      }
+      else
+      {
+        // Silence here was the whole bug: RetargetFinalPassToPresent returns without a word when
+        // present_vertex_glsl is empty, so if this pass turned out to be the last one the frame
+        // presented upside down on OpenGL with nothing in the log. Same symptom, same wording as
+        // the compile-failure path in RetargetFinalPassToPresent.
+        ERROR_LOG_FMT(VIDEO,
+                      "Post-processing: failed to translate the present-target vertex shader for "
+                      "pass '{}': {}; if this is the final pass the presented frame will be "
+                      "vertically flipped",
+                      pass_config.shader_path, present.error);
+      }
     }
 
     m_passes.push_back(std::move(pass));
@@ -429,6 +444,11 @@ void MultipassPostProcessing::RecompilePipeline()
 {
   if (m_passthrough || m_framebuffer_format == AbstractTextureFormat::Undefined)
     return;
+
+  // Clear the retryable failure latch before rebuilding: this call is the retry, and leaving the
+  // latch set would make a rebuild that now succeeds still blit passthrough. m_passthrough is not
+  // touched -- a preset with no passes never gets here.
+  m_pipeline_creation_failed = false;
 
   // Clearing freshly-allocated feedback buffers below binds framebuffers; remember the currently
   // bound one so callers (e.g. mid-frame in BlitFromTexture) see no surprise framebuffer change.
@@ -534,17 +554,22 @@ void MultipassPostProcessing::RecompilePipeline()
 
     // A pass whose pipeline or render target (for non-final passes) failed to create cannot be
     // skipped silently: if it is the final pass nothing reaches the backbuffer at all (a black
-    // screen). Report it once per rebuild and latch m_passthrough so BlitFromTexture falls back
-    // to the passthrough copy rather than presenting a chain with a hole in it.
+    // screen). Report it once per preset load and set the retryable latch so BlitFromTexture falls
+    // back to the passthrough copy rather than presenting a chain with a hole in it. Not
+    // m_passthrough: that one is permanent, and a size that cannot be allocated today may well be
+    // allocatable after the user shrinks the window or lowers internal resolution.
     if (!pass.pipeline || (!is_final && !pass.output_framebuffer))
     {
       if (!m_reported_pipeline_failure)
       {
-        ERROR_LOG_FMT(VIDEO, "Post-processing: pass {} ('{}') has no {}; chain disabled", i,
-                      pass.config.shader_path, !pass.pipeline ? "pipeline" : "render target");
+        ERROR_LOG_FMT(VIDEO,
+                      "Post-processing: pass {} ('{}') has no {} at {}x{}; blitting passthrough "
+                      "until a rebuild succeeds",
+                      i, pass.config.shader_path, !pass.pipeline ? "pipeline" : "render target",
+                      viewport_width, viewport_height);
         m_reported_pipeline_failure = true;
       }
-      m_passthrough = true;
+      m_pipeline_creation_failed = true;
       if (restore_framebuffer != nullptr)
         g_gfx->SetFramebuffer(restore_framebuffer);
       return;
@@ -629,6 +654,9 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
                                               const AbstractTexture* src_tex, int src_layer,
                                               u32 native_width, u32 native_height)
 {
+  // Only the permanent condition returns here. A chain whose last rebuild failed deliberately falls
+  // through to the size/format check below, because that is the only per-frame caller of
+  // RecompilePipeline and therefore the only way the failure can ever be retried.
   if (m_passthrough || m_passes.empty())
   {
     BlitPassthrough(dst, src_tex, g_gfx->GetCurrentFramebuffer());
@@ -684,9 +712,10 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     RecompilePipeline();
   }
 
-  // If RecompilePipeline latched m_passthrough on pipeline/RT creation failure, fall back to the
-  // passthrough copy rather than executing the chain with null pipelines or framebuffers.
-  if (m_passthrough)
+  // If the rebuild above (or an earlier one at this same size) could not create a pass's pipeline
+  // or render target, fall back to the passthrough copy rather than executing the chain with null
+  // pipelines or framebuffers. The next size or format change retries.
+  if (m_pipeline_creation_failed)
   {
     BlitPassthrough(dst, src_tex, g_gfx->GetCurrentFramebuffer());
     return;
@@ -712,8 +741,9 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
   for (size_t i = 0; i < pass_count; ++i)
   {
     Pass& pass = m_passes[i];
-    // Defensive guard: the real detection happens in RecompilePipeline, which latches
-    // m_passthrough and returns early above. This cannot be reached with a failed chain.
+    // Defensive guard: the real detection happens in RecompilePipeline, which sets
+    // m_pipeline_creation_failed and returns early above. This cannot be reached with a failed
+    // chain.
     if (!pass.pipeline)
       continue;
 

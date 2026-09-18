@@ -14,6 +14,7 @@
 #include "Common/CommonPaths.h"
 #include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
+#include "Common/Logging/Log.h"
 #include "Common/StringUtil.h"
 #include "VideoCommon/PostProcessing/LibrashaderLoader.h"
 #include "VideoCommon/PostProcessing/PostProcessingConfig.h"
@@ -25,6 +26,11 @@ namespace
 // Generation counter, bumped by Save so the post-processor can poll for edits without the dialog
 // having to signal manually. Starts at 1 so a zero-initialized last-seen value triggers a load.
 std::atomic<u32> s_generation{1};
+
+// One-shot flag for FormatOverrides' unrepresentable-name warning. A preset either declares such a
+// parameter or it does not, so one line per run is the whole diagnostic. Only ever touched from the
+// Qt thread, which is the only caller of Save.
+bool s_reported_unrepresentable_name = false;
 }  // namespace
 
 bool Enumerate(const std::string& absolute_preset_path, std::vector<ParameterInfo>* out,
@@ -121,6 +127,25 @@ std::vector<std::string> FormatOverrides(const Overrides& overrides)
 
   for (const auto& [name, value] : overrides)
   {
+    // The stored format is `name=value` pairs joined by ';', so a name containing either character
+    // cannot round-trip. `beam;width=2.000000` splits into `beam` -- dropped by ParseOverrides for
+    // having no '=' -- and `width=2.000000`, which is then applied to a DIFFERENT parameter. Every
+    // name in the shader pack comes from `#pragma parameter` and contains neither character, but
+    // documenting that is not the same as enforcing it: dropping the value is the only outcome that
+    // cannot corrupt an unrelated parameter.
+    if (name.find(';') != std::string::npos || name.find('=') != std::string::npos)
+    {
+      if (!s_reported_unrepresentable_name)
+      {
+        WARN_LOG_FMT(VIDEO,
+                     "Librashader: parameter name '{}' contains ';' or '=', which the override "
+                     "storage format cannot represent; its value will not be persisted",
+                     name);
+        s_reported_unrepresentable_name = true;
+      }
+      continue;
+    }
+
     result.push_back(fmt::format("{}={:f}", name, value));
   }
 
@@ -167,8 +192,9 @@ Overrides Load(const std::string& preset_relative_path)
   if (!value || value->empty())
     return {};
 
-  // Split on ';' before calling ParseOverrides. Parameter names come from #pragma parameter and
-  // none in the shader pack contains ';' or '=', so ';' is a safe separator.
+  // Split on ';' before calling ParseOverrides. ';' is a safe separator because FormatOverrides
+  // refuses to write a name containing ';' or '=' at all, so no stored entry can contain either
+  // outside its role as separator or as the name/value delimiter.
   const std::vector<std::string> entries = SplitString(*value, ';');
   return ParseOverrides(entries);
 }

@@ -83,7 +83,10 @@ private:
   // The backend's binding to librashader. Never null; HasChain() false means "passthrough".
   std::unique_ptr<LibrashaderRuntime> m_runtime;
 
-  AbstractTextureFormat m_format = AbstractTextureFormat::Undefined;
+  // No cached backbuffer format here on purpose. Every format decision is taken per frame from the
+  // live framebuffer (BuildPassthroughPipeline, EnsureOutputTarget), because the backbuffer format
+  // changes when HDR is toggled -- a value latched at Initialize() would be stale from that moment
+  // on.
   u64 m_frame_count = 0;
   bool m_available = false;
 

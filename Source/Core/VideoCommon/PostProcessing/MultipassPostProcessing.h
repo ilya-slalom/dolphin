@@ -130,7 +130,20 @@ private:
   std::vector<Pass> m_passes;
   std::vector<Lut> m_luts;
   AbstractTextureFormat m_framebuffer_format = AbstractTextureFormat::Undefined;
+  // Two distinct reasons to blit passthrough instead of running the chain, deliberately kept apart:
+  //
+  //  - m_passthrough is the PERMANENT one: this preset has no passes to run (no preset configured,
+  //    or the preset failed to load or translate). Nothing but another LoadPreset can change that,
+  //    so BlitFromTexture returns straight away without even considering a rebuild.
+  //  - m_pipeline_creation_failed is the RETRYABLE one: the passes exist, but the last
+  //    RecompilePipeline could not create a pipeline or a render target for one of them -- a 4K
+  //    window, a ten-pass preset, VRAM pressure. That is a property of the current size and format,
+  //    not of the preset, so it must not outlive the size or format that caused it. Cleared on
+  //    entry to RecompilePipeline so shrinking the window or lowering internal resolution actually
+  //    recovers; latching it into m_passthrough instead disabled post-processing for the whole
+  //    session after one transient allocation failure.
   bool m_passthrough = true;
+  bool m_pipeline_creation_failed = false;
   u32 m_frame_count = 0;
   u32 m_target_width = 0;
   u32 m_target_height = 0;
@@ -155,13 +168,17 @@ private:
   // Used on backends where AbstractTexture::GenerateMipmaps() is a no-op.
   VideoCommon::MipChainBuilder m_mip_builder;
 
-  // One-shot diagnostic for pass pipeline / render-target creation failure (logged once per
-  // rebuild to avoid per-frame spam in the draw loop).
+  // One-shot diagnostic for pass pipeline / render-target creation failure. Reset only by
+  // ClearChain(), i.e. once per preset load, NOT on a successful rebuild: RecompilePipeline runs on
+  // every size and format change, so a chain that fails at large sizes and succeeds at small ones
+  // would otherwise log again on every window drag. One line per preset load is the diagnostic; the
+  // recovery itself is silent by design.
   bool m_reported_pipeline_failure = false;
 
   // Performs a passthrough copy of src_tex to the given framebuffer over dst, using the built-in
   // passthrough pipeline (a plain linear-sampled blit). Used when no user preset is active, when
-  // a preset failed to load/compile, or when RecompilePipeline latches m_passthrough on failure.
+  // a preset failed to load/compile, or when RecompilePipeline could not create a pass's pipeline
+  // or render target at the current size.
   void BlitPassthrough(const MathUtil::Rectangle<int>& dst, const AbstractTexture* src_tex,
                        AbstractFramebuffer* framebuffer);
 };

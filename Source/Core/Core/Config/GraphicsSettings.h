@@ -196,7 +196,7 @@ extern const Info<bool> GFX_PERF_QUERIES_ENABLE;
 extern const Info<std::string> GFX_DRIVER_LIB_NAME;
 extern const Info<std::string> GFX_DRIVER_PACKAGE;
 
-// librashader post-processing (Vulkan)
+// librashader post-processing
 
 extern const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING;
 extern const Info<bool> GFX_LIBRASHADER_DUMP_CHAIN_IMAGES;
