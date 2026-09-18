@@ -337,7 +337,8 @@ void EnhancementsWidget::ConnectWidgets()
 
   // Parameters… needs a preset, and the field is what every path that changes one goes through:
   // the picker, Clear, and the right-click that drops a game override (ConfigText::OnConfigChanged
-  // calls setText, which emits this too).
+  // calls setText, which emits this too). Reading the field is what makes this correct rather than
+  // one edit behind -- see CurrentShaderPreset().
   connect(m_post_processing_preset, &QLineEdit::textChanged, this,
           [this] { UpdateParametersButtonState(); });
 
@@ -376,11 +377,18 @@ void EnhancementsWidget::ConnectWidgets()
 
 std::string EnhancementsWidget::CurrentShaderPreset() const
 {
-  // ResolveConfiguredPreset, not the raw setting: a GFX.ini written before chains were removed can
+  // The field rather than the config, for two reasons. ConfigText::SetTextAndUpdate emits
+  // textChanged from setText() and writes the config only afterwards, so anything reached from that
+  // signal would read the value from before the edit. And the field is what resolves the game layer
+  // the way this page displays it -- the game's value if the game overrides the preset, the global
+  // one if it does not -- which Config::Get on a layer does not do: it falls back to the setting's
+  // default, so in Game Properties it reports "no preset" for every game without an override.
+  //
+  // ResolveConfiguredPreset, not the raw text: a GFX.ini written before chains were removed can
   // hold a ';'-separated list, and both the picker and the parameters dialog have to act on the
   // preset that is actually in use rather than on a string neither can match. Only ever one preset
   // is written back.
-  return VideoCommon::ResolveConfiguredPreset(Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER));
+  return VideoCommon::ResolveConfiguredPreset(m_post_processing_preset->text().toStdString());
 }
 
 void EnhancementsWidget::BrowseForShaderPreset()
@@ -400,8 +408,8 @@ void EnhancementsWidget::EditShaderParameters()
 
 void EnhancementsWidget::UpdateParametersButtonState()
 {
-  // Whether the preset *has* parameters is deliberately not tested here: finding out costs a preset
-  // parse on every repaint of this page, and the dialog says so itself when there are none.
+  // Whether the preset *has* parameters is deliberately not tested here: finding out costs parsing
+  // the preset every time this row changes, and the dialog says so itself when there are none.
   m_post_processing_parameters->setEnabled(g_backend_info.bSupportsPostProcessing &&
                                            !CurrentShaderPreset().empty());
 }

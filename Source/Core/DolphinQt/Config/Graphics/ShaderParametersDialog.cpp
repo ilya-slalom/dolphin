@@ -125,6 +125,10 @@ void ShaderParametersDialog::BuildRows()
     // none; the tooltip is always the id, so it stays discoverable.
     auto* const label =
         new QLabel(QString::fromStdString(info.description.empty() ? info.name : info.description));
+    // Pack data, so pin the format: left at Qt::AutoText a description shaped like an HTML tag
+    // would render with the "tag" swallowed and the row become unidentifiable. No preset in the
+    // libretro pack declares one today, and the reference leaves this at the default.
+    label->setTextFormat(Qt::PlainText);
     label->setToolTip(QString::fromStdString(info.name));
     m_grid->addWidget(label, grid_row, 0);
 
@@ -226,8 +230,8 @@ void ShaderParametersDialog::ApplyOverrides(const Parameters::Overrides& overrid
     if (it != overrides.end())
     {
       value = it->second;
-      // A persisted value outside the widget range is clamped into it, and the clamped value is
-      // what the next edit pushes and persists.
+      // A persisted value outside the preset's declared range is clamped into it, and the clamped
+      // value is what the next edit pushes and persists.
       if (row.info.maximum > row.info.minimum)
         value = std::clamp(value, row.info.minimum, row.info.maximum);
     }

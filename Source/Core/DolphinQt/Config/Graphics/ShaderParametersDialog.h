@@ -19,8 +19,9 @@ class QSlider;
 
 // Editor for the selected preset's #pragma parameters, ported from PCSX2's ShaderParametersDialog.
 // One row per parameter: its description, a slider, a spin box and a Reset. Every edit is stored in
-// the global config layer, whose generation counter a running chain polls, so a preset can be tuned
-// while a game is on screen without reloading anything.
+// the global config layer and bumps the generation counter LibrashaderParameters keeps, which a
+// running chain polls, so a preset can be tuned while a game is on screen without reloading
+// anything.
 class ShaderParametersDialog final : public QDialog
 {
   Q_OBJECT
