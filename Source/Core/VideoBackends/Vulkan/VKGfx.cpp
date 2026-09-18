@@ -8,16 +8,13 @@
 #include <utility>
 
 #include "Common/CommonTypes.h"
-#include "Common/Config/Config.h"
 #include "Common/Logging/Log.h"
 #include "Common/MsgHandler.h"
 
-#include "Core/Config/GraphicsSettings.h"
-
 #include "VideoBackends/Vulkan/CommandBufferManager.h"
-#include "VideoBackends/Vulkan/LibrashaderPostProcessing.h"
 #include "VideoBackends/Vulkan/ObjectCache.h"
 #include "VideoBackends/Vulkan/StateTracker.h"
+#include "VideoBackends/Vulkan/VKLibrashaderRuntime.h"
 #include "VideoBackends/Vulkan/VKPipeline.h"
 #include "VideoBackends/Vulkan/VKShader.h"
 #include "VideoBackends/Vulkan/VKSwapChain.h"
@@ -89,14 +86,9 @@ std::unique_ptr<AbstractPipeline> VKGfx::CreatePipeline(const AbstractPipelineCo
   return VKPipeline::Create(config);
 }
 
-std::unique_ptr<VideoCommon::IPostProcessor> VKGfx::CreatePostProcessor()
+std::unique_ptr<VideoCommon::LibrashaderRuntime> VKGfx::CreateLibrashaderRuntime()
 {
-  if (Config::Get(Config::GFX_ENHANCE_POST_PROCESS_RENDERER) == PostProcessRenderer::Librashader &&
-      LibrashaderPostProcessing::IsAvailable())
-  {
-    return std::make_unique<LibrashaderPostProcessing>();
-  }
-  return AbstractGfx::CreatePostProcessor();
+  return std::make_unique<VKLibrashaderRuntime>();
 }
 
 std::unique_ptr<AbstractFramebuffer>

@@ -10,10 +10,10 @@ add_library(videovulkan
   StagingBuffer.h
   StateTracker.cpp
   StateTracker.h
-  LibrashaderPostProcessing.cpp
-  LibrashaderPostProcessing.h
   VKBoundingBox.cpp
   VKBoundingBox.h
+  VKLibrashaderRuntime.cpp
+  VKLibrashaderRuntime.h
   VKMain.cpp
   VKPerfQuery.cpp
   VKPerfQuery.h
@@ -61,7 +61,6 @@ PRIVATE
   ${CMAKE_SOURCE_DIR}/Externals/Vulkan-Headers/include
   ${CMAKE_SOURCE_DIR}/Externals/VulkanMemoryAllocator/include
   ${CMAKE_SOURCE_DIR}/Externals/libadrenotools/include
-  ${CMAKE_SOURCE_DIR}/Externals/librashader/include
 )
 
 if(MSVC)

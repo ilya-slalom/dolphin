@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "VideoCommon/Constants.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoCommon.h"
@@ -50,6 +51,20 @@ constexpr std::string_view SlangSamplerGlslType(AbstractTextureType type)
   return type == AbstractTextureType::Texture_2DArray ? "sampler2DArray" : "sampler2D";
 }
 
+// The most texture samplers TranslateSlangPass will accept in one pass; beyond it the pass is
+// rejected with an error rather than translated into a shader the backends cannot bind.
+// (crt-royale's mask-apply pass needs 9, so this is not a theoretical ceiling.)
+//
+// Derived, not chosen. A translated pass is an ordinary Dolphin pixel shader, so the number of
+// samplers it may declare is exactly the pixel sampler budget every backend already promises --
+// deriving it means the two cannot drift, which is the failure this replaced: the ceiling used to
+// be a local 16 in SlangTranslator.cpp justified by a comment naming Vulkan's
+// NUM_UTILITY_PIXEL_SAMPLERS, with nothing tying the two together and no backend obliged to agree.
+// Vulkan's constant is now derived from the same place (VideoBackends/Vulkan/Constants.h). What
+// remains testable is that the enforcement below actually uses this number: see
+// SlangTranslatorTest's boundary cases.
+constexpr size_t SLANG_MAX_SAMPLERS = MAX_PIXEL_SHADER_SAMPLERS;
+
 // The set of texture samplers a pass reads, in binding order (index 0..N-1).
 // Includes "Source", "Original", each referenced alias, and each referenced LUT.
 // GLSL scalar/vector/matrix category of a UBO member, used for std140 packing by the executor.
@@ -78,12 +93,16 @@ struct TranslatedPass
   // executor packs the uniform buffer to match this std140 layout.
   std::vector<UboMember> ubo_members;
   bool ok = false;
-  std::string error;  // set when ok == false (e.g. more samplers than MAX_SAMPLERS, which is 16)
+  std::string error;  // set when ok == false (e.g. more samplers than SLANG_MAX_SAMPLERS)
 };
 
 // True when the injected fullscreen-triangle vertex shader must negate clip-space Y. NDC Y is
 // flipped in Vulkan; we also flip on OpenGL so that (0,0) is the lower-left. Mirrors
 // FramebufferShaderGen::GenerateScreenQuadVertexShader -- keep the two in sync.
+//
+// This is the answer for a draw whose render target is a texture Dolphin owns, which is what every
+// caller of this predicate draws into. A draw that targets the *presented* framebuffer asks
+// SlangNeedsPresentClipYFlip below instead; on OpenGL the two answers differ.
 constexpr bool SlangNeedsClipYFlip(APIType api_type)
 {
   return api_type == APIType::Vulkan || api_type == APIType::OpenGL;
@@ -92,6 +111,35 @@ static_assert(SlangNeedsClipYFlip(APIType::Vulkan));
 static_assert(SlangNeedsClipYFlip(APIType::OpenGL));
 static_assert(!SlangNeedsClipYFlip(APIType::D3D));
 static_assert(!SlangNeedsClipYFlip(APIType::Metal));
+
+// True when a fullscreen-triangle blit that targets the framebuffer being presented must negate
+// clip-space Y.
+//
+// OpenGL puts clip-space Y = -1 at framebuffer row 0 whatever the target is; what differs is what
+// row 0 means. When the target is one of Dolphin's textures, row 0 is texel row 0, and the rest of
+// the stack -- uploads and readbacks (OGLTexture does not reorder rows), AbstractTexture::Save,
+// CopyRectangleFromTexture -- treats texel row 0 as the image's top row, so the flip is exactly
+// what lands the source's top row on the target's top row. The window's default framebuffer holds
+// no texels and obeys no such convention: its row 0 is the bottom scanline of the display, so the
+// same flip presents the frame upside down. Vulkan needs the flip for both, because its clip space
+// is Y-down and row 0 is the top edge of a texture and of a swapchain image alike; D3D and Metal
+// need it for neither.
+//
+// The single-pass post-processor this tree replaced encoded the same split, and spelled out why:
+// d157e51018^:Source/Core/VideoCommon/PostProcessing.cpp, GetVertexShaderBody() -- "Vulkan Y needs
+// to be inverted on every pass" / "OpenGL Y needs to be inverted in all passes except the last
+// one", the last pass being the one that renders to the screen. That file was deleted by
+// d157e51018 ("replace single-pass post-processor with multi-pass slang pipeline"), which is where
+// the two answers were collapsed into one predicate and the OpenGL present became inverted; it is
+// no longer in the tree, hence the commit-relative path.
+constexpr bool SlangNeedsPresentClipYFlip(APIType api_type)
+{
+  return api_type == APIType::Vulkan;
+}
+static_assert(SlangNeedsPresentClipYFlip(APIType::Vulkan));
+static_assert(!SlangNeedsPresentClipYFlip(APIType::OpenGL));
+static_assert(!SlangNeedsPresentClipYFlip(APIType::D3D));
+static_assert(!SlangNeedsPresentClipYFlip(APIType::Metal));
 
 // known_aliases: names produced by earlier passes; lut_names: declared LUTs.
 // flip_clip_y: see SlangNeedsClipYFlip. Callers pass SlangNeedsClipYFlip(g_backend_info.api_type).
@@ -118,4 +166,10 @@ struct CompiledPassShaders
 // on failure.
 CompiledPassShaders CompileTranslatedPass(const TranslatedPass& pass,
                                           const std::string& include_dir);
+
+// Compiles the vertex stage alone, with the same include roots. For replacing one pass's vertex
+// shader with a differently-translated one (a different flip_clip_y) without paying for its
+// fragment stage again -- see MultipassPostProcessing::RetargetFinalPassToPresent.
+std::unique_ptr<AbstractShader> CompileTranslatedVertex(const std::string& vertex_glsl,
+                                                        const std::string& include_dir);
 }  // namespace VideoCommon

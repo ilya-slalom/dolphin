@@ -64,6 +64,15 @@ private:
     SamplerState input_sampler;              // sampler applied to this pass's inputs
     std::unique_ptr<AbstractShader> vertex_shader;
     std::unique_ptr<AbstractShader> pixel_shader;
+    // This pass's vertex stage translated for a draw that targets the presented framebuffer
+    // instead of one of our textures, i.e. with SlangNeedsPresentClipYFlip in place of
+    // SlangNeedsClipYFlip. Only the chain's last pass draws there, and which pass that is is not
+    // known while a preset is being appended (a later preset appends more passes, a failing one
+    // rolls its own back), so every pass carries the alternative source and
+    // RetargetFinalPassToPresent compiles the one that turns out to be last. Empty on the backends
+    // whose two answers agree -- every backend except OpenGL -- so they translate and compile
+    // exactly what they did before.
+    std::string present_vertex_glsl;
     std::unique_ptr<AbstractPipeline> pipeline;
     std::unique_ptr<AbstractTexture> output_texture;  // null for final pass; this frame's output
     std::unique_ptr<AbstractFramebuffer> output_framebuffer;
@@ -100,6 +109,11 @@ private:
   // Appends one preset's LUTs + passes to the current chain (used by LoadPreset for each preset
   // in a chain). Rolls back its own additions on failure, leaving earlier presets intact.
   void AppendPreset(const std::string& preset_name);
+  // Swaps the assembled chain's last pass onto its present-target vertex shader (see
+  // Pass::present_vertex_glsl). That pass renders straight into the framebuffer being presented,
+  // where OpenGL needs no clip-space Y flip, unlike every earlier pass, which renders into a
+  // texture. No-op when the chain is empty and on the backends whose two answers agree.
+  void RetargetFinalPassToPresent();
   void ClearChain();
   // Builds the built-in pass-through pipeline (a plain copy of the input) for the current
   // framebuffer format, used when no user preset is active or a preset failed to load.
@@ -116,7 +130,20 @@ private:
   std::vector<Pass> m_passes;
   std::vector<Lut> m_luts;
   AbstractTextureFormat m_framebuffer_format = AbstractTextureFormat::Undefined;
+  // Two distinct reasons to blit passthrough instead of running the chain, deliberately kept apart:
+  //
+  //  - m_passthrough is the PERMANENT one: this preset has no passes to run (no preset configured,
+  //    or the preset failed to load or translate). Nothing but another LoadPreset can change that,
+  //    so BlitFromTexture returns straight away without even considering a rebuild.
+  //  - m_pipeline_creation_failed is the RETRYABLE one: the passes exist, but the last
+  //    RecompilePipeline could not create a pipeline or a render target for one of them -- a 4K
+  //    window, a ten-pass preset, VRAM pressure. That is a property of the current size and format,
+  //    not of the preset, so it must not outlive the size or format that caused it. Cleared on
+  //    entry to RecompilePipeline so shrinking the window or lowering internal resolution actually
+  //    recovers; latching it into m_passthrough instead disabled post-processing for the whole
+  //    session after one transient allocation failure.
   bool m_passthrough = true;
+  bool m_pipeline_creation_failed = false;
   u32 m_frame_count = 0;
   u32 m_target_width = 0;
   u32 m_target_height = 0;
@@ -140,6 +167,20 @@ private:
 
   // Used on backends where AbstractTexture::GenerateMipmaps() is a no-op.
   VideoCommon::MipChainBuilder m_mip_builder;
+
+  // One-shot diagnostic for pass pipeline / render-target creation failure. Reset only by
+  // ClearChain(), i.e. once per preset load, NOT on a successful rebuild: RecompilePipeline runs on
+  // every size and format change, so a chain that fails at large sizes and succeeds at small ones
+  // would otherwise log again on every window drag. One line per preset load is the diagnostic; the
+  // recovery itself is silent by design.
+  bool m_reported_pipeline_failure = false;
+
+  // Performs a passthrough copy of src_tex to the given framebuffer over dst, using the built-in
+  // passthrough pipeline (a plain linear-sampled blit). Used when no user preset is active, when
+  // a preset failed to load/compile, or when RecompilePipeline could not create a pass's pipeline
+  // or render target at the current size.
+  void BlitPassthrough(const MathUtil::Rectangle<int>& dst, const AbstractTexture* src_tex,
+                       AbstractFramebuffer* framebuffer);
 };
 
 // Computes the preset identifier for a discovered .slangp path: the path relative to whichever

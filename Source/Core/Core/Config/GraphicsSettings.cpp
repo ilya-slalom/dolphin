@@ -140,6 +140,29 @@ const Info<std::string> GFX_DRIVER_PACKAGE{{System::GFX, "Settings", "DriverPack
 const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING{
     {System::GFX, "Settings", "LibrashaderDynamicRendering"}, true};
 
+// Debug aid for the "crt-royale renders dark" investigation: dumps the images entering and
+// leaving the librashader chain, once, so their means can be compared against a reference
+// render. Deliberately not exposed in the UI.
+//
+// Two hazards, which are why it stays out of the UI. Both are documented in the design doc's
+// section 7.2 (docs/superpowers/specs/2026-09-16-librashader-desktop-runtimes-design.md):
+//   - The output dump takes the device down on D3D11 and D3D12 whenever the backbuffer is not
+//     RGBA8. AbstractTexture::Save stages through an RGBA8 readback texture whatever the source
+//     format is, and D3D rejects that cross-format copy; on Vulkan the same copy is byte-legal at
+//     4 bytes per pixel, so it silently produces a PNG of misread words instead of failing. A
+//     10-bit swapchain is the common case, not a corner case.
+//   - The one-shot budget is only spent on the success path, so if RunFrame fails the input dump
+//     repeats every frame for as long as it keeps failing.
+const Info<bool> GFX_LIBRASHADER_DUMP_CHAIN_IMAGES{
+    {System::GFX, "Settings", "LibrashaderDumpChainImages"}, false};
+
+// How many post-processed frames to let past before the dump above fires. A game's first frames
+// are the console's black boot screen, so the default of 0 -- the frame the chain first runs on --
+// yields two bit-exact black PNGs and no measurement. Set this to land the capture on a frame the
+// game has actually drawn. Also deliberately not exposed in the UI.
+const Info<u32> GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES{
+    {System::GFX, "Settings", "LibrashaderDumpChainDelayFrames"}, 0};
+
 const Info<VertexLoaderType> GFX_VERTEX_LOADER_TYPE{{System::GFX, "Settings", "VertexLoaderType"},
                                                     VertexLoaderType::Native};
 
@@ -153,8 +176,6 @@ const Info<OutputResamplingMode> GFX_ENHANCE_OUTPUT_RESAMPLING{
     {System::GFX, "Enhancements", "OutputResampling"}, OutputResamplingMode::Default};
 const Info<std::string> GFX_ENHANCE_POST_SHADER{
     {System::GFX, "Enhancements", "PostProcessingShader"}, ""};
-const Info<PostProcessRenderer> GFX_ENHANCE_POST_PROCESS_RENDERER{
-    {System::GFX, "Enhancements", "PostProcessRenderer"}, PostProcessRenderer::Builtin};
 const Info<bool> GFX_ENHANCE_FORCE_TRUE_COLOR{{System::GFX, "Enhancements", "ForceTrueColor"},
                                               true};
 const Info<bool> GFX_ENHANCE_DISABLE_COPY_FILTER{{System::GFX, "Enhancements", "DisableCopyFilter"},

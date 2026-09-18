@@ -12,8 +12,9 @@ class AbstractTexture;
 namespace VideoCommon
 {
 // Backend-agnostic post-processing engine interface. Presenter owns one of these and drives it
-// per frame. Implemented by MultipassPostProcessing (all backends) and, on Vulkan, by
-// LibrashaderPostProcessing.
+// per frame. Implemented by MultipassPostProcessing (the built-in slang executor) and by
+// LibrashaderPostProcessing, which drives librashader's native runtime on any backend whose
+// AbstractGfx::CreateLibrashaderRuntime() returns one. Both live in VideoCommon.
 class IPostProcessor
 {
 public:

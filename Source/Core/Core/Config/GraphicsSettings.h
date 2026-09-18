@@ -14,7 +14,6 @@ enum class StereoPerEyeResolution : int;
 enum class TextureFilteringMode : int;
 enum class AnisotropicFilteringMode : int;
 enum class OutputResamplingMode : int;
-enum class PostProcessRenderer : int;
 enum class ColorCorrectionRegion : int;
 enum class TriState : int;
 enum class FrameDumpResolutionType : int;
@@ -123,7 +122,6 @@ extern const Info<TextureFilteringMode> GFX_ENHANCE_FORCE_TEXTURE_FILTERING;
 extern const Info<AnisotropicFilteringMode> GFX_ENHANCE_MAX_ANISOTROPY;
 extern const Info<OutputResamplingMode> GFX_ENHANCE_OUTPUT_RESAMPLING;
 extern const Info<std::string> GFX_ENHANCE_POST_SHADER;
-extern const Info<PostProcessRenderer> GFX_ENHANCE_POST_PROCESS_RENDERER;
 extern const Info<bool> GFX_ENHANCE_FORCE_TRUE_COLOR;
 extern const Info<bool> GFX_ENHANCE_DISABLE_COPY_FILTER;
 extern const Info<bool> GFX_ENHANCE_ARBITRARY_MIPMAP_DETECTION;
@@ -198,9 +196,11 @@ extern const Info<bool> GFX_PERF_QUERIES_ENABLE;
 extern const Info<std::string> GFX_DRIVER_LIB_NAME;
 extern const Info<std::string> GFX_DRIVER_PACKAGE;
 
-// librashader post-processing (Vulkan)
+// librashader post-processing
 
 extern const Info<bool> GFX_LIBRASHADER_DYNAMIC_RENDERING;
+extern const Info<bool> GFX_LIBRASHADER_DUMP_CHAIN_IMAGES;
+extern const Info<u32> GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES;
 
 // Vertex loader
 

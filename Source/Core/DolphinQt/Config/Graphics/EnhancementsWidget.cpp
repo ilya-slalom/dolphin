@@ -6,14 +6,15 @@
 #include <atomic>
 #include <future>
 #include <memory>
-#include <utility>
 
 #include <QApplication>
 #include <QEventLoop>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPointer>
@@ -30,15 +31,17 @@
 #include "DolphinQt/Config/ConfigControls/ConfigBool.h"
 #include "DolphinQt/Config/ConfigControls/ConfigChoice.h"
 #include "DolphinQt/Config/ConfigControls/ConfigFloatSlider.h"
+#include "DolphinQt/Config/ConfigControls/ConfigText.h"
 #include "DolphinQt/Config/GameConfigWidget.h"
 #include "DolphinQt/Config/Graphics/GraphicsPane.h"
-#include "DolphinQt/Config/Graphics/PostProcessingChainDialog.h"
+#include "DolphinQt/Config/Graphics/ShaderParametersDialog.h"
+#include "DolphinQt/Config/Graphics/ShaderPresetPickerDialog.h"
 #include "DolphinQt/Config/ToolTipControls/ToolTipPushButton.h"
 #include "DolphinQt/QtUtils/NonDefaultQPushButton.h"
 
-#include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
+#include "VideoCommon/PostProcessing/LibrashaderLoader.h"
+#include "VideoCommon/PostProcessing/PostProcessingConfig.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
-#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/ShaderPackDownload.h"
 #include "VideoCommon/PostProcessing/ShaderPackSource.h"
 #include "VideoCommon/VideoBackendBase.h"
@@ -50,9 +53,13 @@ EnhancementsWidget::EnhancementsWidget(GraphicsPane* gfx_pane)
 {
   MigrateRemovedStereoModes();
   CreateWidgets();
-  LoadPostProcessingShaders();
+  ShaderChanged();
   ConnectWidgets();
   AddDescriptions();
+
+  // The preset field is filled by its own constructor, i.e. before ConnectWidgets could hear about
+  // it, so the initial value needs one explicit pass to be resolved for display.
+  ShowResolvedPreset();
 
   // BackendChanged is called by parent on window creation.
   connect(gfx_pane, &GraphicsPane::BackendChanged, this, &EnhancementsWidget::OnBackendChanged);
@@ -183,20 +190,17 @@ void EnhancementsWidget::CreateWidgets()
   m_texture_filtering_combo->Refresh();
   m_texture_filtering_combo->setEnabled(Get(m_game_layer, Config::GFX_HACK_FAST_TEXTURE_SAMPLING));
 
-
-  m_post_process_renderer = new ConfigChoiceMap<PostProcessRenderer>(
-      {{tr("Builtin"), PostProcessRenderer::Builtin},
-       {tr("librashader"), PostProcessRenderer::Librashader}},
-      Config::GFX_ENHANCE_POST_PROCESS_RENDERER, m_game_layer);
-
-  // The post-processing effect "(off)" has the config value "", so we need to use the constructor
-  // that sets ConfigStringChoice's m_text_is_data to false. m_post_processing_effect is cleared in
-  // LoadPostProcessingShaders so it's pointless to fill it with real data here.
-  const std::vector<std::pair<QString, QString>> separate_data_and_text;
-  m_post_processing_effect =
-      new ConfigStringChoice(separate_data_and_text, Config::GFX_ENHANCE_POST_SHADER, m_game_layer);
-  m_configure_post_chain = new NonDefaultQPushButton(tr("Chain…"));
+  // The preset is picked in ShaderPresetPickerDialog and only displayed here, so the field is
+  // read-only. It is still a ConfigText: that is what bolds it when a game INI overrides the
+  // global setting and what drops the override on a right-click, exactly as the combo box it
+  // replaced did. An empty setting means no post-processing, and shows the placeholder.
+  m_post_processing_preset = new ConfigText(Config::GFX_ENHANCE_POST_SHADER, m_game_layer);
+  m_post_processing_preset->setReadOnly(true);
+  m_post_processing_preset->setPlaceholderText(tr("(None)"));
+  m_post_processing_browse = new ToolTipPushButton(tr("Browse…"));
+  m_post_processing_clear = new NonDefaultQPushButton(tr("Clear"));
   m_download_shader_pack = new NonDefaultQPushButton(tr("Download…"));
+  m_post_processing_parameters = new ToolTipPushButton(tr("Parameters…"));
 
   m_scaled_efb_copy =
       new ConfigBool(tr("Scaled EFB Copy"), Config::GFX_HACK_COPY_EFB_SCALED, m_game_layer);
@@ -228,14 +232,19 @@ void EnhancementsWidget::CreateWidgets()
   enhancements_layout->addWidget(m_texture_filtering_combo, row, 1, 1, -1);
   ++row;
 
-  enhancements_layout->addWidget(new QLabel(tr("Post-Processing Renderer:")), row, 0);
-  enhancements_layout->addWidget(m_post_process_renderer, row, 1, 1, -1);
-  ++row;
+  // Preset field plus its buttons, following PCSX2's row: the field, Browse…, Clear. Dolphin's
+  // Download… goes on the end of the same row rather than into a second one, so the grid keeps the
+  // three columns the rows below it span. Parameters… follows Download… because that is the order
+  // PCSX2 lists them in, one row apart.
+  auto* const post_processing_buttons = new QHBoxLayout();
+  post_processing_buttons->addWidget(m_post_processing_browse);
+  post_processing_buttons->addWidget(m_post_processing_clear);
+  post_processing_buttons->addWidget(m_download_shader_pack);
+  post_processing_buttons->addWidget(m_post_processing_parameters);
 
   enhancements_layout->addWidget(new QLabel(tr("Post-Processing Effect:")), row, 0);
-  enhancements_layout->addWidget(m_post_processing_effect, row, 1);
-  enhancements_layout->addWidget(m_configure_post_chain, row, 2);
-  enhancements_layout->addWidget(m_download_shader_pack, row, 3);
+  enhancements_layout->addWidget(m_post_processing_preset, row, 1);
+  enhancements_layout->addLayout(post_processing_buttons, row, 2);
   ++row;
 
   enhancements_layout->addWidget(m_scaled_efb_copy, row, 0);
@@ -312,7 +321,6 @@ void EnhancementsWidget::ConnectWidgets()
 {
   connect(m_3d_mode, &QComboBox::currentIndexChanged, this, [this] {
     auto current_stereo_mode = Get(m_game_layer, Config::GFX_STEREO_MODE);
-    LoadPostProcessingShaders();
 
     if (current_stereo_mode == StereoMode::SideBySide ||
         current_stereo_mode == StereoMode::TopAndBottom)
@@ -325,11 +333,21 @@ void EnhancementsWidget::ConnectWidgets()
     }
   });
 
-  connect(m_post_processing_effect, &QComboBox::currentIndexChanged, this,
-          &EnhancementsWidget::ShaderChanged);
+  connect(m_post_processing_browse, &QPushButton::clicked, this,
+          &EnhancementsWidget::BrowseForShaderPreset);
+  connect(m_post_processing_clear, &QPushButton::clicked, this,
+          &EnhancementsWidget::ClearShaderPreset);
+  connect(m_post_processing_parameters, &QPushButton::clicked, this,
+          &EnhancementsWidget::EditShaderParameters);
 
-  connect(m_configure_post_chain, &QPushButton::clicked, this,
-          &EnhancementsWidget::ConfigurePostProcessingChain);
+  // Parameters… needs a preset, and the field is what every path that changes one goes through:
+  // the picker, Clear, and the right-click that drops a game override (ConfigText::OnConfigChanged
+  // calls setText, which emits this too). Reading the field is what makes this correct rather than
+  // one edit behind -- see CurrentShaderPreset().
+  connect(m_post_processing_preset, &QLineEdit::textChanged, this, [this] {
+    ShowResolvedPreset();
+    UpdateParametersButtonState();
+  });
 
   // Convert download button to menu
   auto* const menu = new QMenu(this);
@@ -364,42 +382,89 @@ void EnhancementsWidget::ConnectWidgets()
   });
 }
 
-void EnhancementsWidget::LoadPostProcessingShaders()
+std::string EnhancementsWidget::CurrentShaderPreset() const
 {
-  const QSignalBlocker blocker(m_post_processing_effect);
-  m_post_processing_effect->clear();
+  // The field rather than the config, for two reasons. ConfigText::SetTextAndUpdate emits
+  // textChanged from setText() and writes the config only afterwards, so anything reached from that
+  // signal would read the value from before the edit. And the field is what resolves the game layer
+  // the way this page displays it -- the game's value if the game overrides the preset, the global
+  // one if it does not -- which Config::Get on a layer does not do: it falls back to the setting's
+  // default, so in Game Properties it reports "no preset" for every game without an override.
+  //
+  // ResolveConfiguredPreset, not the raw text: a GFX.ini written before chains were removed can
+  // hold a ';'-separated list, and both the picker and the parameters dialog have to act on the
+  // preset that is actually in use rather than on a string neither can match. Only ever one preset
+  // is written back.
+  return VideoCommon::ResolveConfiguredPreset(m_post_processing_preset->text().toStdString());
+}
 
-  // Preset list (*.slangp discovered under the Shaders dirs).
-  const std::vector<std::string> presets = VideoCommon::MultipassPostProcessing::GetPresetList();
+void EnhancementsWidget::ShowResolvedPreset()
+{
+  // The field is a plain ConfigText, so it displays the stored string verbatim -- and a GFX.ini
+  // written before chains were removed stores a ';'-separated list. Every path that acts on the
+  // value uses only the first entry (CurrentShaderPreset, the picker, the parameters dialog, the
+  // post-processor), so left alone the row would name presets that nothing loads. Show the one in
+  // use instead.
+  //
+  // Display only, no write-back: replacing the stored value here would silently rewrite a game or
+  // global INI just because someone opened the graphics page. The row now matches what runs; the
+  // stored chain is rewritten only when the user picks or clears a preset. Safe because a read-only
+  // ConfigText no longer saves on editingFinished (ConfigText::Update), so this setText cannot
+  // become a write by way of the window closing.
+  //
+  // The guard also terminates the recursion through textChanged -> here, since the resolved value
+  // resolves to itself, and it means ResolveConfiguredPreset stops warning about the dropped tail
+  // after the first pass instead of on every keystroke-sized signal.
+  const QString resolved = QString::fromStdString(
+      VideoCommon::ResolveConfiguredPreset(m_post_processing_preset->text().toStdString()));
+  if (resolved == m_post_processing_preset->text())
+    return;
 
-  m_post_processing_effect->addItem(tr("(off)"), QStringLiteral(""));
+  m_post_processing_preset->setText(resolved);
+}
 
-  const auto selected_shader = Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER);
+void EnhancementsWidget::BrowseForShaderPreset()
+{
+  ShaderPresetPickerDialog dialog(this, QString::fromStdString(CurrentShaderPreset()));
+  if (dialog.exec() != QDialog::Accepted || dialog.SelectedPreset().isEmpty())
+    return;
 
-  bool found = false;
-  for (const auto& preset : presets)
-  {
-    const QString name = QString::fromStdString(preset);
-    m_post_processing_effect->addItem(name, name);
-    if (selected_shader == preset)
-    {
-      m_post_processing_effect->setCurrentIndex(m_post_processing_effect->count() - 1);
-      found = true;
-    }
-  }
+  m_post_processing_preset->SetTextAndUpdate(dialog.SelectedPreset());
+}
 
-  if (!found)
-    m_post_processing_effect->setCurrentIndex(0);  // "(off)"
+void EnhancementsWidget::EditShaderParameters()
+{
+  // The layer is passed as a bare "are we in Game Properties" flag, not as a layer to write: the
+  // dialog stores its values globally either way, and that is what the flag makes it say. Giving it
+  // a per-game parameter layer would need a per-game section, a merge rule for it and a way to see
+  // and clear the override, none of which exist.
+  ShaderParametersDialog dialog(this, QString::fromStdString(CurrentShaderPreset()),
+                                m_game_layer != nullptr);
+  dialog.exec();
+}
 
-  // A chain is not one of the listed presets; add it so the combo shows the current value.
-  if (selected_shader.find(VideoCommon::CHAIN_SEPARATOR) != std::string::npos)
-  {
-    m_post_processing_effect->addItem(
-        QString::fromStdString(VideoCommon::DescribeChainSpec(selected_shader)),
-        QString::fromStdString(selected_shader));
-  }
+void EnhancementsWidget::UpdateParametersButtonState()
+{
+  // Whether the preset *has* parameters is deliberately not tested here: finding out costs parsing
+  // the preset every time this row changes, and the dialog says so itself when there are none.
+  //
+  // Whether librashader loaded *is* tested, because that one is not a property of the preset. The
+  // dialog gets its list from LibrashaderParameters::Enumerate, which is guarded on
+  // GetAvailability() and returns the availability reason as its error, so without the library
+  // every preset reports "Could not load preset" no matter how many parameters it declares. A
+  // button that can only ever open an error is better disabled, with the reason in its tooltip
+  // (see AddDescriptions) -- the built-in engine still post-processes, it just cannot be tuned
+  // from here.
+  m_post_processing_parameters->setEnabled(g_backend_info.bSupportsPostProcessing &&
+                                           VideoCommon::Librashader::GetAvailability().available &&
+                                           !CurrentShaderPreset().empty());
+}
 
-  m_post_processing_effect->Load();
+void EnhancementsWidget::ClearShaderPreset()
+{
+  // The picker cannot select "nothing", so this is what turns post-processing back off -- the job
+  // the combo box's "(off)" entry used to do.
+  m_post_processing_preset->SetTextAndUpdate(QString{});
   ShaderChanged();
 }
 
@@ -416,23 +481,22 @@ void EnhancementsWidget::OnBackendChanged()
 
   // PostProcessing
   const bool supports_postprocessing = g_backend_info.bSupportsPostProcessing;
-  if (!supports_postprocessing)
+  const QString unsupported_tooltip =
+      supports_postprocessing ?
+          QString{} :
+          tr("%1 doesn't support this feature.").arg(tr(g_video_backend->GetDisplayName().c_str()));
+  for (QWidget* const widget : {static_cast<QWidget*>(m_post_processing_preset),
+                                static_cast<QWidget*>(m_post_processing_browse),
+                                static_cast<QWidget*>(m_post_processing_clear),
+                                static_cast<QWidget*>(m_post_processing_parameters)})
   {
-    m_post_processing_effect->setEnabled(false);
-    m_post_processing_effect->setToolTip(
-        tr("%1 doesn't support this feature.").arg(tr(g_video_backend->GetDisplayName().c_str())));
+    widget->setEnabled(supports_postprocessing);
+    widget->setToolTip(unsupported_tooltip);
   }
-  else if (!m_post_processing_effect->isEnabled() && supports_postprocessing)
-  {
-    m_post_processing_effect->setEnabled(true);
-    m_post_processing_effect->setToolTip(QString{});
-    LoadPostProcessingShaders();
-  }
-
-  // librashader is loaded through the Vulkan backend only.
-  const bool librashader_possible = g_backend_info.api_type == APIType::Vulkan;
-  m_post_process_renderer->setEnabled(g_backend_info.bSupportsPostProcessing &&
-                                      librashader_possible);
+  // Parameters… needs a preset as well as a backend that can run one, so it narrows what the loop
+  // above just set. This is also where its initial state comes from: GraphicsPane emits
+  // BackendChanged once on window creation.
+  UpdateParametersButtonState();
 
   UpdateAntialiasingOptions();
 }
@@ -452,26 +516,6 @@ void EnhancementsWidget::ShaderChanged()
     else
       Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, shader);
   }
-}
-
-void EnhancementsWidget::ConfigurePostProcessingChain()
-{
-  PostProcessingChainDialog dialog(
-      this, QString::fromStdString(Get(m_game_layer, Config::GFX_ENHANCE_POST_SHADER)));
-  if (dialog.exec() != QDialog::Accepted)
-    return;
-
-  const std::string chain = dialog.ChainSpec().toStdString();
-  if (m_game_layer != nullptr)
-  {
-    m_game_layer->Set(Config::GFX_ENHANCE_POST_SHADER.GetLocation(), chain);
-    Config::OnConfigChanged();
-  }
-  else
-  {
-    Config::SetBaseOrCurrent(Config::GFX_ENHANCE_POST_SHADER, chain);
-  }
-  LoadPostProcessingShaders();
 }
 
 void EnhancementsWidget::UpdateAntialiasingOptions()
@@ -530,14 +574,15 @@ void EnhancementsWidget::AddDescriptions()
       "of the game's textures and might cause issues in a small number of games.<br><br>This "
       "setting is disabled when Manual Texture Sampling is enabled.<br><br>"
       "<dolphin_emphasis>If unsure, select 'Default'.</dolphin_emphasis>");
-  static const char TR_POST_PROCESS_RENDERER_DESCRIPTION[] = QT_TR_NOOP(
-      "Selects which engine runs slang post-processing presets."
-      "<br><br><b>Builtin</b>: Dolphin's own multipass renderer, available on every backend."
-      "<br><b>librashader</b>: the upstream RetroArch shader runtime; Vulkan only."
-      "<br><br><dolphin_emphasis>If unsure, select Builtin.</dolphin_emphasis>");
-  static const char TR_POSTPROCESSING_DESCRIPTION[] =
-      QT_TR_NOOP("Applies a post-processing effect after rendering a frame.<br><br "
-                 "/><dolphin_emphasis>If unsure, select (off).</dolphin_emphasis>");
+  static const char TR_POSTPROCESSING_DESCRIPTION[] = QT_TR_NOOP(
+      "Applies a post-processing effect after rendering a frame.<br><br />Opens a searchable tree "
+      "of the presets found in the Shaders folders. Use Clear to apply no effect at all.<br><br "
+      "/><dolphin_emphasis>If unsure, leave this empty.</dolphin_emphasis>");
+  static const char TR_POSTPROCESSING_PARAMETERS_DESCRIPTION[] = QT_TR_NOOP(
+      "Adjusts the parameters the selected preset declares, such as scanline strength or screen "
+      "curvature.<br><br />Edits take effect immediately, including while a game is running. Only "
+      "the values you change are saved, so a parameter you reset follows the preset's own default "
+      "again.");
   static const char TR_SCALED_EFB_COPY_DESCRIPTION[] =
       QT_TR_NOOP("Greatly increases the quality of textures generated using render-to-texture "
                  "effects.<br><br>Slightly increases GPU load and causes relatively few graphical "
@@ -616,11 +661,34 @@ void EnhancementsWidget::AddDescriptions()
   m_texture_filtering_combo->SetTitle(tr("Texture Filtering"));
   m_texture_filtering_combo->SetDescription(tr(TR_FORCE_TEXTURE_FILTERING_DESCRIPTION));
 
-  m_post_process_renderer->SetTitle(tr("Post-Processing Renderer"));
-  m_post_process_renderer->SetDescription(tr(TR_POST_PROCESS_RENDERER_DESCRIPTION));
+  // The description hangs off Browse… rather than the field: the field is read-only, so the button
+  // is what a user hovers to find out what the row does.
+  m_post_processing_browse->SetTitle(tr("Post-Processing Effect"));
+  m_post_processing_browse->SetDescription(tr(TR_POSTPROCESSING_DESCRIPTION));
 
-  m_post_processing_effect->SetTitle(tr("Post-Processing Effect"));
-  m_post_processing_effect->SetDescription(tr(TR_POSTPROCESSING_DESCRIPTION));
+  // Its own description rather than none: the row's, on Browse… above, is about choosing a preset
+  // and says nothing about editing one. Same ToolTipPushButton + SetDescription pattern for the
+  // same reason -- the field it belongs to is read-only, so the buttons carry the row's help.
+  m_post_processing_parameters->SetTitle(tr("Shader Parameters"));
+
+  // When librashader did not load, the button is disabled (UpdateParametersButtonState) and this is
+  // where the user finds out why: Qt still delivers hover events to a disabled widget, so the
+  // balloon still opens. Composed once rather than per state change because availability is decided
+  // by the first GetAvailability() call and cached for the process.
+  const VideoCommon::Librashader::Availability& librashader =
+      VideoCommon::Librashader::GetAvailability();
+  if (librashader.available)
+  {
+    m_post_processing_parameters->SetDescription(tr(TR_POSTPROCESSING_PARAMETERS_DESCRIPTION));
+  }
+  else
+  {
+    m_post_processing_parameters->SetDescription(
+        tr("Unavailable: editing shader parameters needs the librashader library, which could "
+           "not be loaded (%1). Post-processing itself still works.<br><br>%2")
+            .arg(QString::fromStdString(librashader.reason),
+                 tr(TR_POSTPROCESSING_PARAMETERS_DESCRIPTION)));
+  }
 
   m_scaled_efb_copy->SetDescription(tr(TR_SCALED_EFB_COPY_DESCRIPTION));
 
@@ -763,10 +831,11 @@ void EnhancementsWidget::DownloadShaderPack(const std::string& pack_id, const st
 
   if (result.ok)
   {
+    // Nothing to refresh here any more: the picker enumerates the Shaders folders each time it is
+    // opened, so a freshly installed pack shows up on the next Browse….
     QMessageBox::information(
         this, tr("Shader Pack Installed"),
         tr("Installed %1 shader presets.").arg(result.preset_count));
-    LoadPostProcessingShaders();
   }
   else
   {

@@ -228,11 +228,8 @@
     <string name="texture_filtering">Texture Filtering</string>
     <string name="texture_filtering_description">Overrides the texture scaling filter selected by the game. Any option except \'Default\' will alter the look of the game\'s textures and might cause issues in a small number of games.</string>
     <string name="post_processing_shader">Post-Processing Effect</string>
-    <string name="post_processing_renderer">Post-processing renderer</string>
-    <string name="post_processing_renderer_description">Engine used for post-processing shaders. librashader applies only to the Vulkan backend.</string>
     <string name="post_processing_category_all">All</string>
     <string name="post_processing_select">Select</string>
-    <string name="post_processing_chain_add">Add to Chain</string>
     <string name="post_processing_chain_empty">No shaders available. Download the shader pack first.</string>
     <string name="post_processing_download_libretro">Download libretro Shaders</string>
     <string name="post_processing_download_libretro_description">RetroArch slang shader pack (~50 MB) from the libretro buildbot</string>

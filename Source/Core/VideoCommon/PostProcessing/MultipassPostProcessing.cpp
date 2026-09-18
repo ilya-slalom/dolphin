@@ -28,8 +28,8 @@
 #include "VideoCommon/PostProcessing/MipGen.h"
 #include "VideoCommon/PostProcessing/PassGraph.h"
 #include "VideoCommon/PostProcessing/PassSizing.h"
+#include "VideoCommon/PostProcessing/PostProcessingConfig.h"
 #include "VideoCommon/PostProcessing/RetroCrisisInstall.h"
-#include "VideoCommon/PostProcessing/ShaderChainSpec.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangSamplers.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
@@ -152,6 +152,8 @@ void MultipassPostProcessing::ClearChain()
   m_history_textures.clear();
   m_max_history = 0;
   m_passthrough = true;
+  m_pipeline_creation_failed = false;
+  m_reported_pipeline_failure = false;
 }
 
 void MultipassPostProcessing::EnsureHistoryTextures(const AbstractTexture* original)
@@ -208,13 +210,15 @@ void MultipassPostProcessing::LoadPreset(const std::string& preset_spec)
 {
   ClearChain();
 
-  // The config value may be a single preset name or a ';'-separated chain of presets whose pass
-  // graphs are concatenated (each preset's first pass samples the previous preset's output as
-  // "Source"). A plain name has no ';', so this is backwards compatible. SplitChainSpec is the
-  // single splitter shared with the front ends, so a name means the same thing in both.
-  for (const std::string& name : SplitChainSpec(preset_spec))
+  // Load a single preset. Configs written before the chain feature was removed may hold a
+  // ';'-separated list; ResolveConfiguredPreset takes the first entry and warns.
+  const std::string name = ResolveConfiguredPreset(preset_spec);
+  if (!name.empty())
     AppendPreset(name);
 
+  // Only now is it settled which pass is last, and the last pass is the one that draws to the
+  // screen rather than into a texture.
+  RetargetFinalPassToPresent();
   AnalyzeRenderStages();
   m_passthrough = m_passes.empty();
 }
@@ -334,8 +338,9 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
       return;
     }
 
-    TranslatedPass translated = TranslateSlangPass(*parsed, known_aliases, lut_names,
-                                                   SlangNeedsClipYFlip(g_backend_info.api_type));
+    const APIType api_type = g_backend_info.api_type;
+    TranslatedPass translated =
+        TranslateSlangPass(*parsed, known_aliases, lut_names, SlangNeedsClipYFlip(api_type));
     if (!translated.ok)
     {
       ERROR_LOG_FMT(VIDEO, "Post-processing: cannot translate {}: {}; skipping preset {}",
@@ -366,6 +371,34 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
                               pass_config.mipmap_input);
     pass.vertex_shader = std::move(shaders.vertex);
     pass.pixel_shader = std::move(shaders.pixel);
+
+    // Keep the present-target translation of this pass's vertex stage for
+    // RetargetFinalPassToPresent to compile if this pass ends up last. Nothing to keep where the
+    // two answers agree (every backend but OpenGL), and only the vertex source is kept: the
+    // fragment stage, sampler bindings and UBO layout are identical either way -- the whole
+    // difference is one line in the injected main().
+    if (SlangNeedsPresentClipYFlip(api_type) != SlangNeedsClipYFlip(api_type))
+    {
+      TranslatedPass present = TranslateSlangPass(*parsed, known_aliases, lut_names,
+                                                  SlangNeedsPresentClipYFlip(api_type));
+      if (present.ok)
+      {
+        pass.present_vertex_glsl = std::move(present.vertex_glsl);
+      }
+      else
+      {
+        // Silence here was the whole bug: RetargetFinalPassToPresent returns without a word when
+        // present_vertex_glsl is empty, so if this pass turned out to be the last one the frame
+        // presented upside down on OpenGL with nothing in the log. Same symptom, same wording as
+        // the compile-failure path in RetargetFinalPassToPresent.
+        ERROR_LOG_FMT(VIDEO,
+                      "Post-processing: failed to translate the present-target vertex shader for "
+                      "pass '{}': {}; if this is the final pass the presented frame will be "
+                      "vertically flipped",
+                      pass_config.shader_path, present.error);
+      }
+    }
+
     m_passes.push_back(std::move(pass));
 
     if (!pass_config.alias.empty())
@@ -373,10 +406,49 @@ void MultipassPostProcessing::AppendPreset(const std::string& preset_name)
   }
 }
 
+void MultipassPostProcessing::RetargetFinalPassToPresent()
+{
+  if (m_passes.empty())
+    return;
+
+  // BlitFromTexture is only ever called with the backbuffer bound (Presenter::Present binds it,
+  // then RenderXFBToScreen calls us), and it draws the last pass into that framebuffer -- the
+  // is_final branches in RecompilePipeline and in the draw loop both key off this same
+  // m_passes.size() - 1, and nothing adds or drops a pass between here and there: only LoadPreset
+  // and ClearChain touch m_passes, and a per-preset rollback has already run by now.
+  Pass& final_pass = m_passes.back();
+  const std::string vertex_glsl = std::move(final_pass.present_vertex_glsl);
+  // Every pass kept one of these because any of them could have turned out to be last. Now that
+  // the answer is known the rest are dead weight, and this function is their only consumer.
+  for (Pass& pass : m_passes)
+    pass.present_vertex_glsl.clear();
+  if (vertex_glsl.empty())
+    return;
+
+  std::unique_ptr<AbstractShader> vertex =
+      CompileTranslatedVertex(vertex_glsl, DirectoryOf(final_pass.config.shader_path));
+  if (!vertex)
+  {
+    // The pass keeps the vertex shader it already has, which flips: the frame is presented upside
+    // down, the way it was before this was split, rather than not presented at all.
+    ERROR_LOG_FMT(VIDEO,
+                  "Post-processing: failed to compile the present-target vertex shader for final "
+                  "pass '{}'; the presented frame will be vertically flipped",
+                  final_pass.config.shader_path);
+    return;
+  }
+  final_pass.vertex_shader = std::move(vertex);
+}
+
 void MultipassPostProcessing::RecompilePipeline()
 {
   if (m_passthrough || m_framebuffer_format == AbstractTextureFormat::Undefined)
     return;
+
+  // Clear the retryable failure latch before rebuilding: this call is the retry, and leaving the
+  // latch set would make a rebuild that now succeeds still blit passthrough. m_passthrough is not
+  // touched -- a preset with no passes never gets here.
+  m_pipeline_creation_failed = false;
 
   // Clearing freshly-allocated feedback buffers below binds framebuffers; remember the currently
   // bound one so callers (e.g. mid-frame in BlitFromTexture) see no surprise framebuffer change.
@@ -479,6 +551,29 @@ void MultipassPostProcessing::RecompilePipeline()
     pipeline_config.framebuffer_state = RenderState::GetColorFramebufferState(output_format);
     pipeline_config.usage = AbstractPipelineUsage::Utility;
     pass.pipeline = g_gfx->CreatePipeline(pipeline_config);
+
+    // A pass whose pipeline or render target (for non-final passes) failed to create cannot be
+    // skipped silently: if it is the final pass nothing reaches the backbuffer at all (a black
+    // screen). Report it once per preset load and set the retryable latch so BlitFromTexture falls
+    // back to the passthrough copy rather than presenting a chain with a hole in it. Not
+    // m_passthrough: that one is permanent, and a size that cannot be allocated today may well be
+    // allocatable after the user shrinks the window or lowers internal resolution.
+    if (!pass.pipeline || (!is_final && !pass.output_framebuffer))
+    {
+      if (!m_reported_pipeline_failure)
+      {
+        ERROR_LOG_FMT(VIDEO,
+                      "Post-processing: pass {} ('{}') has no {} at {}x{}; blitting passthrough "
+                      "until a rebuild succeeds",
+                      i, pass.config.shader_path, !pass.pipeline ? "pipeline" : "render target",
+                      viewport_width, viewport_height);
+        m_reported_pipeline_failure = true;
+      }
+      m_pipeline_creation_failed = true;
+      if (restore_framebuffer != nullptr)
+        g_gfx->SetFramebuffer(restore_framebuffer);
+      return;
+    }
   }
 
   // Restore whatever framebuffer was bound before any feedback-buffer clears above.
@@ -498,7 +593,10 @@ void MultipassPostProcessing::BuildPassthroughPipeline()
   // Fullscreen-triangle vertex shader + a plain textured copy. Uses Dolphin's per-backend
   // shader macros (defined by the backend header CreateShaderFromSource prepends), so it works
   // for any backbuffer format -- unlike ScaleTexture, which only supports RGBA8 targets.
-  const std::string flip_y = SlangNeedsClipYFlip(g_backend_info.api_type) ?
+  // BlitPassthrough only ever draws into the framebuffer being presented, so this asks
+  // SlangNeedsPresentClipYFlip and not SlangNeedsClipYFlip: on OpenGL the latter is the answer for
+  // a texture target only.
+  const std::string flip_y = SlangNeedsPresentClipYFlip(g_backend_info.api_type) ?
                                  "  gl_Position.y = -gl_Position.y;\n" :
                                  "";
   const std::string vertex_source =
@@ -536,23 +634,32 @@ void MultipassPostProcessing::BuildPassthroughPipeline()
   m_passthrough_format = format;
 }
 
+void MultipassPostProcessing::BlitPassthrough(const MathUtil::Rectangle<int>& dst,
+                                              const AbstractTexture* src_tex,
+                                              AbstractFramebuffer* framebuffer)
+{
+  BuildPassthroughPipeline();
+  if (!m_passthrough_pipeline)
+    return;
+
+  g_gfx->SetTexture(0, src_tex);
+  g_gfx->SetSamplerState(0, RenderState::GetLinearSamplerState());
+  g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));
+  g_gfx->SetPipeline(m_passthrough_pipeline.get());
+  g_gfx->Draw(0, 3);
+}
+
 void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& dst,
                                               const MathUtil::Rectangle<int>& src,
                                               const AbstractTexture* src_tex, int src_layer,
                                               u32 native_width, u32 native_height)
 {
+  // Only the permanent condition returns here. A chain whose last rebuild failed deliberately falls
+  // through to the size/format check below, because that is the only per-frame caller of
+  // RecompilePipeline and therefore the only way the failure can ever be retried.
   if (m_passthrough || m_passes.empty())
   {
-    AbstractFramebuffer* const framebuffer = g_gfx->GetCurrentFramebuffer();
-    BuildPassthroughPipeline();
-    if (!m_passthrough_pipeline)
-      return;
-
-    g_gfx->SetTexture(0, src_tex);
-    g_gfx->SetSamplerState(0, RenderState::GetLinearSamplerState());
-    g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));
-    g_gfx->SetPipeline(m_passthrough_pipeline.get());
-    g_gfx->Draw(0, 3);
+    BlitPassthrough(dst, src_tex, g_gfx->GetCurrentFramebuffer());
     return;
   }
 
@@ -605,6 +712,15 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
     RecompilePipeline();
   }
 
+  // If the rebuild above (or an earlier one at this same size) could not create a pass's pipeline
+  // or render target, fall back to the passthrough copy rather than executing the chain with null
+  // pipelines or framebuffers. The next size or format change retries.
+  if (m_pipeline_creation_failed)
+  {
+    BlitPassthrough(dst, src_tex, g_gfx->GetCurrentFramebuffer());
+    return;
+  }
+
   ++m_frame_count;
 
   // Frame-history ring: keep copies of the Original frame for OriginalHistoryN (N>=1). No-op for
@@ -625,6 +741,9 @@ void MultipassPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& ds
   for (size_t i = 0; i < pass_count; ++i)
   {
     Pass& pass = m_passes[i];
+    // Defensive guard: the real detection happens in RecompilePipeline, which sets
+    // m_pipeline_creation_failed and returns early above. This cannot be reached with a failed
+    // chain.
     if (!pass.pipeline)
       continue;
 

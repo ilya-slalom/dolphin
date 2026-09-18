@@ -166,28 +166,59 @@ static SlangShaderSource MakeShaderWithSamplers(int extra)
 
 TEST(SlangTranslator, AcceptsNineSamplers)
 {
-  // Full crt-royale's mask-apply pass needs 9 samplers (Source + 8). This is within the raised
-  // 16-sampler ceiling (Dolphin utility descriptor set), so it must translate successfully.
+  // Full crt-royale's mask-apply pass needs 9 samplers (Source + 8), which is the case that made
+  // raising the ceiling past Dolphin's original 8 necessary in the first place.
+  static_assert(SLANG_MAX_SAMPLERS >= 9, "crt-royale's mask-apply pass would be rejected");
   const auto result = TranslateSlangPass(MakeShaderWithSamplers(8), {}, {}, /*flip_clip_y=*/false);
   EXPECT_TRUE(result.ok) << result.error;
   EXPECT_EQ(result.sampler_names.size(), 9u);
 }
 
-TEST(SlangTranslator, RejectsMoreThanSixteenSamplers)
+TEST(SlangTranslator, EnforcesTheSamplerCeilingAtSlangMaxSamplers)
 {
-  // Source + 16 = 17 distinct samplers -> over the 16 limit.
-  const auto result = TranslateSlangPass(MakeShaderWithSamplers(16), {}, {}, /*flip_clip_y=*/false);
-  EXPECT_FALSE(result.ok);
-  EXPECT_FALSE(result.error.empty());
+  // Both bounds are driven by SLANG_MAX_SAMPLERS rather than by a literal 16, so this fails if the
+  // enforcement in TranslateSlangPass ever stops agreeing with the constant it publishes -- an
+  // off-by-one, or a second hard-coded limit added elsewhere in the sampler scan. The constant
+  // itself is MAX_PIXEL_SHADER_SAMPLERS, which is what the backends size their descriptor ranges
+  // from; that leg is now true by construction (SlangTranslator.h, VideoBackends/Vulkan/
+  // Constants.h) rather than asserted here, because the assertion that used to stand in for it --
+  // EXPECT_EQ(MAX_PIXEL_SHADER_SAMPLERS, 16u) -- restated one of its own operands and could not
+  // have failed. It did not catch D3D12's utility root signature declaring 8 while the translator
+  // emitted up to 16, which silently blanked crt-royale (UAT finding 1).
+  const int extra_at_ceiling = static_cast<int>(SLANG_MAX_SAMPLERS) - 1;  // + Source == the ceiling
+
+  const auto at_ceiling =
+      TranslateSlangPass(MakeShaderWithSamplers(extra_at_ceiling), {}, {}, /*flip_clip_y=*/false);
+  EXPECT_TRUE(at_ceiling.ok) << at_ceiling.error;
+  EXPECT_EQ(at_ceiling.sampler_names.size(), SLANG_MAX_SAMPLERS);
+
+  const auto over_ceiling = TranslateSlangPass(MakeShaderWithSamplers(extra_at_ceiling + 1), {}, {},
+                                               /*flip_clip_y=*/false);
+  EXPECT_FALSE(over_ceiling.ok);
+  EXPECT_NE(over_ceiling.error.find(std::to_string(SLANG_MAX_SAMPLERS)), std::string::npos)
+      << over_ceiling.error;
 }
 
-TEST(SlangTranslator, ClipYFlipMatchesFramebufferShaderGen)
+// ClipYFlipMatchesFramebufferShaderGen used to sit here, asserting SlangNeedsClipYFlip's value for
+// each of the four APITypes. It was deleted with the identical duplication in the test below: those
+// four values are static_asserted next to the predicate, and its stated purpose -- agreeing with
+// FramebufferShaderGen::GenerateScreenQuadVertexShader -- was never something it checked. That
+// cross-reference is recorded where it can be acted on, in the comment above the predicate itself.
+TEST(SlangTranslator, PresentClipYFlipDiffersFromTextureTargetOnOpenGL)
 {
-  // Same rule as FramebufferShaderGen::GenerateScreenQuadVertexShader.
-  EXPECT_TRUE(SlangNeedsClipYFlip(APIType::Vulkan));
-  EXPECT_TRUE(SlangNeedsClipYFlip(APIType::OpenGL));
-  EXPECT_FALSE(SlangNeedsClipYFlip(APIType::D3D));
-  EXPECT_FALSE(SlangNeedsClipYFlip(APIType::Metal));
+  // The presented framebuffer's row 0 is the display's bottom scanline on OpenGL, not the image's
+  // top row, so the flip that is right for a texture target inverts the screen there. Every other
+  // backend answers both questions the same way.
+  //
+  // Only the relationship between the two predicates is asserted here. Each predicate's own value
+  // per backend is fixed by the four static_asserts beside it in SlangTranslator.h, and repeating
+  // those as EXPECTs was dead weight: the translation unit containing the duplicate cannot compile
+  // unless the assertions already hold, so the test could never report a failure the build had not
+  // already reported first. What no static_assert can state is the cross-predicate invariant, since
+  // it is the pairing of the two that encodes the OpenGL split.
+  EXPECT_NE(SlangNeedsPresentClipYFlip(APIType::OpenGL), SlangNeedsClipYFlip(APIType::OpenGL));
+  for (const APIType api : {APIType::Vulkan, APIType::D3D, APIType::Metal})
+    EXPECT_EQ(SlangNeedsPresentClipYFlip(api), SlangNeedsClipYFlip(api));
 }
 
 TEST(SlangTranslator, EmitsClipYFlipWhenRequested)

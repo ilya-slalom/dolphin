@@ -1685,21 +1685,10 @@ class SettingsFragmentPresenter(
             )
         )
 
-        sl.add(
-            SingleChoiceSetting(
-                context,
-                IntSetting.GFX_ENHANCE_POST_PROCESS_RENDERER,
-                R.string.post_processing_renderer,
-                R.string.post_processing_renderer_description,
-                R.array.postProcessingRendererEntries,
-                R.array.postProcessingRendererValues
-            )
-        )
-
         // Post-processing effect picker. A single row whose subtitle shows the current selection
-        // (a shader, an arrow-joined chain, or "Off"). Tapping it opens a two-step picker:
-        // choose a category, then a shader, with "Select" (replace the chain with this shader) and
-        // "Add to Chain" (append it) actions. See openPostProcessingPicker.
+        // (the preset in use, or "Off"). Tapping it opens a two-step picker: choose a category,
+        // then a shader, with a single "Select" action that makes that shader the preset. Chains,
+        // and the "Add to Chain" action that built them, are gone. See openPostProcessingPicker.
         sl.add(
             RunRunnable(
                 context,
@@ -2946,17 +2935,26 @@ class SettingsFragmentPresenter(
         )
     }
 
-    // Builds the subtitle for the post-processing effect row: "Off" when empty, the single preset
-    // name, or an arrow-joined chain (e.g. "crt/crt-royale → interpolation/sharp-bilinear").
+    // Kotlin mirror of VideoCommon::ResolveConfiguredPreset (PostProcessingConfig.cpp): only the
+    // first entry of the stored value is ever loaded, and a GFX.ini written before chains were
+    // removed can still hold several joined with ';'. Every place this screen reads the setting has
+    // to agree with what runs -- the row's subtitle and the radio button the picker pre-selects.
+    // Kotlin's trim() drops more than the C++ side's " \t", which only helps: a hand-edited INI can
+    // leave a stray \r behind.
+    private fun resolveConfiguredPreset(spec: String): String = spec.substringBefore(';').trim()
+
+    // Builds the subtitle for the post-processing effect row: "Off" when nothing is configured,
+    // otherwise the preset in use. A legacy chain shows only the entry that loads; the arrow-joined
+    // rendering this used to do ("a → b") advertised passes that no backend runs any more.
     private fun describePostShaderSelection(spec: String): CharSequence {
-        if (spec.isEmpty()) return context.getString(R.string.off)
-        return spec.split(';').filter { it.isNotEmpty() }.joinToString(" → ")
+        val preset = resolveConfiguredPreset(spec)
+        if (preset.isEmpty()) return context.getString(R.string.off)
+        return preset
     }
 
     // Two-step post-processing picker. Step 1 lists the shader categories (top-level folders of
     // the buildbot pack) plus "All"; step 2 lists the shaders in the chosen category with "Select"
-    // (replace the whole chain with this one shader) and "Add to Chain" (append it) actions. The
-    // "Add to Chain" button is only offered once at least one shader is already selected.
+    // (replace with this one shader) action.
     private fun openPostProcessingPicker() {
         val shaderList = PostProcessing.shaderList
         if (shaderList.isEmpty()) {
@@ -2987,8 +2985,7 @@ class SettingsFragmentPresenter(
     }
 
     // Step 2 of the picker: the shaders in the chosen category, prefixed with "Off". Radio-style
-    // single selection; "Select" replaces the current chain with the highlighted shader, while
-    // "Add to Chain" appends it. "Add to Chain" is hidden until at least one shader is selected.
+    // single selection; "Select" sets the highlighted shader as the configured preset.
     private fun showPostShaderList(category: String, presets: List<String>) {
         val settings = this.settings ?: return
         if (presets.isEmpty()) {
@@ -3000,38 +2997,27 @@ class SettingsFragmentPresenter(
         val entries = arrayOf(off, *presets.toTypedArray())
         val values = arrayOf("", *presets.toTypedArray())
 
-        // Highlight whichever entry matches the last preset in the current chain, if any.
-        val current = StringSetting.GFX_ENHANCE_POST_SHADER.string
-        val lastPreset = current.split(';').lastOrNull { it.isNotEmpty() } ?: ""
-        var checked = values.indexOf(lastPreset).let { if (it >= 0) it else 0 }
-        val hasSelection = current.isNotEmpty()
+        // Highlight whichever entry matches the preset in use. Resolved first, because `values`
+        // holds single preset ids: a stored "a;b" matched nothing, indexOf returned -1, and the
+        // fallback below turned that into 0 -- "Off" -- so one tap on Select silently disabled
+        // post-processing for a user who had only meant to look. The fallback still lands on "Off"
+        // when the configured preset is simply not in the category being browsed, which is honest:
+        // that list does not contain it, and "Off" is what the dialog is showing as checked.
+        val current = resolveConfiguredPreset(StringSetting.GFX_ENHANCE_POST_SHADER.string)
+        var checked = values.indexOf(current).let { if (it >= 0) it else 0 }
 
         val builder = MaterialAlertDialogBuilder(fragmentView.fragmentActivity)
             .setTitle(category)
             .setSingleChoiceItems(entries, checked) { _: DialogInterface, which: Int ->
                 checked = which
             }
-            // "Select": reset the chain to just the highlighted preset (empty selection = Off).
+            // "Select": set the highlighted preset (empty selection = Off).
             .setPositiveButton(R.string.post_processing_select) { _: DialogInterface, _: Int ->
                 StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, values[checked])
                 fragmentView.onSettingChanged()
                 loadSettingsList()
             }
             .setNeutralButton(R.string.cancel, null)
-
-        // "Add to Chain": append the highlighted preset to the existing chain. Only meaningful
-        // when something is already selected, so it is offered only in that case.
-        if (hasSelection) {
-            builder.setNegativeButton(R.string.post_processing_chain_add) { _: DialogInterface, _: Int ->
-                val chosen = values[checked]
-                if (chosen.isEmpty()) return@setNegativeButton  // "Off" has nothing to append.
-                val existing = StringSetting.GFX_ENHANCE_POST_SHADER.string
-                val updated = if (existing.isEmpty()) chosen else "$existing;$chosen"
-                StringSetting.GFX_ENHANCE_POST_SHADER.setString(settings, updated)
-                fragmentView.onSettingChanged()
-                loadSettingsList()
-            }
-        }
 
         builder.show()
     }
