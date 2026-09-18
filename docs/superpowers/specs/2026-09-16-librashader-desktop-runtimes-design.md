@@ -222,7 +222,7 @@ library missing a needed symbol; and an OpenGL context below librashader's floor
 
 `MultipassPostProcessing` therefore stays in the tree, and it is not dead code — it is the
 fallback. The extent of its unit coverage should not be overstated, though: no test
-instantiates it, because it needs a GPU. What the 22 targets under
+instantiates it, because it needs a GPU. What the 20 targets under
 `Source/UnitTests/VideoCommon/PostProcessing/` cover is the CPU-side machinery it drives —
 preset parsing, pass sizing, the pass graph, mip generation, slang translation and
 compilation — several pieces of which the librashader path uses too.
@@ -536,7 +536,9 @@ rediscover them, and so that neither is mistaken for something nobody noticed.
    means deciding what a "frame" means to a shader that is invoked once per eye, which is a
    design question about stereo rather than about librashader — the honest answers are to
    increment on the first eye only, or to advance the counter in `Present` and pass it down. The
-   visible effect is limited to animated presets in two of Dolphin's stereo modes.
+   visible effect is limited to animated presets, in the three stereo modes that blit once per eye:
+   Side-by-Side and Top-and-Bottom (`Present.cpp:908-916`) and quad-buffered stereo on OpenGL
+   (`:893-906`, taken when `bUsesExplictQuadBuffering`).
 
 ## 9. Verification
 

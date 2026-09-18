@@ -204,9 +204,14 @@ std::unique_ptr<VideoCommon::LibrashaderRuntime> AbstractGfx::CreateLibrashaderR
 
 std::unique_ptr<VideoCommon::IPostProcessor> AbstractGfx::CreatePostProcessor()
 {
-  // librashader is the engine of record wherever its library loaded. The built-in multipass
-  // executor is the fallback for platforms with no vendored binary -- Android x86_64 and Linux --
-  // not a user-selectable alternative.
+  // librashader is the engine of record where this backend has a runtime and that runtime says it
+  // can run here -- not merely "wherever the library loaded", which is wrong in both directions:
+  // Software and Null get the built-in executor from the null CreateLibrashaderRuntime() above even
+  // with the library perfectly usable, and a backend that does have a runtime still falls back when
+  // IsSupported() finds the library missing, a symbol unresolved, or an OpenGL context below
+  // librashader's floor. The built-in multipass executor is that fallback, and also the only engine
+  // on the platforms with no vendored binary -- Android x86_64 and Linux. Neither is
+  // user-selectable. Spec section 4.3 carries the full rule.
   std::unique_ptr<VideoCommon::LibrashaderRuntime> runtime = CreateLibrashaderRuntime();
   if (runtime && runtime->IsSupported())
     return std::make_unique<VideoCommon::LibrashaderPostProcessing>(std::move(runtime));
