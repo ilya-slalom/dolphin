@@ -38,7 +38,9 @@ constexpr bool ChooseDynamicRendering(bool feature_enabled, bool has_begin_rende
   return feature_enabled && has_begin_rendering_entry_point;
 }
 
+// The full truth table, so the rule is enforced at compile time wherever this header is included.
 static_assert(ChooseDynamicRendering(true, true));
 static_assert(!ChooseDynamicRendering(true, false));
 static_assert(!ChooseDynamicRendering(false, true));
+static_assert(!ChooseDynamicRendering(false, false));
 }  // namespace VideoCommon

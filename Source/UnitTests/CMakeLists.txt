@@ -18,8 +18,11 @@ add_custom_command(TARGET tests POST_BUILD
 # can execute. File::GetBundleDirectory() falls back to the executable's own directory when there is
 # no bundle, so fabricating Contents/Frameworks next to the non-bundle tests binary makes the loader
 # resolve correctly. This is a test-harness convenience, not a fix for macOS dolphin-nogui, whose
-# inability to load librashader is documented at DolphinQt/CMakeLists.txt:689-690.
-if(APPLE AND ENABLE_VULKAN)
+# inability to load librashader is documented at DolphinQt/CMakeLists.txt:697-698.
+#
+# Not gated on ENABLE_VULKAN: none of the tests that need the library touch Vulkan, and gating it
+# would silently skip LibrashaderParameters.EnumerateFixturePreset in a build with Vulkan off.
+if(APPLE)
   set(LIBRASHADER_DYLIB "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/macos-arm64/librashader.dylib")
   if(EXISTS "${LIBRASHADER_DYLIB}")
     add_custom_command(TARGET tests POST_BUILD
@@ -31,8 +34,9 @@ if(APPLE AND ENABLE_VULKAN)
 endif()
 
 # Copy librashader.dll next to the test binary so EnumerateFixturePreset can execute on Windows. The
-# existing copy into Binaries (Source/Core/CMakeLists.txt:101-123) does not cover Binaries/Tests.
-if(WIN32 AND ENABLE_VULKAN)
+# existing copy into Binaries (Source/Core/CMakeLists.txt:104-126) does not cover Binaries/Tests.
+# Not gated on ENABLE_VULKAN, for the same reason as the APPLE branch above.
+if(WIN32)
   set(LIBRASHADER_DLL "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/windows-x64/librashader.dll")
   if(EXISTS "${LIBRASHADER_DLL}")
     add_custom_command(TARGET tests POST_BUILD

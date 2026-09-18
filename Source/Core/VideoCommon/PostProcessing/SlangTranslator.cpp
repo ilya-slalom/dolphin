@@ -21,10 +21,6 @@ namespace VideoCommon
 {
 namespace
 {
-// Matches the Vulkan utility descriptor set's combined-image-sampler count
-// (NUM_UTILITY_PIXEL_SAMPLERS). crt-royale's mask-apply pass needs 9.
-constexpr size_t MAX_SAMPLERS = 16;
-
 std::string_view Trim(std::string_view s)
 {
   const auto first = s.find_first_not_of(" \t\r\n");
@@ -612,11 +608,11 @@ TranslatedPass TranslateSlangPass(const SlangShaderSource& shader,
   scan_stage(shader.vertex_source);
   scan_stage(shader.fragment_source);
 
-  if (sampler_names.size() > MAX_SAMPLERS)
+  if (sampler_names.size() > SLANG_MAX_SAMPLERS)
   {
     result.ok = false;
     result.error = "pass references " + std::to_string(sampler_names.size()) +
-                   " samplers; max is " + std::to_string(MAX_SAMPLERS);
+                   " samplers; max is " + std::to_string(SLANG_MAX_SAMPLERS);
     return result;
   }
 

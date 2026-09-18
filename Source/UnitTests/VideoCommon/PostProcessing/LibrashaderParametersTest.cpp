@@ -6,11 +6,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "Common/CommonPaths.h"
+#include "Common/Config/Config.h"
+#include "Common/Config/Layer.h"
 #include "Common/FileUtil.h"
 #include "VideoCommon/PostProcessing/LibrashaderParameters.h"
 
@@ -111,6 +115,20 @@ TEST(LibrashaderParameters, FormatOverridesRoundTrips)
   EXPECT_FLOAT_EQ(parsed[1].second, 0.75f);
 }
 
+TEST(LibrashaderParameters, FormatOverridesSkipsNamesTheFormatCannotHold)
+{
+  // ';' separates entries and '=' splits name from value, so a name containing either cannot be
+  // written: "beam;width=2.0" would read back as a parameter "beam" plus a malformed entry, and
+  // "gamma=out=1.0" as a parameter "gamma" set to nothing parseable. Both would silently apply the
+  // wrong value to a *different* parameter, so such names are dropped entirely rather than mangled.
+  // No name in the shader pack contains either character; this is defence against a future one.
+  const Overrides overrides = {{"beam;width", 2.0f}, {"gamma=out", 1.0f}, {"contrast", 0.75f}};
+  const std::vector<std::string> entries = FormatOverrides(overrides);
+
+  ASSERT_EQ(entries.size(), 1u);
+  EXPECT_EQ(entries[0], "contrast=0.750000");
+}
+
 TEST(LibrashaderParameters, KeyForPresetIsRelativeToTheShadersRoot)
 {
   // The key is the resolved preset's path relative to whichever shaders root it was found in, so
@@ -136,6 +154,98 @@ TEST(LibrashaderParameters, KeyForPresetFallsBackToTheResolvedName)
   EXPECT_EQ(KeyForPreset("", "crt/crt-royale"), "crt/crt-royale");
   EXPECT_EQ(KeyForPreset("", "crt/crt-royale;misc/image-adjustment"), "crt/crt-royale");
   EXPECT_EQ(KeyForPreset(File::GetUserPath(D_SHADERS_IDX) + "loose.slangp", "\tloose "), "loose");
+}
+
+namespace
+{
+// Save writes through Config::GetLayer(LayerType::Base), which Config::Init does not create -- it
+// installs CurrentRun and nothing else -- and dereferences it without checking. Config::AddLayer is
+// the only public way to install a Base layer and it demands a loader, so this one stores nothing:
+// both halves are no-ops, which leaves the layer's contents entirely in the test's hands and, more
+// importantly, means ~Layer's unconditional Save() cannot reach a real GFX.ini.
+class NullLoader final : public Config::ConfigLayerLoader
+{
+public:
+  NullLoader() : ConfigLayerLoader(Config::LayerType::Base) {}
+  void Load(Config::Layer*) override {}
+  void Save(Config::Layer*) override {}
+};
+
+constexpr char PRESET_KEY[] = "crt/crt-royale.slangp";
+
+std::optional<std::string> StoredValue(const std::string& preset_relative_path)
+{
+  return Config::GetAsString(
+      Config::Location{Config::System::GFX, "LibrashaderParameters", preset_relative_path});
+}
+}  // namespace
+
+class LibrashaderParametersStorage : public testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    Config::Init();
+    Config::AddLayer(std::make_unique<NullLoader>());
+  }
+
+  void TearDown() override { Config::Shutdown(); }
+};
+
+TEST_F(LibrashaderParametersStorage, SaveThenLoadRoundTrips)
+{
+  Save(PRESET_KEY, {{"brightness", 1.5f}, {"contrast", 0.75f}});
+
+  // Assert the stored string, not just what Load gives back: this is the text that ends up in a
+  // user's GFX.ini, so a change to it silently discards every override already on disk. Load and
+  // Save agreeing with each other would not catch that.
+  const std::optional<std::string> stored = StoredValue(PRESET_KEY);
+  ASSERT_TRUE(stored.has_value());
+  EXPECT_EQ(*stored, "brightness=1.500000;contrast=0.750000");
+
+  const Overrides loaded = Load(PRESET_KEY);
+  ASSERT_EQ(loaded.size(), 2u);
+  EXPECT_EQ(loaded[0].first, "brightness");
+  EXPECT_FLOAT_EQ(loaded[0].second, 1.5f);
+  EXPECT_EQ(loaded[1].first, "contrast");
+  EXPECT_FLOAT_EQ(loaded[1].second, 0.75f);
+}
+
+TEST_F(LibrashaderParametersStorage, LoadReturnsEmptyForAPresetWithNothingStored)
+{
+  // The common case by far: most presets are never edited, and the post-processor calls Load on
+  // every chain build regardless.
+  EXPECT_TRUE(Load(PRESET_KEY).empty());
+  EXPECT_TRUE(Load("").empty());
+}
+
+TEST_F(LibrashaderParametersStorage, SavingNothingRemovesTheKeyRatherThanEmptyingIt)
+{
+  Save(PRESET_KEY, {{"brightness", 1.5f}});
+  ASSERT_TRUE(StoredValue(PRESET_KEY).has_value());
+
+  // Resetting every parameter must delete the key. An empty string left behind would be a stale
+  // "this preset was customised" marker in the INI, and it is what makes "only non-default values
+  // are persisted" true rather than approximately true.
+  Save(PRESET_KEY, {});
+  EXPECT_FALSE(StoredValue(PRESET_KEY).has_value());
+  EXPECT_TRUE(Load(PRESET_KEY).empty());
+}
+
+TEST_F(LibrashaderParametersStorage, GenerationAdvancesOnEveryWriteIncludingDeletes)
+{
+  // The video thread polls this counter once per frame and rebuilds the chain when it moves; it is
+  // the whole mechanism by which an edit in the dialog reaches the running game. A delete has to
+  // bump it as well, or resetting a parameter would leave the old value on screen until something
+  // else forced a rebuild.
+  const u32 before = CurrentGeneration();
+
+  Save(PRESET_KEY, {{"brightness", 1.5f}});
+  const u32 after_write = CurrentGeneration();
+  EXPECT_EQ(after_write, before + 1);
+
+  Save(PRESET_KEY, {});
+  EXPECT_EQ(CurrentGeneration(), after_write + 1);
 }
 
 // Both Enumerate tests are limited to the two platforms where this repo ships a librashader binary.

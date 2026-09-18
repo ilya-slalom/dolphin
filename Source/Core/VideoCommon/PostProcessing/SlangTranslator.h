@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Common/CommonTypes.h"
+#include "VideoCommon/Constants.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
 #include "VideoCommon/TextureConfig.h"
 #include "VideoCommon/VideoCommon.h"
@@ -50,6 +51,20 @@ constexpr std::string_view SlangSamplerGlslType(AbstractTextureType type)
   return type == AbstractTextureType::Texture_2DArray ? "sampler2DArray" : "sampler2D";
 }
 
+// The most texture samplers TranslateSlangPass will accept in one pass; beyond it the pass is
+// rejected with an error rather than translated into a shader the backends cannot bind.
+// (crt-royale's mask-apply pass needs 9, so this is not a theoretical ceiling.)
+//
+// Derived, not chosen. A translated pass is an ordinary Dolphin pixel shader, so the number of
+// samplers it may declare is exactly the pixel sampler budget every backend already promises --
+// deriving it means the two cannot drift, which is the failure this replaced: the ceiling used to
+// be a local 16 in SlangTranslator.cpp justified by a comment naming Vulkan's
+// NUM_UTILITY_PIXEL_SAMPLERS, with nothing tying the two together and no backend obliged to agree.
+// Vulkan's constant is now derived from the same place (VideoBackends/Vulkan/Constants.h). What
+// remains testable is that the enforcement below actually uses this number: see
+// SlangTranslatorTest's boundary cases.
+constexpr size_t SLANG_MAX_SAMPLERS = MAX_PIXEL_SHADER_SAMPLERS;
+
 // The set of texture samplers a pass reads, in binding order (index 0..N-1).
 // Includes "Source", "Original", each referenced alias, and each referenced LUT.
 // GLSL scalar/vector/matrix category of a UBO member, used for std140 packing by the executor.
@@ -78,7 +93,7 @@ struct TranslatedPass
   // executor packs the uniform buffer to match this std140 layout.
   std::vector<UboMember> ubo_members;
   bool ok = false;
-  std::string error;  // set when ok == false (e.g. more samplers than MAX_SAMPLERS, which is 16)
+  std::string error;  // set when ok == false (e.g. more samplers than SLANG_MAX_SAMPLERS)
 };
 
 // True when the injected fullscreen-triangle vertex shader must negate clip-space Y. NDC Y is

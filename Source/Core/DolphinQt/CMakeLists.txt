@@ -690,16 +690,18 @@ if(APPLE)
   endif()
 
   # Copy librashader into the bundle, next to MoltenVK (see Librashader::LibraryPath).
+  # Deliberately not gated on ENABLE_VULKAN: librashader drives Metal here, and D3D11, D3D12 and
+  # OpenGL elsewhere, so gating the copy on Vulkan would leave a -DENABLE_VULKAN=OFF build with no
+  # library for any of them -- and it would fail silently, since a missing library is exactly the
+  # supported "librashader unavailable, use the built-in engine" state.
   # Note: macOS dolphin-nogui cannot load librashader because it has no .app bundle for
   # File::GetBundleDirectory() to resolve against. This is a known, accepted limitation.
-  if(ENABLE_VULKAN)
-    set(LIBRASHADER_DYLIB "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/macos-arm64/librashader.dylib")
-    if(EXISTS "${LIBRASHADER_DYLIB}")
-      target_sources(dolphin-emu PRIVATE "${LIBRASHADER_DYLIB}")
-      set_source_files_properties("${LIBRASHADER_DYLIB}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
-    else()
-      message(STATUS "librashader.dylib not found; the librashader post-processing renderer will be unavailable.")
-    endif()
+  set(LIBRASHADER_DYLIB "${CMAKE_SOURCE_DIR}/Externals/librashader/lib/macos-arm64/librashader.dylib")
+  if(EXISTS "${LIBRASHADER_DYLIB}")
+    target_sources(dolphin-emu PRIVATE "${LIBRASHADER_DYLIB}")
+    set_source_files_properties("${LIBRASHADER_DYLIB}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+  else()
+    message(STATUS "librashader.dylib not found; the librashader post-processing renderer will be unavailable.")
   endif()
 
   if(POSTPROCESS_BUNDLE)

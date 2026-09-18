@@ -6,15 +6,30 @@
 #include "Core/Config/GraphicsSettings.h"
 #include "VideoCommon/PostProcessing/ChainDebugDump.h"
 
-// Config::SetCurrent needs an initialised config system, so both tests run under a fixture that
-// brackets them -- the same shape CoreTimingTest uses. The dump budget is process-global, so the
-// fixture re-arms it too rather than letting either test depend on running first.
+// Config::SetCurrent needs an initialised config system, so every test runs under a fixture that
+// brackets them -- the same shape CoreTimingTest uses.
+//
+// Bracketing is not by itself isolation. Two pieces of state outlive a test and both have to be
+// stated explicitly:
+//
+//  - The dump budget is process-global, so the fixture re-arms it at both ends.
+//  - Config::Info caches its value against a global version counter that only OnConfigChanged
+//    bumps; Config::Init and Config::Shutdown (Config.cpp:137-155) leave it alone. A fresh, empty
+//    layer therefore still answers Config::Get from whatever a previous test cached, so
+//    DisabledByDefault failed whenever it ran after a test that had turned the flag on -- which
+//    --gtest_shuffle duly arranged. Writing a setting is what refreshes its cache, so the fixture
+//    writes both of them. Writing the declared default rather than a literal keeps
+//    DisabledByDefault a test of the default rather than a test of this SetUp.
 class ChainDebugDumpTest : public testing::Test
 {
 protected:
   void SetUp() override
   {
     Config::Init();
+    Config::SetCurrent(Config::GFX_LIBRASHADER_DUMP_CHAIN_IMAGES,
+                       Config::GFX_LIBRASHADER_DUMP_CHAIN_IMAGES.GetDefaultValue());
+    Config::SetCurrent(Config::GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES,
+                       Config::GFX_LIBRASHADER_DUMP_CHAIN_DELAY_FRAMES.GetDefaultValue());
     VideoCommon::ResetChainImageDumpBudgetForTest();
   }
 

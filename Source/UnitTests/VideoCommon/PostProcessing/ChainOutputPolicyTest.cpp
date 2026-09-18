@@ -6,7 +6,6 @@
 #include "Common/MathUtil.h"
 #include "VideoCommon/PostProcessing/ChainOutputPolicy.h"
 
-using VideoCommon::ChooseDynamicRendering;
 using VideoCommon::ShouldRenderChainDirectly;
 
 // The chain may render straight into the backbuffer only when the draw rect IS the backbuffer:
@@ -53,13 +52,13 @@ TEST(ChainOutputPolicy, TargetWithoutAnImageUsesIntermediateTarget)
       ShouldRenderChainDirectly(MathUtil::Rectangle<int>(0, 0, 1920, 1080), 1920, 1080, false));
 }
 
-// Dynamic rendering needs both the enabled device feature and a resolvable vkCmdBeginRendering;
-// librashader looks the core name up itself and would silently fall back otherwise, so we only
-// ask for it when we know it will be taken.
-TEST(DynamicRenderingPolicy, RequiresFeatureAndEntryPoint)
-{
-  EXPECT_TRUE(ChooseDynamicRendering(true, true));
-  EXPECT_FALSE(ChooseDynamicRendering(true, false));
-  EXPECT_FALSE(ChooseDynamicRendering(false, true));
-  EXPECT_FALSE(ChooseDynamicRendering(false, false));
-}
+// DynamicRenderingPolicy.RequiresFeatureAndEntryPoint used to sit here: the four rows of
+// ChooseDynamicRendering's truth table, three of which were already static_asserted beside the
+// function. Since the assertions have to hold for this file to compile at all, the test could only
+// ever run green, and it reported nothing the build had not already refused. The missing fourth row
+// was added to ChainOutputPolicy.h instead, where it is checked in every translation unit that
+// includes the header rather than only when the test binary is built.
+//
+// ShouldRenderChainDirectly is constexpr too, but the cases above are not duplicates of anything:
+// they name concrete geometries (pillarbox, letterbox, stereo half, oversized rect, imageless
+// target) and exist to record which real situation each one stands for.
