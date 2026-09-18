@@ -428,8 +428,14 @@ re-run.
   runtimes were proven on the target GPU and need no extra DLL (`runtime-d3d12-static` links
   DXC statically).
 - **Metal and OpenGL runtimes are unproven here.** **Partially avoided:** both built
-  successfully (Task 5). OpenGL was exercised on Windows with crt-royale and rendered
-  correctly (Task 8). Metal compiled and links but was never run — no chain was created or
+  successfully (Task 5). OpenGL was exercised on Windows with crt-royale (Task 8): the chain
+  rendered correctly, but the whole frame presented upside down — including with post-processing
+  off, so the flip predated this work. Diagnosed as one predicate answering two different
+  questions and fixed in `d478b93f04`, which split it into `SlangNeedsClipYFlip` (texture
+  targets: `Vulkan || OpenGL`) and `SlangNeedsPresentClipYFlip` (the present blit: `Vulkan`
+  only, because OpenGL's lower-left window origin already accounts for it) —
+  see `SlangTranslator.h:100-127`. OpenGL renders correctly and upright as of that commit.
+  Metal compiled and links but was never run — no chain was created or
   executed on macOS (Task 9). The §4.3 fallback rule degrades backends whose runtime fails to
   initialise to the built-in executor, so Metal's unexercised state does not break the backend.
 - **`RunFrame` (state reconciliation) is the likeliest source of new bugs**, because a missed
