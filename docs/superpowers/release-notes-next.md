@@ -4,7 +4,7 @@
 
 ### Post-Processing
 
-1. **The Post-Processing Renderer setting has been removed.** librashader is now used wherever it is available (desktop Windows, desktop macOS, Android arm64). On platforms without a vendored librashader binary (desktop Linux, Android x86_64), Dolphin automatically falls back to the built-in post-processor.
+1. **The Post-Processing Renderer setting has been removed.** There is no engine to pick any more: a preset runs through librashader whenever the active graphics backend has a librashader runtime *and* that runtime reports it can run on this system. That now covers D3D11, D3D12, Vulkan and OpenGL on Windows; Metal, Vulkan (MoltenVK) and OpenGL on macOS; and Vulkan on Android arm64-v8a. Dolphin uses its built-in post-processor everywhere else: the Software and Null backends, platforms with no vendored librashader binary (desktop Linux, Android x86_64), and any case where the library is present but unusable — a symbol that will not resolve, or an OpenGL context below librashader's floor (GLES, or desktop GL below GLSL 330). The fallback is automatic, and neither engine is user-selectable.
 
 2. **Shader chains are no longer supported.** The post-processing shader field now accepts a single preset path instead of a semicolon-separated chain. Existing configurations holding a multi-preset chain will resolve to the first entry in the chain. This matches PCSX2's single-preset model and reflects what librashader was already doing silently on the librashader path.
 
