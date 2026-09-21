@@ -202,6 +202,7 @@ struct VideoConfig final
   bool bVSyncActive = false;
   bool bWidescreenHack = false;
   AspectMode aspect_mode{};
+  bool bIntegerScaling = false;
   int custom_aspect_width = 1;
   int custom_aspect_height = 1;
   AspectMode suggested_aspect_mode{};

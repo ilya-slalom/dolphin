@@ -66,8 +66,9 @@ private:
   // texture, or nullptr on allocation/pipeline failure. The shader-read transition is the
   // runtime's job: RunFrame() transitions whichever texture it is handed.
   AbstractTexture* DownscaleToNativeSource(const SlangSourceDownscalePlan& plan,
-                                           const AbstractTexture* src_tex, u32 native_width,
-                                           u32 native_height);
+                                           const AbstractTexture* src_tex,
+                                           const MathUtil::Rectangle<int>& src, int src_layer,
+                                           u32 native_width, u32 native_height);
 
   // (Re)builds the downscale pipeline. The box pixel shader bakes the factor as a literal, so it is
   // rebuilt whenever the factor, filter kind (box vs bilinear), or color format changes.

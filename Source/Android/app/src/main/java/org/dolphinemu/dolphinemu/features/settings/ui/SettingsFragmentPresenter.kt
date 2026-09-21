@@ -1606,6 +1606,14 @@ class SettingsFragmentPresenter(
                 R.array.aspectRatioValues
             )
         )
+        sl.add(
+            SwitchSetting(
+                context,
+                BooleanSetting.GFX_INTEGER_SCALING,
+                R.string.integer_scaling,
+                R.string.integer_scaling_description
+            )
+        )
 
         sl.add(HeaderSetting(context, R.string.graphics_more_settings, 0))
         sl.add(

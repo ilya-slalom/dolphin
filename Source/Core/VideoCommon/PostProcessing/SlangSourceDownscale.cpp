@@ -9,13 +9,13 @@ SlangSourceDownscalePlan PlanSlangSourceDownscale(u32 src_w, u32 src_h, u32 nati
 {
   SlangSourceDownscalePlan plan;
 
-  // No native size to target, or the source is not larger than native on either axis: pass through.
-  if (native_w == 0 || native_h == 0)
-    return plan;
-  if (src_w <= native_w && src_h <= native_h)
+  // A missing source or native size cannot be normalized.
+  if (src_w == 0 || src_h == 0 || native_w == 0 || native_h == 0)
     return plan;
 
-  plan.downscale = true;
+  // Match PCSX2's shader-chain input contract: always materialize an exact native-sized source.
+  // At 1x this is a 1:1 copy, but it still applies cropping and texture-layer selection.
+  plan.normalize = true;
 
   // The box filter takes a single integer factor and averages the whole factor x factor footprint,
   // so it only applies when both axes reduce by the same exact whole multiple (>= 2).

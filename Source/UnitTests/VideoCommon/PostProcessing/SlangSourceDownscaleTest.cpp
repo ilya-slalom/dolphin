@@ -11,14 +11,23 @@ using namespace VideoCommon;
 TEST(SlangSourceDownscale, NoNativeSizeIsNoOp)
 {
   const SlangSourceDownscalePlan plan = PlanSlangSourceDownscale(1824, 1590, 0, 0);
-  EXPECT_FALSE(plan.downscale);
+  EXPECT_FALSE(plan.normalize);
 }
 
-// Source already at (or below) native resolution -- 1x internal res: nothing to do.
-TEST(SlangSourceDownscale, SourceAtNativeIsNoOp)
+// PCSX2 still materializes its native-sized chain input at 1x.
+TEST(SlangSourceDownscale, SourceAtNativeUsesBilinearCopy)
 {
   const SlangSourceDownscalePlan plan = PlanSlangSourceDownscale(608, 530, 608, 530);
-  EXPECT_FALSE(plan.downscale);
+  EXPECT_TRUE(plan.normalize);
+  EXPECT_FALSE(plan.box_filter);
+}
+
+// A source below native size is enlarged with the same bilinear normalization path.
+TEST(SlangSourceDownscale, SourceBelowNativeUsesBilinearCopy)
+{
+  const SlangSourceDownscalePlan plan = PlanSlangSourceDownscale(320, 240, 640, 480);
+  EXPECT_TRUE(plan.normalize);
+  EXPECT_FALSE(plan.box_filter);
 }
 
 // Exact integer upscale on both axes: box-average (SSAA) with the whole NxN footprint.
@@ -28,7 +37,7 @@ TEST(SlangSourceDownscale, ExactIntegerFactorUsesBoxFilter)
   {
     const SlangSourceDownscalePlan plan =
         PlanSlangSourceDownscale(608 * factor, 530 * factor, 608, 530);
-    EXPECT_TRUE(plan.downscale) << "factor=" << factor;
+    EXPECT_TRUE(plan.normalize) << "factor=" << factor;
     EXPECT_TRUE(plan.box_filter) << "factor=" << factor;
     EXPECT_EQ(plan.factor, factor) << "factor=" << factor;
   }
@@ -39,7 +48,7 @@ TEST(SlangSourceDownscale, FractionalFactorFallsBackToBilinear)
 {
   // 1824x1590 from 608x530 is 3x exactly, but 1500x1300 is a fractional multiple.
   const SlangSourceDownscalePlan plan = PlanSlangSourceDownscale(1500, 1300, 608, 530);
-  EXPECT_TRUE(plan.downscale);
+  EXPECT_TRUE(plan.normalize);
   EXPECT_FALSE(plan.box_filter);
 }
 
@@ -47,7 +56,7 @@ TEST(SlangSourceDownscale, FractionalFactorFallsBackToBilinear)
 TEST(SlangSourceDownscale, MismatchedAxisFactorsFallBackToBilinear)
 {
   const SlangSourceDownscalePlan plan = PlanSlangSourceDownscale(608 * 2, 530 * 3, 608, 530);
-  EXPECT_TRUE(plan.downscale);
+  EXPECT_TRUE(plan.normalize);
   EXPECT_FALSE(plan.box_filter);
 }
 
@@ -55,6 +64,6 @@ TEST(SlangSourceDownscale, MismatchedAxisFactorsFallBackToBilinear)
 TEST(SlangSourceDownscale, SingleAxisOverNativeFallsBackToBilinear)
 {
   const SlangSourceDownscalePlan plan = PlanSlangSourceDownscale(608 * 2, 530, 608, 530);
-  EXPECT_TRUE(plan.downscale);
+  EXPECT_TRUE(plan.normalize);
   EXPECT_FALSE(plan.box_filter);
 }

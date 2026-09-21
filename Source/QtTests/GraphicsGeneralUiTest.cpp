@@ -37,6 +37,7 @@ TEST(GraphicsGeneralUiTest, FormOwnsTheGeneralGraphicsStructure)
   EXPECT_EQ(ui.basicOptionsLayout->itemAtPosition(0, 0)->widget(), ui.vsyncCheckBox);
   EXPECT_EQ(ui.basicOptionsLayout->itemAtPosition(0, 1)->widget(), ui.fullscreenCheckBox);
   EXPECT_EQ(ui.basicOptionsLayout->itemAtPosition(1, 0)->widget(), ui.precisionFrameTimingCheckBox);
+  EXPECT_EQ(ui.basicOptionsLayout->itemAtPosition(1, 1)->widget(), ui.integerScalingCheckBox);
   EXPECT_EQ(ui.otherLayout->itemAtPosition(0, 0)->widget(), ui.renderToMainWindowCheckBox);
   EXPECT_EQ(ui.otherLayout->itemAtPosition(0, 1)->widget(), ui.autoAdjustWindowSizeCheckBox);
   EXPECT_EQ(ui.shaderCompilationLayout->itemAtPosition(0, 0)->widget(),

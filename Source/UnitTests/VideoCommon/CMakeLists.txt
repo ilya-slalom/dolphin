@@ -1,6 +1,7 @@
 add_dolphin_test(VertexLoaderTest VertexLoaderTest.cpp)
 add_dolphin_test(VideoConfigTest VideoConfigTest.cpp)
 add_dolphin_test(PerformanceMetricsTest PerformanceMetricsTest.cpp)
+add_dolphin_test(PresentationScalingTest PresentationScalingTest.cpp)
 add_dolphin_test(SlangPresetTest PostProcessing/SlangPresetTest.cpp)
 add_dolphin_test(SlangShaderTest PostProcessing/SlangShaderTest.cpp)
 add_dolphin_test(PassSizingTest PostProcessing/PassSizingTest.cpp)

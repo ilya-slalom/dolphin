@@ -20,6 +20,7 @@
 #include "VideoCommon/OnScreenUI.h"
 #include "VideoCommon/PostProcessing/IPostProcessor.h"
 #include "VideoCommon/PostProcessing/MultipassPostProcessing.h"
+#include "VideoCommon/PresentationScaling.h"
 #include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
@@ -821,6 +822,22 @@ void Presenter::UpdateDrawRectangle()
     const MathUtil::Rectangle<int> rect = AdjustForCustomCrop(m_xfb_rect);
     int_draw_width = rect.GetWidth();
     int_draw_height = rect.GetHeight();
+  }
+
+  if (g_ActiveConfig.bIntegerScaling && m_xfb_entry)
+  {
+    const MathUtil::Rectangle<int> source_rect = AdjustForCustomCrop(m_xfb_rect);
+    int source_width = source_rect.GetWidth();
+    int source_height = source_rect.GetHeight();
+    if (g_ActiveConfig.stereo_per_eye_resolution_full)
+    {
+      if (g_ActiveConfig.stereo_mode == StereoMode::SideBySide)
+        source_width *= 2;
+      else if (g_ActiveConfig.stereo_mode == StereoMode::TopAndBottom)
+        source_height *= 2;
+    }
+    std::tie(int_draw_width, int_draw_height) =
+        ApplyIntegerScaling(int_draw_width, int_draw_height, source_width, source_height);
   }
 
   m_target_rectangle.left = static_cast<int>(std::round(win_width / 2.0 - int_draw_width / 2.0));

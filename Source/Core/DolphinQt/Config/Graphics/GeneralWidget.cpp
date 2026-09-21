@@ -62,6 +62,7 @@ void GeneralWidget::BindSettings()
                      m_game_layer);
   ConfigWidget::Bind(m_ui->customAspectHeightSpinBox, Config::GFX_CUSTOM_ASPECT_RATIO_HEIGHT,
                      m_game_layer);
+  ConfigWidget::Bind(m_ui->integerScalingCheckBox, Config::GFX_INTEGER_SCALING, m_game_layer);
   ConfigWidget::Bind(m_ui->vsyncCheckBox, Config::GFX_VSYNC, m_game_layer);
   ConfigWidget::Bind(m_ui->fullscreenCheckBox, Config::MAIN_FULLSCREEN, m_game_layer);
   ConfigWidget::Bind(m_ui->precisionFrameTimingCheckBox, Config::MAIN_PRECISION_FRAME_TIMING);
@@ -213,6 +214,11 @@ void GeneralWidget::AddDescriptions()
       "if emulation speed is below 100%.<br><br><dolphin_emphasis>If unsure, leave "
       "this "
       "unchecked.</dolphin_emphasis>");
+  static const char TR_INTEGER_SCALING_DESCRIPTION[] = QT_TR_NOOP(
+      "Scales the game image by a whole-number multiple of its rendered resolution whenever the "
+      "window is large enough. This produces more uniform pixels and gives post-processing "
+      "shaders an integer-sized output, at the cost of larger black borders."
+      "<br><br><dolphin_emphasis>If unsure, leave this unchecked.</dolphin_emphasis>");
   static const char TR_SHADER_COMPILE_SPECIALIZED_DESCRIPTION[] =
       QT_TR_NOOP("Ubershaders are never used. Stuttering will occur during shader "
                  "compilation, but GPU demands are low.<br><br>Recommended for low-end hardware. "
@@ -252,6 +258,8 @@ void GeneralWidget::AddDescriptions()
   ConfigWidget::SetDescription(m_ui->customAspectWidthSpinBox, tr("Custom Aspect Ratio Width"), {});
   ConfigWidget::SetDescription(m_ui->customAspectHeightSpinBox, tr("Custom Aspect Ratio Height"),
                                {});
+  ConfigWidget::SetDescription(m_ui->integerScalingCheckBox, {},
+                               tr(TR_INTEGER_SCALING_DESCRIPTION));
   ConfigWidget::SetDescription(m_ui->vsyncCheckBox, {}, tr(TR_VSYNC_DESCRIPTION));
   ConfigWidget::SetDescription(m_ui->fullscreenCheckBox, {}, tr(TR_FULLSCREEN_DESCRIPTION));
   ConfigWidget::SetDescription(m_ui->precisionFrameTimingCheckBox, {},

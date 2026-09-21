@@ -329,6 +329,8 @@
     <string name="texture_cache_to_state_description">Includes the contents of the embedded frame buffer (EFB) and upscaled EFB copies in save states. Fixes missing and/or non-upscaled textures/objects when loading states at the cost of additional save/load time.</string>
     <string name="aspect_ratio">Aspect Ratio</string>
     <string name="aspect_ratio_description">Select what aspect ratio to use when rendering</string>
+    <string name="integer_scaling">Integer Scaling</string>
+    <string name="integer_scaling_description">Scales the game image by a whole-number multiple of its rendered resolution when possible. This produces more uniform pixels at the cost of larger black borders.</string>
     <string name="shader_compilation_mode">Shader Compilation Mode</string>
     <string name="wait_for_shaders">Compile Shaders Before Starting</string>
     <string name="wait_for_shaders_description">This causes a delay when launching games, but will reduce stuttering early on.</string>

@@ -15,9 +15,10 @@ namespace VideoCommon
 // RetroArch does implicitly by consuming a console's own output.
 struct SlangSourceDownscalePlan
 {
-  // False when the source is already at (or below) native, or no native size was supplied: the
-  // caller feeds the source straight through.
-  bool downscale = false;
+  // True when a native-sized source texture should be materialized. PCSX2 performs this
+  // normalization even at 1x so cropped regions and selected texture layers are consistently
+  // presented to librashader.
+  bool normalize = false;
   // True to box-average the whole factor x factor footprint (real SSAA); false to bilinear-resample
   // a single tap. A box filter only fits an exact, equal integer factor on both axes.
   bool box_filter = false;
@@ -25,10 +26,10 @@ struct SlangSourceDownscalePlan
   u32 factor = 0;
 };
 
-// Chooses the downscale strategy from the source (internal-res) and native frame dimensions.
-// native_w/native_h of 0 mean "native size unknown" -> no downscale. The box filter is selected
-// only for an exact, equal integer factor on both axes (2x/3x/4x/...); every other reduction
-// (fractional multiplier, mismatched per-axis factors, a single axis over native) falls back to a
-// bilinear resample.
+// Chooses the source-normalization strategy from the selected source region and native frame
+// dimensions. native_w/native_h of 0 mean "native size unknown" and skip normalization. The box
+// filter is selected only for an exact, equal integer reduction on both axes (2x/3x/4x/...);
+// native-size copies, upscales, fractional reductions, and mismatched axis factors use bilinear
+// sampling.
 SlangSourceDownscalePlan PlanSlangSourceDownscale(u32 src_w, u32 src_h, u32 native_w, u32 native_h);
 }  // namespace VideoCommon

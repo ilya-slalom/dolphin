@@ -4,6 +4,7 @@
 #include "VideoCommon/PostProcessing/LibrashaderPostProcessing.h"
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <string>
 #include <utility>
@@ -24,14 +25,37 @@
 #include "VideoCommon/PostProcessing/LibrashaderLoader.h"
 #include "VideoCommon/PostProcessing/LibrashaderParameters.h"
 #include "VideoCommon/PostProcessing/LibrashaderRuntime.h"
+#include "VideoCommon/PostProcessing/LibrashaderUtilityShader.h"
 #include "VideoCommon/PostProcessing/PostProcessingConfig.h"
 #include "VideoCommon/PostProcessing/SlangTranslator.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/TextureConfig.h"
+#include "VideoCommon/VertexManagerBase.h"
 #include "VideoCommon/VideoConfig.h"
 
 namespace VideoCommon
 {
+namespace
+{
+struct alignas(16) SourceRectUniforms
+{
+  std::array<s32, 4> source_rect;
+  std::array<s32, 4> source_layer;
+};
+static_assert(sizeof(SourceRectUniforms) == 32);
+
+void UploadSourceRectUniforms(const AbstractTexture* texture,
+                              const MathUtil::Rectangle<int>& source_rect, int source_layer)
+{
+  const MathUtil::Rectangle<int> converted = g_gfx->ConvertFramebufferRectangle(
+      source_rect, texture->GetWidth(), texture->GetHeight());
+  const SourceRectUniforms uniforms{
+      {converted.left, converted.top, converted.GetWidth(), converted.GetHeight()},
+      {std::max(source_layer, 0), 0, 0, 0}};
+  g_vertex_manager->UploadUtilityUniforms(&uniforms, sizeof(uniforms));
+}
+}  // namespace
+
 std::string ResolvePresetPath(const std::string& preset_spec)
 {
   const std::string name = ResolveConfiguredPreset(preset_spec);
@@ -189,21 +213,9 @@ void LibrashaderPostProcessing::BuildPassthroughPipeline()
   // it went unnoticed while Vulkan was the only backend here; on D3D it inverts the whole frame.
   // This draw targets the presented framebuffer, so it asks SlangNeedsPresentClipYFlip and not
   // SlangNeedsClipYFlip: on OpenGL the latter is the answer for a texture target only.
-  const std::string flip_y = SlangNeedsPresentClipYFlip(g_backend_info.api_type) ?
-                                 "  gl_Position.y = -gl_Position.y;\n" :
-                                 "";
-  const std::string vertex_source =
-      "VARYING_LOCATION(0) out float2 v_tex0;\n"
-      "void main() {\n"
-      "  v_tex0 = float2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
-      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n" +
-      flip_y + "}\n";
-  const char* const pixel_source = "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
-                                   "VARYING_LOCATION(0) in float2 v_tex0;\n"
-                                   "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
-                                   "void main() {\n"
-                                   "  ocol0 = texture(samp0, float3(v_tex0, 0.0));\n"
-                                   "}\n";
+  const std::string vertex_source = GenerateLibrashaderFullscreenVertexShader(
+      SlangNeedsPresentClipYFlip(g_backend_info.api_type));
+  const std::string pixel_source = GenerateLibrashaderPassthroughPixelShader();
 
   m_passthrough_vertex = g_gfx->CreateShaderFromSource(ShaderStage::Vertex, vertex_source, nullptr,
                                                        "librashader passthrough vertex");
@@ -235,58 +247,13 @@ void LibrashaderPostProcessing::BuildDownscalePipeline(const SlangSourceDownscal
     return;
   }
 
-  // Fullscreen triangle. On the Y-down-clip-space backends the flip is what makes v_tex0 align
-  // with gl_FragCoord's top-left origin, so the bilinear path (v_tex0) and the box path (texelFetch
-  // on gl_FragCoord) share one orientation and both preserve the source's orientation into the
-  // native texture. On D3D and Metal clip space already agrees with gl_FragCoord, so adding it
-  // there inverts the native source instead.
-  const std::string flip_y =
-      SlangNeedsClipYFlip(g_backend_info.api_type) ? "  gl_Position.y = -gl_Position.y;\n" : "";
-  const std::string vertex_source =
-      "VARYING_LOCATION(0) out float2 v_tex0;\n"
-      "void main() {\n"
-      "  v_tex0 = float2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
-      "  gl_Position = float4(v_tex0 * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);\n" +
-      flip_y + "}\n";
-
-  std::string pixel_source;
-  if (plan.box_filter)
-  {
-    // Box average over the whole factor x factor footprint: real SSAA, cheap because the taps run
-    // over the small native target. The factor is baked as a literal so the loop bounds are
-    // compile-time constant (this is why the shader is rebuilt when the factor changes).
-    const std::string n = std::to_string(plan.factor);
-    const std::string n2 = std::to_string(plan.factor * plan.factor);
-    pixel_source = "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
-                   "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
-                   "void main() {\n"
-                   "  int2 base = int2(gl_FragCoord.xy) * " +
-                   n +
-                   ";\n"
-                   "  float4 sum = float4(0.0, 0.0, 0.0, 0.0);\n"
-                   "  for (int y = 0; y < " +
-                   n +
-                   "; ++y)\n"
-                   "    for (int x = 0; x < " +
-                   n +
-                   "; ++x)\n"
-                   "      sum += texelFetch(samp0, int3(base + int2(x, y), 0), 0);\n"
-                   "  ocol0 = sum * (1.0 / " +
-                   n2 +
-                   ".0);\n"
-                   "}\n";
-  }
-  else
-  {
-    // Fractional or mismatched factor: a single bilinear tap. Not SSAA, but correct and
-    // orientation-preserving; the exact-integer case above upgrades this to box averaging.
-    pixel_source = "SAMPLER_BINDING(0) uniform sampler2DArray samp0;\n"
-                   "VARYING_LOCATION(0) in float2 v_tex0;\n"
-                   "FRAGMENT_OUTPUT_LOCATION(0) out float4 ocol0;\n"
-                   "void main() {\n"
-                   "  ocol0 = texture(samp0, float3(v_tex0, 0.0));\n"
-                   "}\n";
-  }
+  // Fullscreen triangle. On the Y-down-clip-space backends the flip makes the bilinear path's
+  // v_tex0 align with gl_FragCoord's top-left origin. The box shader reads gl_FragCoord directly
+  // and has no texture-coordinate input, so do not export v_tex0 for it: a D3D12 driver can reject
+  // that otherwise-unused stage output while creating the pipeline state.
+  const std::string vertex_source = GenerateLibrashaderFullscreenVertexShader(
+      SlangNeedsClipYFlip(g_backend_info.api_type), !plan.box_filter);
+  const std::string pixel_source = GenerateLibrashaderSourceNormalizationPixelShader(plan);
 
   m_downscale_vertex = g_gfx->CreateShaderFromSource(ShaderStage::Vertex, vertex_source, nullptr,
                                                      "librashader downscale vertex");
@@ -313,7 +280,9 @@ void LibrashaderPostProcessing::BuildDownscalePipeline(const SlangSourceDownscal
 
 AbstractTexture*
 LibrashaderPostProcessing::DownscaleToNativeSource(const SlangSourceDownscalePlan& plan,
-                                                   const AbstractTexture* src_tex, u32 native_width,
+                                                   const AbstractTexture* src_tex,
+                                                   const MathUtil::Rectangle<int>& src,
+                                                   int src_layer, u32 native_width,
                                                    u32 native_height)
 {
   const AbstractTextureFormat format = src_tex->GetFormat();
@@ -354,6 +323,7 @@ LibrashaderPostProcessing::DownscaleToNativeSource(const SlangSourceDownscalePla
   // We overwrite every native texel, so discard the prior contents. Box averaging reads exact
   // texels (point sampler); the bilinear fallback needs a linear sampler.
   g_gfx->SetAndDiscardFramebuffer(m_native_source_fb.get());
+  UploadSourceRectUniforms(src_tex, src, src_layer);
   g_gfx->SetTexture(0, src_tex);
   g_gfx->SetSamplerState(0, plan.box_filter ? RenderState::GetPointSamplerState() :
                                               RenderState::GetLinearSamplerState());
@@ -431,18 +401,21 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     // (moire, invisible scanlines) and every pass runs against the oversized frame. Worse,
     // librashader's single bilinear tap subsamples that upscaled frame, aliasing high-frequency
     // content into the NTSC/scanline bands. We instead materialize a REAL native-resolution source
-    // by box-averaging the whole footprint (SSAA) for integer upscales, bilinear for fractional --
-    // so the chain computes geometry against native pixels while keeping supersampled detail. No-op
-    // at 1x or when no native size is supplied.
+    // by box-averaging the whole footprint (SSAA) for integer upscales and bilinear sampling for
+    // every other case. The normalization also applies the selected crop rectangle and texture
+    // layer, including at 1x, matching PCSX2's shader-chain input contract.
     const SlangSourceDownscalePlan plan = PlanSlangSourceDownscale(
-        src_tex->GetWidth(), src_tex->GetHeight(), native_width, native_height);
+        static_cast<u32>(src.GetWidth()), static_cast<u32>(src.GetHeight()), native_width,
+        native_height);
     const AbstractTexture* source = src_tex;
-    if (plan.downscale)
+    bool source_ready = !plan.normalize;
+    if (plan.normalize)
     {
       if (const AbstractTexture* native =
-              DownscaleToNativeSource(plan, src_tex, native_width, native_height))
+              DownscaleToNativeSource(plan, src_tex, src, src_layer, native_width, native_height))
       {
         source = native;
+        source_ready = true;
       }
       // The downscale draw left its own framebuffer bound; restore the caller's so that a
       // fall-through to the passthrough copy (on chain error) targets the screen, not the native
@@ -453,7 +426,7 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     }
 
     // UAT instrument for finding 3: dump chain input and output from one frame, once per run.
-    const bool dump_images = ShouldDumpChainImages();
+    const bool dump_images = source_ready && ShouldDumpChainImages();
     if (dump_images)
       DumpChainImage(source, "chain-input");
 
@@ -466,7 +439,8 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
     // into a draw-rect-sized target at viewport origin (0,0) so OutputSize == the drawn extent,
     // then blit that 1:1 into the backbuffer at the draw rect. This mirrors how ARMSX2 drives
     // librashader.
-    if (ShouldRenderChainDirectly(dst, framebuffer->GetWidth(), framebuffer->GetHeight(),
+    if (source_ready &&
+        ShouldRenderChainDirectly(dst, framebuffer->GetWidth(), framebuffer->GetHeight(),
                                   framebuffer->GetColorAttachment() != nullptr))
     {
       // The draw rect is the entire backbuffer, so OutputSize is identical whether the chain
@@ -495,7 +469,7 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
       // On error, fall through to the passthrough copy; it covers the full rect, so the discarded
       // clear is not missed.
     }
-    else
+    else if (source_ready)
     {
       // GetColorFormat() rather than the attachment's own format: they agree whenever there is an
       // attachment, and OpenGL's window framebuffer has none but still reports the format it
@@ -521,6 +495,7 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
         if (m_passthrough_pipeline)
         {
           g_gfx->SetFramebuffer(framebuffer);
+          UploadSourceRectUniforms(chain_output, chain_output->GetRect(), 0);
           g_gfx->SetTexture(0, chain_output);
           g_gfx->SetSamplerState(0, RenderState::GetPointSamplerState());
           g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));
@@ -537,6 +512,7 @@ void LibrashaderPostProcessing::BlitFromTexture(const MathUtil::Rectangle<int>& 
   if (!m_passthrough_pipeline)
     return;
 
+  UploadSourceRectUniforms(src_tex, src, src_layer);
   g_gfx->SetTexture(0, src_tex);
   g_gfx->SetSamplerState(0, RenderState::GetLinearSamplerState());
   g_gfx->SetViewportAndScissor(g_gfx->ConvertFramebufferRectangle(dst, framebuffer));

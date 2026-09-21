@@ -29,6 +29,7 @@
 #include <spirv_msl.hpp>
 #endif
 
+#include "VideoCommon/PostProcessing/LibrashaderUtilityShader.h"
 #include "VideoCommon/PostProcessing/SlangPreset.h"
 #include "VideoCommon/PostProcessing/SlangShader.h"
 #include "VideoCommon/PostProcessing/SlangTranslator.h"
@@ -262,6 +263,43 @@ const BackendShaderHeader& BackendNamed(const char* name)
   return BACKEND_HEADERS[0];
 }
 }  // namespace
+
+TEST(SlangCompile, LibrashaderUtilityShadersCompileOnAllBackends)
+{
+  const SlangSourceDownscalePlan bilinear_plan{.normalize = true};
+  const SlangSourceDownscalePlan box_plan{
+      .normalize = true, .box_filter = true, .factor = 3};
+
+  for (const BackendShaderHeader& backend : BACKEND_HEADERS)
+  {
+    const auto expect_compiles = [&backend](std::string_view name, const std::string& vertex,
+                                            const std::string& fragment) {
+      SCOPED_TRACE(std::string(backend.name) + " " + std::string(name));
+      const auto vs = SPIRV::CompileVertexShader(std::string(backend.header) + vertex,
+                                                 backend.api_type, backend.spv_version, nullptr);
+      ASSERT_TRUE(vs.has_value());
+      const auto fs = SPIRV::CompileFragmentShader(std::string(backend.header) + fragment,
+                                                   backend.api_type, backend.spv_version, nullptr);
+      ASSERT_TRUE(fs.has_value());
+    };
+
+    expect_compiles("passthrough",
+                    GenerateLibrashaderFullscreenVertexShader(
+                        SlangNeedsPresentClipYFlip(backend.api_type)),
+                    GenerateLibrashaderPassthroughPixelShader());
+    expect_compiles(
+        "bilinear normalization",
+        GenerateLibrashaderFullscreenVertexShader(SlangNeedsClipYFlip(backend.api_type)),
+        GenerateLibrashaderSourceNormalizationPixelShader(bilinear_plan));
+    expect_compiles(
+        "box normalization",
+        GenerateLibrashaderFullscreenVertexShader(SlangNeedsClipYFlip(backend.api_type), false),
+        GenerateLibrashaderSourceNormalizationPixelShader(box_plan));
+  }
+
+  const std::string box_vertex = GenerateLibrashaderFullscreenVertexShader(false, false);
+  EXPECT_EQ(box_vertex.find("v_tex0"), std::string::npos);
+}
 
 // The canonical RetroArch "stock" passthrough shader: dual uniform blocks (push_constant Push
 // {} params + std140 UBO {} global), vertex attributes Position/TexCoord, and global.MVP.

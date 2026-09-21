@@ -153,6 +153,8 @@ add_library(videocommon
   PostProcessing/LibrashaderPostProcessing.cpp
   PostProcessing/LibrashaderPostProcessing.h
   PostProcessing/LibrashaderRuntime.h
+  PostProcessing/LibrashaderUtilityShader.cpp
+  PostProcessing/LibrashaderUtilityShader.h
   PostProcessing/LutTexture.cpp
   PostProcessing/LutTexture.h
   PostProcessing/IPostProcessor.h
@@ -188,6 +190,8 @@ add_library(videocommon
   PostProcessing/SlangTranslator.h
   Present.cpp
   Present.h
+  PresentationScaling.cpp
+  PresentationScaling.h
   RenderState.cpp
   RenderState.h
   Resources/CustomResourceManager.cpp
