@@ -202,6 +202,7 @@ int main(int argc, char* argv[])
   UICommon::CreateDirectories();
   UICommon::Init();
   Resources::Init();
+  QApplication::setWindowIcon(Resources::GetAppIcon());
   Settings::Instance().SetBatchModeEnabled(options.is_set("batch"));
 
   QSettings& qt_settings = Settings::GetQSettings();
