@@ -37,6 +37,8 @@
 
 #ifndef _WIN32
 #include <qpa/qplatformnativeinterface.h>
+#else
+#include <windows.h>
 #endif
 
 #include "Common/Config/Config.h"
@@ -129,6 +131,9 @@
 #include "DolphinQt/TAS/WiiTASInputWindow.h"
 #include "DolphinQt/ToolBar.h"
 #include "DolphinQt/WiiUpdate.h"
+#ifdef _WIN32
+#include "DolphinQt/resource.h"
+#endif
 
 #include "ui_MainWindow.h"
 
@@ -148,6 +153,29 @@ namespace
 constexpr int DEFAULT_GRID_COLUMNS = 7;
 constexpr int DEFAULT_GRID_ROWS = 3;
 constexpr int GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10'000;
+
+#ifdef _WIN32
+void SetWindowsAppIcon(HWND window)
+{
+  const HINSTANCE instance = GetModuleHandleW(nullptr);
+  const auto load_icon = [instance](int width, int height) {
+    return static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON, width,
+                                         height, LR_DEFAULTCOLOR | LR_SHARED));
+  };
+
+  if (const HICON icon = load_icon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON)))
+  {
+    SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+    SetClassLongPtrW(window, GCLP_HICON, reinterpret_cast<LONG_PTR>(icon));
+  }
+
+  if (const HICON icon = load_icon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON)))
+  {
+    SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+    SetClassLongPtrW(window, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(icon));
+  }
+}
+#endif
 }  // namespace
 
 #ifdef HAVE_XRANDR
@@ -235,8 +263,11 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
   m_ui->setupUi(this);
 
   setWindowTitle(QString::fromStdString(Common::GetScmRevStr()));
-  setWindowIcon(Resources::GetAppIcon());
   setAttribute(Qt::WA_NativeWindow);
+  setWindowIcon(Resources::GetAppIcon());
+#ifdef _WIN32
+  SetWindowsAppIcon(reinterpret_cast<HWND>(winId()));
+#endif
 
   m_graceful_shutdown_timer = new QTimer(this);
   m_graceful_shutdown_timer->setSingleShot(true);
