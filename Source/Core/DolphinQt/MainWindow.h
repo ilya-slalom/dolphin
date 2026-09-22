@@ -21,6 +21,7 @@
 class QMenu;
 class QStackedWidget;
 class QString;
+class QTimer;
 
 class AchievementsWindow;
 class AssemblerWidget;
@@ -252,6 +253,7 @@ private:
   int m_total_games = 0;
   int m_visible_games = 0;
   bool m_rendering_to_main;
+  QTimer* m_graceful_shutdown_timer = nullptr;
   bool m_stop_confirm_showing = false;
   bool m_stop_requested = false;
   bool m_exit_requested = false;

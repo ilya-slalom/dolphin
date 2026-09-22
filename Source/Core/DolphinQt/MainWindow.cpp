@@ -147,6 +147,7 @@ namespace
 {
 constexpr int DEFAULT_GRID_COLUMNS = 7;
 constexpr int DEFAULT_GRID_ROWS = 3;
+constexpr int GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10'000;
 }  // namespace
 
 #ifdef HAVE_XRANDR
@@ -236,6 +237,13 @@ MainWindow::MainWindow(Core::System& system, std::unique_ptr<BootParameters> boo
   setWindowTitle(QString::fromStdString(Common::GetScmRevStr()));
   setWindowIcon(Resources::GetAppIcon());
   setAttribute(Qt::WA_NativeWindow);
+
+  m_graceful_shutdown_timer = new QTimer(this);
+  m_graceful_shutdown_timer->setSingleShot(true);
+  connect(m_graceful_shutdown_timer, &QTimer::timeout, this, [this] {
+    if (m_stop_requested && !Core::IsUninitialized(m_system))
+      ForceStop();
+  });
 
   CreateComponents();
 
@@ -964,6 +972,7 @@ void MainWindow::TogglePause()
 
 void MainWindow::OnStopComplete()
 {
+  m_graceful_shutdown_timer->stop();
   m_stop_requested = false;
   HideRenderWidget(!m_exit_requested, m_exit_requested);
 #ifdef USE_DISCORD_PRESENCE
@@ -1103,6 +1112,7 @@ bool MainWindow::RequestStop()
     if (NetPlay::IsNetPlayRunning())
       NetPlay::SendPowerButtonEvent();
 
+    m_graceful_shutdown_timer->start(GRACEFUL_SHUTDOWN_TIMEOUT_MS);
     return true;
   }
 
@@ -1116,6 +1126,7 @@ bool MainWindow::RequestStop()
 
 void MainWindow::ForceStop()
 {
+  m_graceful_shutdown_timer->stop();
   Core::Stop(m_system);
 }
 
